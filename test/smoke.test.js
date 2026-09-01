@@ -64,6 +64,9 @@ test('serves the web app and supports seeded admin login', async () => {
   assert.equal(login.status, 200);
   const cookie = login.headers.get('set-cookie');
   assert.match(cookie, /session=/);
+  const loginBody = await login.json();
+  assert.match(loginBody.sessionToken, /^[a-f0-9]+$/);
+  assert.equal(loginBody.user.email, 'admin@example.com');
 
   const dashboard = await fetch(`${origin}/api/dashboard`, {
     headers: { cookie },
@@ -73,4 +76,58 @@ test('serves the web app and supports seeded admin login', async () => {
   assert.equal(dashboardBody.user.email, 'admin@example.com');
   assert.equal(dashboardBody.user.role, 'global_admin');
   assert.ok(dashboardBody.challenges.length >= 1);
+});
+
+test('supports companion app bearer auth and health imports', async () => {
+  const login = await fetch(`${origin}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }),
+  });
+  const { sessionToken } = await login.json();
+  const auth = { authorization: `Bearer ${sessionToken}` };
+
+  const team = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Mobile Test Team' }),
+  });
+  assert.equal(team.status, 201);
+  const { id: teamId } = await team.json();
+
+  const bootstrap = await fetch(`${origin}/api/mobile/bootstrap`, { headers: auth });
+  assert.equal(bootstrap.status, 200);
+  const bootstrapBody = await bootstrap.json();
+  assert.equal(bootstrapBody.user.email, 'admin@example.com');
+  assert.equal(bootstrapBody.teams[0].id, teamId);
+  assert.equal(bootstrapBody.health.uploadEndpoint, '/api/health/import');
+
+  const challengeId = bootstrapBody.challenges[0].id;
+  const importBody = {
+    source: 'health_connect',
+    records: [{
+      team_id: teamId,
+      challenge_id: challengeId,
+      activity_type: 'Walking',
+      minutes: 42,
+      activity_date: '2026-09-01',
+      source_ref: 'health-connect-test-record',
+    }],
+  };
+
+  const firstImport = await fetch(`${origin}/api/health/import`, {
+    method: 'POST',
+    headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify(importBody),
+  });
+  assert.equal(firstImport.status, 200);
+  assert.deepEqual(await firstImport.json(), { added: 1, skipped: 0 });
+
+  const duplicateImport = await fetch(`${origin}/api/health/import`, {
+    method: 'POST',
+    headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify(importBody),
+  });
+  assert.equal(duplicateImport.status, 200);
+  assert.deepEqual(await duplicateImport.json(), { added: 0, skipped: 1 });
 });

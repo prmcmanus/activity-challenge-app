@@ -53,6 +53,11 @@ Example body:
 {"source":"health_connect","records":[{"team_id":1,"challenge_id":1,"activity_type":"Walking","minutes":42,"activity_date":"2026-09-01","source_ref":"device-record-id"}]}
 ```
 
+## Android companion app
+An Android Health Connect companion MVP is included in [companion/android](companion/android). It signs in to this server, requests exercise-session permission from Health Connect, reads the last 30 days of exercise sessions, converts durations to whole minutes, and uploads them to `/api/health/import`.
+
+For emulator testing with the local server, use `http://10.0.2.2:3000` as the server URL in the companion app.
+
 ## Production checklist
 - Put behind HTTPS and a reverse proxy.
 - Replace local accounts with approved enterprise SSO if deployed at Company.

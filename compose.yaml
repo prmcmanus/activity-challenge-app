@@ -1,0 +1,16 @@
+services:
+  activity-challenge:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      DATA_DIR: /data
+      APP_ORIGIN: http://localhost:3000
+      SEED_ADMIN_EMAIL: admin@example.com
+      SEED_ADMIN_PASSWORD: ChangeMe123!
+    volumes:
+      - activity_data:/data
+    restart: unless-stopped
+volumes:
+  activity_data:

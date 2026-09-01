@@ -45,6 +45,73 @@ that is normally caused by opening without the wrapper / with an old Gradle runt
    - Set Gradle to **Use Gradle from: gradle-wrapper.properties**.
 3. Sync project again.
 
+### Corporate networks with a TLS-inspecting proxy (e.g. Zscaler)
+
+If the plugin-not-found error persists even with Java 17+/Gradle 8.9+ correctly
+configured, and/or you see:
+
+```
+javax.net.ssl.SSLHandshakeException: PKIX path building failed ...
+sun.security.provider.certpath.SunCertPathBuilderException: unable to find valid
+certification path to requested target
+```
+
+this is corporate TLS inspection (Zscaler) intercepting HTTPS to
+`repo.maven.apache.org`, `plugins.gradle.org`, `services.gradle.org`, etc. Windows
+already trusts the intercepting certificate (via a GPO-pushed root CA), but the
+JDK has its own separate `cacerts` truststore that doesn't — and the JDK also
+doesn't automatically use the OS/PAC proxy configuration the way `curl`/browsers do.
+
+**One-time fix per JDK install:**
+
+1. Import the Zscaler CA certificates into the JDK's `cacerts`:
+   ```powershell
+   .\import-zscaler-certs.ps1 -JavaHome "C:\path\to\jdk-17"
+   ```
+   This connects to `repo.maven.apache.org`, captures the certificate chain
+   presented by the intercepting proxy, and imports the CA certs (not the leaf)
+   via `keytool`.
+
+2. Build with `java.net.useSystemProxies=true` so Java consults the same PAC-based
+   proxy configuration Windows/curl already use:
+   ```powershell
+   .\build-local.ps1 -JavaHome "C:\path\to\jdk-17" -GradleHome "C:\path\to\gradle-8.9"
+   ```
+   or manually:
+   ```powershell
+   $env:JAVA_HOME = "C:\path\to\jdk-17"
+   $env:GRADLE_OPTS = "-Djava.net.useSystemProxies=true"
+   .\gradlew.bat assembleDebug --no-daemon
+   ```
+   > Setting a fixed `-Dhttps.proxyHost`/`-Dhttps.proxyPort` does **not** work on
+   > some corporate networks — the explicit proxy can return `403 Forbidden` for
+   > these specific hosts even though they're reachable directly (with transparent
+   > inspection). `useSystemProxies=true` lets Java replicate curl's PAC-based
+   > per-host routing instead of forcing one fixed proxy.
+
+3. If the Gradle **wrapper** itself can't download the Gradle distribution due to
+   the same SSL issue, download `gradle-8.9-bin.zip` manually with `curl.exe`
+   (which uses the Windows cert store and succeeds where Java doesn't), extract it,
+   and use that extracted `gradle.bat` directly until the cacerts fix above is
+   applied — then the wrapper will work too.
+
+4. If the build then fails with a message about SDK licenses not accepted
+   (`build-tools;34.0.0`, `platforms;android-35`), accept them non-interactively:
+   ```powershell
+   $licDir = "$env:LOCALAPPDATA\Android\Sdk\licenses"
+   New-Item -ItemType Directory -Path $licDir -Force | Out-Null
+   Set-Content "$licDir\android-sdk-license" "8933bad161af4178b1185d1a37fbf41ea5269c55`n24333f8a63b6825ea9c5514f83c2829b004d1fee"
+   Set-Content "$licDir\android-sdk-preview-license" "84831b9409646a918e30573bab4c9c91346d8abd"
+   ```
+   (These are the standard, publicly documented Android SDK license hashes.)
+
+**For Android Studio itself:** its embedded JVM has its own separate `cacerts`, so
+run `import-zscaler-certs.ps1` against that JDK path too (or point Android Studio's
+"Gradle JDK" setting at your own portable JDK 17 instead), and add
+`-Djava.net.useSystemProxies=true` under **Settings > Build, Execution, Deployment
+> Build Tools > Gradle > Gradle JVM arguments** (or a `GRADLE_OPTS` env var), then
+re-sync.
+
 ## Privacy boundary
 
 The companion reads only exercise session records and uploads only:

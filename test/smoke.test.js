@@ -47,6 +47,21 @@ after(async () => {
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
+let uid = 0;
+async function register(name) {
+  uid += 1;
+  const email = `${name.toLowerCase().replace(/\s+/g, '.')}.${uid}@example.com`;
+  const r = await fetch(`${origin}/api/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, email, password: 'SuperSecret123!' }),
+  });
+  const j = await r.json();
+  assert.equal(r.status, 201, `register ${name} failed: ${JSON.stringify(j)}`);
+  const cookie = r.headers.get('set-cookie').split(';')[0];
+  return { email, cookie, token: j.sessionToken, user: j.user };
+}
+
 test('serves the web app and supports seeded admin login', async () => {
   const home = await fetch(origin);
   assert.equal(home.status, 200);
@@ -67,42 +82,214 @@ test('serves the web app and supports seeded admin login', async () => {
   const loginBody = await login.json();
   assert.match(loginBody.sessionToken, /^[a-f0-9]+$/);
   assert.equal(loginBody.user.email, 'admin@example.com');
+  assert.equal(loginBody.user.role, 'global_admin');
 
-  const dashboard = await fetch(`${origin}/api/dashboard`, {
-    headers: { cookie },
-  });
+  const dashboard = await fetch(`${origin}/api/dashboard`, { headers: { cookie } });
   assert.equal(dashboard.status, 200);
   const dashboardBody = await dashboard.json();
   assert.equal(dashboardBody.user.email, 'admin@example.com');
-  assert.equal(dashboardBody.user.role, 'global_admin');
-  assert.ok(dashboardBody.challenges.length >= 1);
+  assert.ok(dashboardBody.challenges.length >= 1, 'seeded admin should already own the demo challenge');
 });
 
-test('supports companion app bearer auth and health imports', async () => {
-  const login = await fetch(`${origin}/api/login`, {
+test('rejects duplicate registration and short passwords', async () => {
+  const a = await register('Dup User');
+  const dupe = await fetch(`${origin}/api/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }),
+    body: JSON.stringify({ name: 'Dup User', email: a.email, password: 'SuperSecret123!' }),
   });
-  const { sessionToken } = await login.json();
-  const auth = { authorization: `Bearer ${sessionToken}` };
+  assert.equal(dupe.status, 409);
+
+  const shortPw = await fetch(`${origin}/api/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Short Pw', email: 'shortpw@example.com', password: 'short' }),
+  });
+  assert.equal(shortPw.status, 400);
+});
+
+test('a self-registered user can create a challenge and a team, and log activity', async () => {
+  const alice = await register('Alice Creator');
+
+  const challenge = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: "Alice's Challenge", start_date: '2026-01-01', end_date: '2026-01-31' }),
+  });
+  assert.equal(challenge.status, 201);
+  const { id: challengeId, invite_code: challengeCode } = await challenge.json();
+  assert.match(challengeCode, /^[A-Z0-9]{8}$/);
 
   const team = await fetch(`${origin}/api/teams`, {
     method: 'POST',
-    headers: { ...auth, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Mobile Test Team' }),
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Team Rocket' }),
   });
   assert.equal(team.status, 201);
-  const { id: teamId } = await team.json();
+  const { id: teamId, invite_code: teamCode } = await team.json();
 
+  const activity = await fetch(`${origin}/api/activities`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ team_id: teamId, challenge_id: challengeId, activity_type: 'Running', minutes: 30, activity_date: '2026-01-05' }),
+  });
+  assert.equal(activity.status, 201);
+
+  const dashboard = await fetch(`${origin}/api/dashboard`, { headers: { cookie: alice.cookie } });
+  const dashboardBody = await dashboard.json();
+  const mine = dashboardBody.challenges.find(c => c.id === challengeId);
+  assert.ok(mine, 'creator should see their own challenge');
+  assert.equal(mine.role, 'owner');
+  assert.equal(mine.myMinutes, 30);
+  assert.equal(mine.teams[0].id, teamId);
+  assert.equal(mine.teams[0].invite_code, teamCode);
+
+  // mismatched team/challenge pairing must be rejected
+  const otherChallenge = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Other Challenge', start_date: '2026-02-01', end_date: '2026-02-28' }),
+  });
+  const { id: otherChallengeId } = await otherChallenge.json();
+  const mismatched = await fetch(`${origin}/api/activities`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ team_id: teamId, challenge_id: otherChallengeId, activity_type: 'Cycling', minutes: 10, activity_date: '2026-02-05' }),
+  });
+  assert.equal(mismatched.status, 400);
+});
+
+test('challenges and teams are invisible until joined, then joinable by invite code', async () => {
+  const alice = await register('Alice Owner');
+  const bob = await register('Bob Outsider');
+
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Private Challenge', start_date: '2026-03-01', end_date: '2026-03-31' }),
+  });
+  const { id: challengeId, invite_code: challengeCode } = await challengeRes.json();
+  const teamRes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Team Blue' }),
+  });
+  const { id: teamId, invite_code: teamCode } = await teamRes.json();
+
+  // Bob cannot see Alice's challenge or dashboard entry for it yet.
+  const bobDashboard = await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: bob.cookie } })).json();
+  assert.equal(bobDashboard.challenges.find(c => c.id === challengeId), undefined);
+
+  const forbidden = await fetch(`${origin}/api/challenges/${challengeId}`, { headers: { cookie: bob.cookie } });
+  assert.equal(forbidden.status, 403);
+
+  // Bob joins via the challenge-level invite code: he can now see the challenge and its team list,
+  // but is not yet a member of the team, and the team's own invite code is hidden from him.
+  const join = await fetch(`${origin}/api/join`, {
+    method: 'POST',
+    headers: { cookie: bob.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code: challengeCode }),
+  });
+  assert.equal(join.status, 200);
+  assert.equal((await join.json()).type, 'challenge');
+
+  const bobView = await (await fetch(`${origin}/api/challenges/${challengeId}`, { headers: { cookie: bob.cookie } })).json();
+  assert.equal(bobView.role, 'member');
+  assert.equal(bobView.teams.length, 1);
+  assert.equal(bobView.teams[0].mine, false);
+  assert.equal(bobView.teams[0].invite_code, undefined);
+
+  // Bob self-joins the team (no code needed once inside the challenge).
+  const teamJoin = await fetch(`${origin}/api/teams/${teamId}/join`, { method: 'POST', headers: { cookie: bob.cookie } });
+  assert.equal(teamJoin.status, 200);
+
+  const bobView2 = await (await fetch(`${origin}/api/challenges/${challengeId}`, { headers: { cookie: bob.cookie } })).json();
+  assert.equal(bobView2.teams[0].mine, true);
+
+  // A third user joins directly via the team's own invite code, which grants both team and challenge membership.
+  const carol = await register('Carol Direct');
+  const directJoin = await fetch(`${origin}/api/join`, {
+    method: 'POST',
+    headers: { cookie: carol.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code: teamCode }),
+  });
+  assert.equal(directJoin.status, 200);
+  assert.equal((await directJoin.json()).type, 'team');
+  const carolDashboard = await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: carol.cookie } })).json();
+  const carolChallenge = carolDashboard.challenges.find(c => c.id === challengeId);
+  assert.ok(carolChallenge, 'joining via a team code should also grant challenge membership');
+  assert.equal(carolChallenge.teams[0].id, teamId);
+
+  const badCode = await fetch(`${origin}/api/join`, {
+    method: 'POST',
+    headers: { cookie: bob.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code: 'NOTREAL1' }),
+  });
+  assert.equal(badCode.status, 400);
+});
+
+test('per-challenge team and individual leaderboards only aggregate that challenge', async () => {
+  const alice = await register('Alice Board');
+  const bob = await register('Bob Board');
+
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Board Challenge', start_date: '2026-04-01', end_date: '2026-04-30' }),
+  });
+  const { id: challengeId, invite_code: challengeCode } = await challengeRes.json();
+  const teamARes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Team A' }),
+  });
+  const { id: teamAId } = await teamARes.json();
+
+  await fetch(`${origin}/api/join`, { method: 'POST', headers: { cookie: bob.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: challengeCode }) });
+  const teamBRes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: bob.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Team B' }),
+  });
+  const { id: teamBId } = await teamBRes.json();
+
+  await fetch(`${origin}/api/activities`, { method: 'POST', headers: { cookie: alice.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ team_id: teamAId, challenge_id: challengeId, activity_type: 'Walking', minutes: 50, activity_date: '2026-04-02' }) });
+  await fetch(`${origin}/api/activities`, { method: 'POST', headers: { cookie: bob.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ team_id: teamBId, challenge_id: challengeId, activity_type: 'Cycling', minutes: 20, activity_date: '2026-04-03' }) });
+
+  const board = await (await fetch(`${origin}/api/challenges/${challengeId}/leaderboard`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(board.teams.length, 2);
+  assert.equal(board.teams[0].name, 'Team A');
+  assert.equal(board.teams[0].minutes, 50);
+  assert.equal(board.teams[1].minutes, 20);
+  assert.equal(board.users.length, 2);
+  assert.equal(board.users[0].name, 'Alice Board');
+  assert.equal(board.users[0].minutes, 50);
+});
+
+test('supports companion app bearer auth and idempotent health imports', async () => {
+  const dana = await register('Dana Mobile');
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: dana.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Mobile Challenge', start_date: '2026-05-01', end_date: '2026-05-31' }),
+  });
+  const { id: challengeId } = await challengeRes.json();
+  const teamRes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: dana.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Mobile Team' }),
+  });
+  const { id: teamId } = await teamRes.json();
+
+  const auth = { authorization: `Bearer ${dana.token}` };
   const bootstrap = await fetch(`${origin}/api/mobile/bootstrap`, { headers: auth });
   assert.equal(bootstrap.status, 200);
   const bootstrapBody = await bootstrap.json();
-  assert.equal(bootstrapBody.user.email, 'admin@example.com');
-  assert.equal(bootstrapBody.teams[0].id, teamId);
+  assert.equal(bootstrapBody.user.email, dana.email);
+  const bootstrapChallenge = bootstrapBody.challenges.find(c => c.id === challengeId);
+  assert.equal(bootstrapChallenge.teams[0].id, teamId);
   assert.equal(bootstrapBody.health.uploadEndpoint, '/api/health/import');
 
-  const challengeId = bootstrapBody.challenges[0].id;
   const importBody = {
     source: 'health_connect',
     records: [{
@@ -110,7 +297,7 @@ test('supports companion app bearer auth and health imports', async () => {
       challenge_id: challengeId,
       activity_type: 'Walking',
       minutes: 42,
-      activity_date: '2026-09-01',
+      activity_date: '2026-05-02',
       source_ref: 'health-connect-test-record',
     }],
   };

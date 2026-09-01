@@ -12,3 +12,6 @@ companion/android/.gradle/
 companion/android/.idea/
 companion/android/local.properties
 companion/android/**/build/
+companion/ios/**/xcuserdata/
+companion/ios/**/DerivedData/
+companion/ios/**/*.xcodeproj/project.xcworkspace/

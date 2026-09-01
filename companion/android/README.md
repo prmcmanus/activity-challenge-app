@@ -6,10 +6,12 @@ Native Android companion MVP for syncing exercise session durations from Health 
 
 - Signs in to the Active Together server with the same email/password as the web app.
 - Stores the returned bearer session token in app preferences.
-- Loads the member's teams and active challenges from `/api/mobile/bootstrap`.
+- Loads the member's challenge/team memberships from `/api/mobile/bootstrap` and offers them as one combined "Challenge — Team" picker, since a synced record needs a valid team+challenge pairing.
 - Requests Health Connect read access for exercise sessions.
 - Reads exercise sessions from the last 30 days.
 - Uploads whole-minute durations to `/api/health/import` with stable `source_ref` values so repeated syncs are idempotent.
+
+This companion is sync-only: it does not create accounts or join challenges/teams. Register, join with an invite code, and create/join a team in the web app first, then sign in here with the same credentials.
 
 ## Local testing
 
@@ -19,11 +21,11 @@ Native Android companion MVP for syncing exercise session durations from Health 
    .\start-local.ps1
    ```
 
-2. In Android Studio, open `companion/android`.
-3. Run the app on a physical Android device or emulator with Health Connect available.
-4. Use server URL `http://10.0.2.2:3000` for the Android emulator, or your computer's LAN URL for a physical device.
-5. Sign in with `admin@example.com` / `ChangeMe123!`.
-6. Create or join at least one team in the web app before syncing.
+2. In the web app (`http://localhost:3000`), register an account (or sign in as the seeded admin, `admin@example.com` / `ChangeMe123!`), create or join a challenge, and create or join a team in it.
+3. In Android Studio, open `companion/android`.
+4. Run the app on a physical Android device or emulator with Health Connect available.
+5. Use server URL `http://10.0.2.2:3000` for the Android emulator, or your computer's LAN URL for a physical device.
+6. Sign in with the same credentials used in step 2, then pick the "Challenge — Team" entry to sync into.
 
 ## Build prerequisites
 

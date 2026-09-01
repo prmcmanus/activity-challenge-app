@@ -22,9 +22,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var password: EditText
     private lateinit var status: TextView
     private lateinit var teamSpinner: Spinner
-    private lateinit var challengeSpinner: Spinner
-    private var teams = emptyList<Team>()
-    private var challenges = emptyList<Challenge>()
+    private var teamOptions = emptyList<TeamOption>()
 
     private val permissionLauncher = registerForActivityResult(
         PermissionController.createRequestPermissionResultContract(),
@@ -39,11 +37,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         serverUrl = EditText(this).apply { hint = "Server URL"; setText(prefs.getString("serverUrl", "http://10.0.2.2:3000")) }
-        email = EditText(this).apply { hint = "Email"; setText(prefs.getString("email", "admin@example.com")) }
-        password = EditText(this).apply { hint = "Password"; setText("ChangeMe123!") }
-        status = TextView(this).apply { text = "Sign in, choose a team and challenge, then sync Health Connect exercise sessions." }
+        email = EditText(this).apply { hint = "Email"; setText(prefs.getString("email", "")) }
+        password = EditText(this).apply { hint = "Password" }
+        status = TextView(this).apply { text = "Sign in, then pick the challenge/team to sync into. Join challenges and teams in the web app first — this companion only syncs Health Connect data into a team you already belong to." }
         teamSpinner = Spinner(this)
-        challengeSpinner = Spinner(this)
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
@@ -53,7 +50,6 @@ class MainActivity : ComponentActivity() {
             addView(password)
             addView(Button(context).apply { text = "Sign in"; setOnClickListener { signIn() } })
             addView(teamSpinner)
-            addView(challengeSpinner)
             addView(Button(context).apply { text = "Sync Health Connect"; setOnClickListener { ensurePermissionsThenSync() } })
             addView(status)
         })
@@ -73,11 +69,12 @@ class MainActivity : ComponentActivity() {
                     api.bootstrap(token)
                 }
             }.onSuccess {
-                teams = it.teams
-                challenges = it.challenges
-                teamSpinner.adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, teams.map(Team::name))
-                challengeSpinner.adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, challenges.map(Challenge::name))
-                status.text = "Signed in. Found ${teams.size} team(s) and ${challenges.size} active challenge(s)."
+                teamOptions = it.teamOptions
+                teamSpinner.adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, teamOptions.map(TeamOption::toString))
+                status.text = if (teamOptions.isEmpty())
+                    "Signed in, but you are not in any team yet. Join a challenge and a team in the web app, then sign in here again."
+                else
+                    "Signed in. Found ${teamOptions.size} team membership(s)."
             }.onFailure {
                 status.text = "Sign in failed: ${it.message}"
             }
@@ -100,18 +97,17 @@ class MainActivity : ComponentActivity() {
 
     private fun sync() {
         val token = prefs.getString("token", null)
-        if (token.isNullOrBlank() || teams.isEmpty() || challenges.isEmpty()) {
-            status.text = "Sign in and select a team/challenge before syncing."
+        if (token.isNullOrBlank() || teamOptions.isEmpty()) {
+            status.text = "Sign in and select a challenge/team before syncing."
             return
         }
 
-        val team = teams[teamSpinner.selectedItemPosition]
-        val challenge = challenges[challengeSpinner.selectedItemPosition]
+        val team = teamOptions[teamSpinner.selectedItemPosition]
         lifecycleScope.launch {
             status.text = "Reading Health Connect..."
             runCatching {
                 withContext(Dispatchers.IO) {
-                    val records = health.readExerciseSessions(team.id, challenge.id)
+                    val records = health.readExerciseSessions(team.teamId, team.challengeId)
                     api().importHealth(token, records)
                 }
             }.onSuccess {

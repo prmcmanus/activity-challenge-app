@@ -1,0 +1,16 @@
+.git
+.github
+.tools
+.local-data
+companion
+test
+coverage
+dist
+node_modules
+npm-debug.log*
+*.sqlite
+*.sqlite-*
+.env
+.env.*
+README.md
+start-local.ps1

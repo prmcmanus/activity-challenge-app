@@ -6,9 +6,10 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
-data class Team(val id: Int, val name: String)
-data class Challenge(val id: Int, val name: String)
-data class Bootstrap(val teams: List<Team>, val challenges: List<Challenge>)
+data class TeamOption(val teamId: Int, val teamName: String, val challengeId: Int, val challengeName: String) {
+    override fun toString() = "$challengeName — $teamName"
+}
+data class Bootstrap(val teamOptions: List<TeamOption>)
 data class HealthRecord(val teamId: Int, val challengeId: Int, val activityType: String, val minutes: Long, val activityDate: String, val sourceRef: String)
 data class ImportResult(val added: Int, val skipped: Int)
 
@@ -22,11 +23,23 @@ class ActiveTogetherApi(private val baseUrl: String) {
         return response.getString("sessionToken")
     }
 
+    /**
+     * A team only appears here if this account is already a member of it — joining a
+     * challenge or team (by invite code) happens in the web app, not this sync-only companion.
+     */
     fun bootstrap(token: String): Bootstrap {
         val response = request("/api/mobile/bootstrap", token = token)
-        val teams = response.getJSONArray("teams").toList { Team(it.getInt("id"), it.getString("name")) }
-        val challenges = response.getJSONArray("challenges").toList { Challenge(it.getInt("id"), it.getString("name")) }
-        return Bootstrap(teams, challenges)
+        val challenges = response.getJSONArray("challenges")
+        val options = mutableListOf<TeamOption>()
+        for (i in 0 until challenges.length()) {
+            val c = challenges.getJSONObject(i)
+            val teams = c.getJSONArray("teams")
+            for (j in 0 until teams.length()) {
+                val t = teams.getJSONObject(j)
+                options.add(TeamOption(t.getInt("id"), t.getString("name"), c.getInt("id"), c.getString("name")))
+            }
+        }
+        return Bootstrap(options)
     }
 
     fun importHealth(token: String, records: List<HealthRecord>): ImportResult {
@@ -66,6 +79,3 @@ class ActiveTogetherApi(private val baseUrl: String) {
         return JSONObject(text)
     }
 }
-
-private inline fun <T> JSONArray.toList(map: (JSONObject) -> T): List<T> =
-    (0 until length()).map { map(getJSONObject(it)) }

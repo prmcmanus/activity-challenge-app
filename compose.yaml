@@ -2,15 +2,21 @@ services:
   activity-challenge:
     build: .
     ports:
-      - "3000:3000"
+      - "${HTTP_PORT:-3000}:3000"
     environment:
       PORT: 3000
       DATA_DIR: /data
-      APP_ORIGIN: http://localhost:3000
-      SEED_ADMIN_EMAIL: admin@example.com
-      SEED_ADMIN_PASSWORD: ChangeMe123!
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@example.com}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-ChangeMe123!}
     volumes:
       - activity_data:/data
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    cpus: 0.5
 volumes:
   activity_data:

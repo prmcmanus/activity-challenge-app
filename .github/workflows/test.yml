@@ -7,7 +7,7 @@ on:
 
 jobs:
   smoke:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -20,5 +20,10 @@ jobs:
       - name: Run smoke tests
         run: npm test
 
+      - name: Check Docker availability
+        id: docker
+        run: node -e "const fs=require('node:fs');const {spawnSync}=require('node:child_process');const available=spawnSync('docker',['--version'],{stdio:'ignore'}).status===0;fs.appendFileSync(process.env.GITHUB_OUTPUT,'available='+available+'\n');if(!available)console.log('Docker is not installed on this self-hosted runner; skipping image build.');"
+
       - name: Build Docker image
+        if: steps.docker.outputs.available == 'true'
         run: docker build -t activity-challenge-app .

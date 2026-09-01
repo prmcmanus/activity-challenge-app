@@ -23,6 +23,13 @@ Requires Node.js 22 or newer:
 SEED_ADMIN_EMAIL=admin@example.com SEED_ADMIN_PASSWORD='ChangeMe123!' node server.js
 ```
 
+## Test in GitHub Enterprise
+GitHub-hosted runners are disabled for this repository, so the included GitHub Actions workflow targets a self-hosted runner.
+
+1. Add a repository, organization or enterprise self-hosted runner with the `self-hosted` label.
+2. Re-run the `Test` workflow from the Actions tab.
+3. The workflow installs Node.js 24, runs `npm test`, and builds the Docker image when Docker is available on the runner.
+
 ## Health integration boundary
 Health Connect and HealthKit are device-local native APIs. A normal website cannot read them directly. Build a small Android/iOS companion app that:
 1. Requests explicit permission for exercise/workout records only.

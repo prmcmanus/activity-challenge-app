@@ -39,9 +39,10 @@ before(async () => {
   });
 });
 
-after(() => {
+after(async () => {
   if (server && !server.killed) {
     server.kill();
+    await new Promise(resolve => server.once('exit', resolve));
   }
   fs.rmSync(dataDir, { recursive: true, force: true });
 });

@@ -25,6 +25,26 @@ Native Android companion MVP for syncing exercise session durations from Health 
 5. Sign in with `admin@example.com` / `ChangeMe123!`.
 6. Create or join at least one team in the web app before syncing.
 
+## Build prerequisites
+
+- Android Studio with Android SDK installed
+- Gradle **wrapper** (included in this folder)
+- Java 17+ for Gradle/AGP 8.7
+
+If you saw:
+
+`Plugin [id: 'org.jetbrains.kotlin.android', version: '2.0.21'] was not found`
+
+that is normally caused by opening without the wrapper / with an old Gradle runtime.
+
+### Fix in Android Studio
+
+1. Open the `companion/android` folder as a project root.
+2. In **Settings > Build, Execution, Deployment > Build Tools > Gradle**:
+   - Set **Gradle JDK** to Java 17+.
+   - Set Gradle to **Use Gradle from: gradle-wrapper.properties**.
+3. Sync project again.
+
 ## Privacy boundary
 
 The companion reads only exercise session records and uploads only:

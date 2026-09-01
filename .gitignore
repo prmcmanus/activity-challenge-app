@@ -8,3 +8,7 @@ activity.sqlite
 .tools/
 coverage/
 dist/
+companion/android/.gradle/
+companion/android/.idea/
+companion/android/local.properties
+companion/android/**/build/

@@ -143,6 +143,55 @@ This exact combination (portable JDK 17 with Zscaler CAs imported +
 was verified to produce a successful `assembleDebug` build via both the Gradle
 wrapper and Android Studio's own project settings.
 
+### "Unable to locate adb" even though Gradle sync succeeds
+
+If Android Studio's Gradle sync finishes successfully (check
+`Help > Show Log in Explorer` → `idea.log` for "Gradle sync finished") but you
+still see:
+
+```
+Unable to locate adb in project/module settings. Locations searched:
+    ADB_PATH_PROPERTY (android.adb.path): '<not set>'
+    Android SDK location from first Android Module in Project: <not present>
+```
+
+this almost always means **Android Studio itself is too old** for this
+project's toolchain (AGP 8.7.3 / Gradle 8.9 / Kotlin 2.0.21). Old Studio
+versions (e.g. 2020.3 "Arctic Fox") can successfully invoke Gradle and get a
+"successful" sync, but their own IDE-side project-model code doesn't know how
+to parse the resulting module structure from newer AGP versions, so no
+Android facet/SDK ever gets attached to the module — hence no adb.
+
+**Fix: use a newer Android Studio, installed portably (no admin rights
+needed):**
+
+1. Download a current release zip (not the `.exe` installer) — e.g. Android
+   Studio "Ladybug" 2024.2.1.12, confirmed compatible with this project's
+   toolchain:
+   ```powershell
+   $url = "https://redirector.gvt1.com/edgedl/android/studio/ide-zips/2024.2.1.12/android-studio-2024.2.1.12-windows.zip"
+   Start-BitsTransfer -Source $url -Destination "$env:TEMP\android-studio.zip"
+   ```
+2. Extract it to a folder you own (no `Program Files`):
+   ```powershell
+   Expand-Archive -Path "$env:TEMP\android-studio.zip" -DestinationPath "$env:USERPROFILE\AndroidStudioPortable" -Force
+   ```
+3. Launch it directly — no installer/admin needed:
+   ```
+   %USERPROFILE%\AndroidStudioPortable\android-studio\bin\studio64.exe
+   ```
+4. On first run, skip/decline importing settings from the old install if
+   asked, then open `companion/android`.
+5. If Gradle JDK isn't auto-detected, set it again as above (**Settings >
+   Build, Execution, Deployment > Build Tools > Gradle** → Gradle JDK → your
+   portable JDK 17).
+6. Sync, then confirm **File > Project Structure > SDK Location** shows your
+   Android SDK path (e.g. `%LOCALAPPDATA%\Android\Sdk`) and that
+   `platform-tools\adb.exe` exists there. Run/Debug should now work.
+
+You can keep the old Android Studio installed; the portable copy is
+independent and doesn't touch it.
+
 ## Privacy boundary
 
 The companion reads only exercise session records and uploads only:

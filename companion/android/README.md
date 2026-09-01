@@ -45,6 +45,14 @@ that is normally caused by opening without the wrapper / with an old Gradle runt
    - Set Gradle to **Use Gradle from: gradle-wrapper.properties**.
 3. Sync project again.
 
+> **Note:** Older Android Studio releases (e.g. 2020.3) bundle a **Java 11 JRE**
+> (`...\Android Studio\jre`), not a JBR, and it isn't listed as a selectable
+> "Gradle JDK" until you add it. Use **Add JDK...** in that same dropdown and
+> browse to a Java 17+ install instead (see the corporate-proxy section below for
+> why a *portable* JDK 17 — not the bundled one — is required on networks with
+> TLS inspection, since you likely can't write to `C:\Program Files\...` without
+> admin rights to fix the bundled JRE's trust store).
+
 ### Corporate networks with a TLS-inspecting proxy (e.g. Zscaler)
 
 If the plugin-not-found error persists even with Java 17+/Gradle 8.9+ correctly
@@ -105,12 +113,35 @@ doesn't automatically use the OS/PAC proxy configuration the way `curl`/browsers
    ```
    (These are the standard, publicly documented Android SDK license hashes.)
 
-**For Android Studio itself:** its embedded JVM has its own separate `cacerts`, so
-run `import-zscaler-certs.ps1` against that JDK path too (or point Android Studio's
-"Gradle JDK" setting at your own portable JDK 17 instead), and add
-`-Djava.net.useSystemProxies=true` under **Settings > Build, Execution, Deployment
-> Build Tools > Gradle > Gradle JVM arguments** (or a `GRADLE_OPTS` env var), then
-re-sync.
+**For Android Studio itself:** its embedded JRE/JBR has its own separate `cacerts`
+and, on many corporate laptops, lives under `C:\Program Files\...` where you don't
+have write access without admin rights — so `import-zscaler-certs.ps1` will fail
+with `Access is denied` when pointed at it. Don't fight that; instead make Android
+Studio use your own portable, already-fixed JDK 17:
+
+1. Run `import-zscaler-certs.ps1` once against your **portable** JDK 17 (not
+   Android Studio's bundled one).
+2. In Android Studio: **Settings > Build, Execution, Deployment > Build Tools >
+   Gradle**, set **Gradle JDK** to **Add JDK...** and browse to that portable
+   JDK 17's folder.
+3. So the fix also applies without per-project settings, add these two lines to
+   your **global** `%USERPROFILE%\.gradle\gradle.properties` (create the file/
+   folder if needed — this is machine-local and not part of the repo):
+   ```properties
+   org.gradle.java.home=C:/path/to/your/portable/jdk-17
+   org.gradle.jvmargs=-Djava.net.useSystemProxies=true
+   ```
+   This makes both the IDE's Gradle sync/build **and** any `.\gradlew.bat` run
+   from a terminal use the fixed JDK and proxy setting automatically, with no
+   need to set `JAVA_HOME`/`GRADLE_OPTS` by hand each time (a plain user-level
+   `JAVA_HOME` environment variable pointing at the same JDK is still useful as
+   a fallback for other tools).
+4. Re-sync the project in Android Studio.
+
+This exact combination (portable JDK 17 with Zscaler CAs imported +
+`org.gradle.java.home` + `useSystemProxies=true` in the global `gradle.properties`)
+was verified to produce a successful `assembleDebug` build via both the Gradle
+wrapper and Android Studio's own project settings.
 
 ## Privacy boundary
 

@@ -56,17 +56,31 @@ $tempDir = Join-Path $env:TEMP "zscaler-certs"
 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
 $i = 0
+$failedDueToPermissions = $false
 foreach ($cert in $script:capturedElems) {
     if ($i -gt 0) {
         $file = Join-Path $tempDir "ca$i.cer"
         [IO.File]::WriteAllBytes($file, $cert.Export('Cert'))
         Write-Host "Importing CA cert: $($cert.Subject)"
-        & $keytool -importcert -alias "zscaler-ca-$i" -file $file -keystore $cacerts -storepass changeit -noprompt
+        $output = & $keytool -importcert -alias "zscaler-ca-$i" -file $file -keystore $cacerts -storepass changeit -noprompt 2>&1
+        Write-Host $output
+        if ($output -match "Access is denied") { $failedDueToPermissions = $true }
     }
     $i++
+}
+
+if ($failedDueToPermissions) {
+    Write-Warning "Import failed due to file permissions on '$cacerts'."
+    Write-Warning "This usually happens for JDKs under 'C:\Program Files\...' (e.g. Android Studio's bundled JRE) when you don't have admin rights."
+    Write-Warning "Use a portable JDK you own (e.g. under your user profile) instead - see README.md."
+    exit 1
 }
 
 Write-Host ""
 Write-Host "Done. Now build with:"
 Write-Host "  `$env:JAVA_HOME = '$JavaHome'"
 Write-Host "  `$env:GRADLE_OPTS = '-Djava.net.useSystemProxies=true'"
+Write-Host ""
+Write-Host "Or, to avoid setting env vars every time, add to %USERPROFILE%\.gradle\gradle.properties:"
+Write-Host "  org.gradle.java.home=$(($JavaHome -replace '\\','/'))"
+Write-Host "  org.gradle.jvmargs=-Djava.net.useSystemProxies=true"

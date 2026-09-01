@@ -23,6 +23,17 @@ Requires Node.js 22 or newer:
 SEED_ADMIN_EMAIL=admin@example.com SEED_ADMIN_PASSWORD='ChangeMe123!' node server.js
 ```
 
+On Windows, you can also run the local helper. It uses Node.js from `PATH` when available; otherwise it downloads a portable Node.js 24 runtime into `.tools/`.
+
+```powershell
+.\start-local.ps1
+```
+
+Then open `http://localhost:3000` and sign in with:
+
+- Email: `admin@example.com`
+- Password: `ChangeMe123!`
+
 ## Test in GitHub Enterprise
 GitHub-hosted runners are disabled for this repository, so the included GitHub Actions workflow targets a self-hosted runner.
 

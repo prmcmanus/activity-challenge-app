@@ -4,5 +4,7 @@ npm-debug.log*
 activity.sqlite
 *.sqlite
 *.sqlite-*
+.local-data/
+.tools/
 coverage/
 dist/

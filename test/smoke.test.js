@@ -427,8 +427,15 @@ test('the challenge owner can delete a team created by someone else, and it take
     headers: { cookie: bob.cookie, 'Content-Type': 'application/json' },
     body: JSON.stringify({ challenge_id: challengeId, name: 'Bobs Team' }),
   });
-  const { id: teamId } = await teamRes.json();
+  const { id: teamId, invite_code: teamCode } = await teamRes.json();
   await fetch(`${origin}/api/activities`, { method: 'POST', headers: { cookie: bob.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ team_id: teamId, challenge_id: challengeId, activity_type: 'Running', minutes: 15, activity_date: '2026-07-05' }) });
+
+  // Alice never joined this team (she's the challenge owner, not a member), but since she can
+  // manage it she should still see its invite code, not just members can.
+  const aliceView = await (await fetch(`${origin}/api/challenges/${challengeId}`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(aliceView.teams[0].mine, false);
+  assert.equal(aliceView.teams[0].canManage, true);
+  assert.equal(aliceView.teams[0].invite_code, teamCode);
 
   const del = await fetch(`${origin}/api/teams/${teamId}`, { method: 'DELETE', headers: { cookie: alice.cookie } });
   assert.equal(del.status, 200);

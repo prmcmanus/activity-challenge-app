@@ -90,7 +90,10 @@ function renderChallenge(){
     const actions=[];
     if(!t.mine)actions.push(`<button data-jointeam="${t.id}">Join</button>`);
     if(t.canManage)actions.push(`<button class="ghost" data-manageteam="${t.id}" data-name="${esc(t.name)}">Manage</button>`);
-    return `<div class="listrow"><div><b>${esc(t.name)}</b><div class="muted">${t.members} member(s)${t.mine?' · you are in this team'+(t.invite_code?` · code: <b>${esc(t.invite_code)}</b>`:''):''}</div></div><div class="btnrow">${actions.join('')}</div></div>`;
+    const bits=[`${t.members} member(s)`];
+    if(t.mine)bits.push('you are in this team');
+    if(t.invite_code)bits.push(`code: <b>${esc(t.invite_code)}</b>`);
+    return `<div class="listrow"><div><b>${esc(t.name)}</b><div class="muted">${bits.join(' · ')}</div></div><div class="btnrow">${actions.join('')}</div></div>`;
   }).join('')||'<p class="muted">No teams yet — create the first one.</p>';
   $all('[data-jointeam]').forEach(b=>b.onclick=async()=>{await api(`/api/teams/${b.dataset.jointeam}/join`,{method:'POST'});await refreshChallenge()});
   $all('[data-manageteam]').forEach(b=>b.onclick=()=>openTeamManage(Number(b.dataset.manageteam),b.dataset.name));

@@ -9,6 +9,7 @@ import androidx.health.connect.client.time.TimeRangeFilter
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 class HealthConnectSync(private val context: Context) {
     val permissions = setOf(HealthPermission.getReadPermission(ExerciseSessionRecord::class))
@@ -32,16 +33,23 @@ class HealthConnectSync(private val context: Context) {
             ),
         )
 
+        val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         return response.records.mapNotNull { record ->
             val minutes = Duration.between(record.startTime, record.endTime).toMinutes()
             if (minutes <= 0) return@mapNotNull null
+            val zonedStart = record.startTime.atZone(ZoneId.systemDefault())
+            val zonedEnd = record.endTime.atZone(ZoneId.systemDefault())
             HealthRecord(
                 teamId = teamId,
                 challengeId = challengeId,
                 activityType = "Exercise",
                 minutes = minutes,
-                activityDate = record.startTime.atZone(ZoneId.systemDefault()).toLocalDate().toString(),
+                activityDate = zonedStart.toLocalDate().toString(),
                 sourceRef = record.metadata.id.ifBlank { "${record.startTime}-${record.endTime}-${record.exerciseType}" },
+                // Only meaningful when the session doesn't cross midnight in the local zone - the
+                // server treats an inconsistent pair as "no times" rather than rejecting the sync.
+                startTime = zonedStart.format(timeFormatter),
+                endTime = zonedEnd.format(timeFormatter),
             )
         }
     }

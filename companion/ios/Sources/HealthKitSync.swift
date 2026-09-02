@@ -8,6 +8,8 @@ struct HealthRecord: Encodable {
     let minutes: Int
     let activityDate: String
     let sourceRef: String
+    let startTime: String
+    let endTime: String
 
     enum CodingKeys: String, CodingKey {
         case teamId = "team_id"
@@ -16,6 +18,8 @@ struct HealthRecord: Encodable {
         case minutes
         case activityDate = "activity_date"
         case sourceRef = "source_ref"
+        case startTime = "start_time"
+        case endTime = "end_time"
     }
 }
 
@@ -60,9 +64,12 @@ final class HealthKitSync {
             store.execute(query)
         }
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.timeZone = .current
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        dateFormatter.timeZone = .current
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "HH:mm"
+        timeFormatter.timeZone = .current
 
         return samples.compactMap { workout in
             let minutes = Int(workout.duration / 60)
@@ -72,8 +79,12 @@ final class HealthKitSync {
                 challengeId: challengeId,
                 activityType: workout.workoutActivityType.activeTogetherLabel,
                 minutes: minutes,
-                activityDate: formatter.string(from: workout.startDate),
-                sourceRef: workout.uuid.uuidString
+                activityDate: dateFormatter.string(from: workout.startDate),
+                sourceRef: workout.uuid.uuidString,
+                // Only meaningful when the workout doesn't cross midnight in the local zone - the
+                // server treats an inconsistent pair as "no times" rather than rejecting the sync.
+                startTime: timeFormatter.string(from: workout.startDate),
+                endTime: timeFormatter.string(from: workout.endDate)
             )
         }
     }

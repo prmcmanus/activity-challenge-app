@@ -82,6 +82,8 @@ function renderChallenge(){
   $('#challengeName').textContent=c.name;
   $('#challengeDates').textContent=`${c.start_date} → ${c.end_date} · YOUR ROLE: ${c.role.toUpperCase()}`;
   $('#challengeCode').innerHTML=`Invite code: <b>${esc(c.invite_code)}</b> — share it so others can join this challenge.`;
+  $('#challengeActions').innerHTML=c.canManage?'<button class="ghost" data-editchallenge="1">Edit challenge</button>':'';
+  if(c.canManage)$('[data-editchallenge]').onclick=()=>openEditChallenge(c);
   const mine=dash.challenges.find(x=>x.id===c.id);
   $('#myChMinutes').textContent=mine?mine.myMinutes:0;
   const myTeams=c.teams.filter(t=>t.mine);
@@ -100,7 +102,10 @@ function renderChallenge(){
   $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><b>${esc(t.name)}</b><span>${t.minutes} min</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
   $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader"><span class="rank">${i+1}</span><b>${esc(x.name)}</b><span>${x.minutes} min</span></div>`).join('')||'<p class="muted">No members yet.</p>';
   const recent=dash.mine.filter(a=>a.challenge_id===c.id);
-  $('#recent').innerHTML=recent.map(x=>`<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${esc(x.team_name)} · ${x.activity_date} · ${x.source}</div></div><div class="btnrow"><b>${x.minutes} min</b><button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></div></div>`).join('')||'<p class="muted">No activity logged yet in this challenge.</p>';
+  $('#recent').innerHTML=recent.map(x=>{
+    const timeBit=x.start_time&&x.end_time?` · ${x.start_time}–${x.end_time}`:'';
+    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${esc(x.team_name)} · ${x.activity_date}${timeBit} · ${x.source}</div></div><div class="btnrow"><b>${x.minutes} min</b><button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></div></div>`;
+  }).join('')||'<p class="muted">No activity logged yet in this challenge.</p>';
   $all('[data-editactivity]').forEach(b=>{const x=recent.find(a=>a.id===Number(b.dataset.editactivity));b.onclick=()=>openEditActivity(x)});
   $all('[data-delactivity]').forEach(b=>b.onclick=async()=>{
     if(!confirm('Delete this activity entry?'))return;
@@ -108,19 +113,51 @@ function renderChallenge(){
   });
 }
 
+function openEditChallenge(c){
+  $('#modalBody').innerHTML=`<h2>Edit challenge</h2>
+    <form id="editChallengeForm">
+      <label>Name<input id="ecName" value="${esc(c.name)}" required></label>
+      <div class="two"><label>Start<input id="ecStart" type="date" value="${c.start_date}" required></label><label>End<input id="ecEnd" type="date" value="${c.end_date}" required></label></div>
+      <button>Save changes</button>
+    </form>
+    <p id="ecMsg" class="error"></p>`;
+  $('#modal').showModal();
+  $('#editChallengeForm').onsubmit=async e=>{
+    e.preventDefault();
+    try{
+      await api(`/api/challenges/${c.id}`,{method:'PATCH',body:JSON.stringify({name:$('#ecName').value.trim(),start_date:$('#ecStart').value,end_date:$('#ecEnd').value})});
+      $('#modal').close();
+      await refreshChallenge();
+    }catch(x){$('#ecMsg').textContent=x.message}
+  };
+}
+
+// If both start and finish are set, minutes is derived from the gap between them and kept in
+// sync as either changes; leaving one or both blank leaves minutes as a plain manual entry.
+function minutesBetween(start,end){
+  if(!start||!end)return null;
+  const [sh,sm]=start.split(':').map(Number),[eh,em]=end.split(':').map(Number);
+  const diff=(eh*60+em)-(sh*60+sm);
+  return diff>0?diff:null;
+}
+
 function openEditActivity(x){
   $('#modalBody').innerHTML=`<h2>Edit activity</h2>
     <form id="editActivityForm">
       <label>Activity<input id="eaType" value="${esc(x.activity_type)}" required></label>
       <div class="two"><label>Minutes<input id="eaMinutes" type="number" min="1" value="${x.minutes}" required></label><label>Date<input id="eaDate" type="date" value="${x.activity_date}" required></label></div>
+      <div class="two"><label>Start time (optional)<input id="eaStart" type="time" value="${x.start_time||''}"></label><label>Finish time (optional)<input id="eaEnd" type="time" value="${x.end_time||''}"></label></div>
       <button>Save changes</button>
     </form>
     <p id="eaMsg" class="error"></p>`;
   $('#modal').showModal();
+  const recalc=()=>{const m=minutesBetween($('#eaStart').value,$('#eaEnd').value);if(m)$('#eaMinutes').value=m};
+  $('#eaStart').addEventListener('change',recalc);
+  $('#eaEnd').addEventListener('change',recalc);
   $('#editActivityForm').onsubmit=async e=>{
     e.preventDefault();
     try{
-      await api(`/api/activities/${x.id}`,{method:'PATCH',body:JSON.stringify({activity_type:$('#eaType').value,minutes:$('#eaMinutes').value,activity_date:$('#eaDate').value})});
+      await api(`/api/activities/${x.id}`,{method:'PATCH',body:JSON.stringify({activity_type:$('#eaType').value,minutes:$('#eaMinutes').value,activity_date:$('#eaDate').value,start_time:$('#eaStart').value,end_time:$('#eaEnd').value})});
       $('#modal').close();
       await refreshChallenge();
     }catch(err){$('#eaMsg').textContent=err.message}
@@ -218,7 +255,20 @@ $('#joinForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/join',{
 $('#newChallengeForm').onsubmit=async e=>{e.preventDefault();await api('/api/challenges',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});e.target.reset();await loadDashboard();renderHome()};
 $('#newTeamForm').onsubmit=async e=>{e.preventDefault();await api('/api/teams',{method:'POST',body:JSON.stringify({challenge_id:curChallenge.id,name:new FormData(e.target).get('name')})});e.target.reset();await refreshChallenge()};
 $('#activityDate').value=new Date().toISOString().slice(0,10);
-$('#activityForm').onsubmit=async e=>{e.preventDefault();const teamId=$('#team').value;if(!teamId){alert('Join a team first');return}await api('/api/activities',{method:'POST',body:JSON.stringify({team_id:teamId,challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,activity_date:$('#activityDate').value})});e.target.reset();$('#activityDate').value=new Date().toISOString().slice(0,10);await refreshChallenge()};
+$('#startTime').addEventListener('change',()=>{const m=minutesBetween($('#startTime').value,$('#endTime').value);if(m)$('#minutes').value=m});
+$('#endTime').addEventListener('change',()=>{const m=minutesBetween($('#startTime').value,$('#endTime').value);if(m)$('#minutes').value=m});
+$('#activityForm').onsubmit=async e=>{
+  e.preventDefault();
+  const teamId=$('#team').value;
+  if(!teamId){alert('Join a team first');return}
+  try{
+    await api('/api/activities',{method:'POST',body:JSON.stringify({team_id:teamId,challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,activity_date:$('#activityDate').value,start_time:$('#startTime').value,end_time:$('#endTime').value})});
+    $('#activityMsg').textContent='';
+    e.target.reset();
+    $('#activityDate').value=new Date().toISOString().slice(0,10);
+    await refreshChallenge();
+  }catch(x){$('#activityMsg').textContent=x.message}
+};
 $('#health').onclick=()=>{$('#modalBody').innerHTML='<h2>Phone activity sync</h2><p><b>Android:</b> use the native companion app to read exercise sessions from Health Connect after the user grants permission.</p><p><b>iPhone:</b> use the native iOS companion app to read workouts from Apple Health through HealthKit.</p><p>This web app already includes the authenticated <code>/api/health/import</code> endpoint and duplicate protection. Native projects, store declarations and explicit user consent are still required.</p>';$('#modal').showModal()};
 
 load();

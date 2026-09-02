@@ -203,6 +203,7 @@ The companion reads only exercise session records and uploads only:
 - activity type
 - whole minutes
 - activity date
+- clock start/finish time (only when the session doesn't cross midnight; otherwise omitted)
 - stable source reference
 
 It does not upload routes, heart rate, calories, medical records, GPS data, or raw Health Connect records.

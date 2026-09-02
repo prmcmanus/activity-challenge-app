@@ -74,6 +74,7 @@ The companion reads only workout records and uploads only:
 - activity type (a short label such as "Running" or "Cycling")
 - whole minutes
 - activity date
+- clock start/finish time (only when the workout doesn't cross midnight; otherwise omitted)
 - stable source reference (the workout's UUID)
 
 It does not upload routes, heart rate, calories, medical records, GPS data, or raw HealthKit samples.

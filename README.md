@@ -15,7 +15,9 @@ A dependency-free Node.js MVP for time-based team activity challenges.
 - Everyone can edit their own name/email/password (via My account); a global admin can edit any
   user's fields, including a password reset. Either kind of password change signs out that user's
   other sessions.
-- Anyone can edit or delete an activity entry they logged themselves
+- Anyone can edit or delete an activity entry they logged themselves, with an optional start/finish
+  time (auto-filling minutes) alongside the required date and duration
+- The challenge owner (or a global admin) can edit a challenge's name and dates
 - Time-based challenges and manual activity logging
 - SQLite persistence, password hashing, HTTP-only sessions and duplicate-safe health imports
 - Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes in
@@ -76,7 +78,7 @@ Health Connect and HealthKit are device-local native APIs. A normal website cann
 
 Example body:
 ```json
-{"source":"health_connect","records":[{"team_id":1,"challenge_id":1,"activity_type":"Walking","minutes":42,"activity_date":"2026-09-01","source_ref":"device-record-id"}]}
+{"source":"health_connect","records":[{"team_id":1,"challenge_id":1,"activity_type":"Walking","minutes":42,"activity_date":"2026-09-01","source_ref":"device-record-id","start_time":"07:00","end_time":"07:42"}]}
 ```
 
 ## Android companion app

@@ -838,3 +838,160 @@ test('an activity can be edited or deleted only by the person who logged it', as
   const missing = await fetch(`${origin}/api/activities/${activityId}`, { method: 'DELETE', headers: { cookie: alice.cookie } });
   assert.equal(missing.status, 404);
 });
+
+test('activities accept an optional start/finish time, validated as a matched, ordered pair', async () => {
+  const alice = await register('Alice Times');
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Times Challenge', start_date: '2026-10-01', end_date: '2026-10-31' }),
+  });
+  const { id: challengeId } = await challengeRes.json();
+  const teamRes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Times Team' }),
+  });
+  const { id: teamId } = await teamRes.json();
+  const base = { team_id: teamId, challenge_id: challengeId, activity_type: 'Walking', minutes: 30, activity_date: '2026-10-05' };
+
+  const onlyStart = await fetch(`${origin}/api/activities`, {
+    method: 'POST', headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...base, start_time: '07:00' }),
+  });
+  assert.equal(onlyStart.status, 400);
+
+  const backwards = await fetch(`${origin}/api/activities`, {
+    method: 'POST', headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...base, start_time: '08:00', end_time: '07:30' }),
+  });
+  assert.equal(backwards.status, 400);
+
+  const badFormat = await fetch(`${origin}/api/activities`, {
+    method: 'POST', headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...base, start_time: '7:00', end_time: '07:30' }),
+  });
+  assert.equal(badFormat.status, 400);
+
+  const good = await fetch(`${origin}/api/activities`, {
+    method: 'POST', headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...base, start_time: '07:00', end_time: '07:30' }),
+  });
+  assert.equal(good.status, 201);
+  const dashboard = await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: alice.cookie } })).json();
+  const logged = dashboard.mine.find(a => a.challenge_id === challengeId);
+  assert.equal(logged.start_time, '07:00');
+  assert.equal(logged.end_time, '07:30');
+
+  // Times can be edited, and cleared by sending both back empty.
+  const clear = await fetch(`${origin}/api/activities/${logged.id}`, {
+    method: 'PATCH', headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ start_time: '', end_time: '' }),
+  });
+  assert.equal(clear.status, 200);
+  const afterClear = (await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: alice.cookie } })).json()).mine.find(a => a.id === logged.id);
+  assert.equal(afterClear.start_time, null);
+  assert.equal(afterClear.end_time, null);
+});
+
+test('health import keeps a synced record even when its times are inconsistent, just without times', async () => {
+  const dana = await register('Dana ImportTimes');
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: dana.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Import Times Challenge', start_date: '2026-10-01', end_date: '2026-10-31' }),
+  });
+  const { id: challengeId } = await challengeRes.json();
+  const teamRes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: dana.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Import Times Team' }),
+  });
+  const { id: teamId } = await teamRes.json();
+  const auth = { authorization: `Bearer ${dana.token}` };
+
+  const importRes = await fetch(`${origin}/api/health/import`, {
+    method: 'POST',
+    headers: { ...auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source: 'health_connect',
+      records: [{
+        team_id: teamId, challenge_id: challengeId, activity_type: 'Running', minutes: 45,
+        activity_date: '2026-10-10', source_ref: 'overnight-session',
+        // A workout that crossed midnight: end < start as plain HH:MM, which fails the same
+        // validation a manual entry would - but a sync must not lose real minutes over it.
+        start_time: '23:30', end_time: '00:15',
+      }],
+    }),
+  });
+  assert.equal(importRes.status, 200);
+  assert.deepEqual(await importRes.json(), { added: 1, skipped: 0 });
+
+  const dashboard = await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: dana.cookie } })).json();
+  const imported = dashboard.mine.find(a => a.source_ref === 'overnight-session');
+  assert.equal(imported.minutes, 45);
+  assert.equal(imported.start_time, null);
+  assert.equal(imported.end_time, null);
+});
+
+test('a challenge owner can edit its name and dates; a plain member cannot', async () => {
+  const alice = await register('Alice ChallengeEditor');
+  const bob = await register('Bob ChallengeMember');
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Original Challenge Name', start_date: '2026-11-01', end_date: '2026-11-30' }),
+  });
+  const { id: challengeId, invite_code: challengeCode } = await challengeRes.json();
+  await fetch(`${origin}/api/join`, { method: 'POST', headers: { cookie: bob.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: challengeCode }) });
+
+  const bobView = await (await fetch(`${origin}/api/challenges/${challengeId}`, { headers: { cookie: bob.cookie } })).json();
+  assert.equal(bobView.canManage, false);
+  const aliceView = await (await fetch(`${origin}/api/challenges/${challengeId}`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(aliceView.canManage, true);
+
+  const forbidden = await fetch(`${origin}/api/challenges/${challengeId}`, {
+    method: 'PATCH',
+    headers: { cookie: bob.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Hijacked' }),
+  });
+  assert.equal(forbidden.status, 403);
+
+  const edit = await fetch(`${origin}/api/challenges/${challengeId}`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Renamed Challenge', start_date: '2026-11-05', end_date: '2026-12-05' }),
+  });
+  assert.equal(edit.status, 200);
+  const updated = await (await fetch(`${origin}/api/challenges/${challengeId}`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(updated.name, 'Renamed Challenge');
+  assert.equal(updated.start_date, '2026-11-05');
+  assert.equal(updated.end_date, '2026-12-05');
+
+  const missingDate = await fetch(`${origin}/api/challenges/${challengeId}`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ start_date: '' }),
+  });
+  assert.equal(missingDate.status, 400);
+
+  // A global admin can edit it too, even without being a member of this challenge.
+  const adminLogin = await fetch(`${origin}/api/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }),
+  });
+  const adminCookie = adminLogin.headers.get('set-cookie');
+  const adminEdit = await fetch(`${origin}/api/challenges/${challengeId}`, {
+    method: 'PATCH',
+    headers: { cookie: adminCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Renamed By Admin' }),
+  });
+  assert.equal(adminEdit.status, 200);
+
+  const missing = await fetch(`${origin}/api/challenges/999999`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Nobody' }),
+  });
+  assert.equal(missing.status, 404);
+});

@@ -10,7 +10,7 @@ data class TeamOption(val teamId: Int, val teamName: String, val challengeId: In
     override fun toString() = "$challengeName — $teamName"
 }
 data class Bootstrap(val teamOptions: List<TeamOption>)
-data class HealthRecord(val teamId: Int, val challengeId: Int, val activityType: String, val minutes: Long, val activityDate: String, val sourceRef: String)
+data class HealthRecord(val teamId: Int, val challengeId: Int, val activityType: String, val minutes: Long, val activityDate: String, val sourceRef: String, val startTime: String, val endTime: String)
 data class ImportResult(val added: Int, val skipped: Int)
 
 class ActiveTogetherApi(private val baseUrl: String) {
@@ -56,6 +56,8 @@ class ActiveTogetherApi(private val baseUrl: String) {
                     .put("minutes", it.minutes)
                     .put("activity_date", it.activityDate)
                     .put("source_ref", it.sourceRef)
+                    .put("start_time", it.startTime)
+                    .put("end_time", it.endTime)
             }))
         val response = request("/api/health/import", "POST", token, payload)
         return ImportResult(response.getInt("added"), response.getInt("skipped"))

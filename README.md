@@ -10,6 +10,8 @@ A dependency-free Node.js MVP for time-based team activity challenges.
 - One shared invite-code box handles both cases: a challenge code joins the challenge (pick a team
   once inside, or create one); a team code joins that team and its parent challenge in one step
 - Per-challenge leaderboards, both by team and by individual member
+- Team admins/challenge owners can rename or delete a team, add an existing user to it directly by
+  email, or remove someone from it
 - Time-based challenges and manual activity logging
 - SQLite persistence, password hashing, HTTP-only sessions and duplicate-safe health imports
 - Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes in

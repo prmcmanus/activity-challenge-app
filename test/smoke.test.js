@@ -319,6 +319,99 @@ test('a team admin can rename their team; a plain member cannot rename or delete
   assert.equal(bobView.teams[0].canManage, false);
 });
 
+test('a team admin can add an existing user by email and remove members; a plain member cannot', async () => {
+  const alice = await register('Alice ManagerA');
+  const dave = await register('Dave AddedByEmail');
+  const bob = await register('Bob PlainMemberB');
+
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Roster Challenge', start_date: '2026-08-01', end_date: '2026-08-31' }),
+  });
+  const { id: challengeId, invite_code: challengeCode } = await challengeRes.json();
+  const teamRes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Roster Team' }),
+  });
+  const { id: teamId } = await teamRes.json();
+  await fetch(`${origin}/api/join`, { method: 'POST', headers: { cookie: bob.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: challengeCode }) });
+  await fetch(`${origin}/api/teams/${teamId}/join`, { method: 'POST', headers: { cookie: bob.cookie } });
+
+  // Dave has no account with this made-up email yet — adding him should fail clearly.
+  const noAccount = await fetch(`${origin}/api/teams/${teamId}/members`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'nobody-registered@example.com' }),
+  });
+  assert.equal(noAccount.status, 404);
+
+  // A plain member (Bob) cannot add people either, even though he's in the team.
+  const forbiddenAdd = await fetch(`${origin}/api/teams/${teamId}/members`, {
+    method: 'POST',
+    headers: { cookie: bob.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: dave.email }),
+  });
+  assert.equal(forbiddenAdd.status, 403);
+
+  // Alice (team admin) adds Dave directly by his registered email — no invite acceptance needed.
+  const add = await fetch(`${origin}/api/teams/${teamId}/members`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: dave.email }),
+  });
+  assert.equal(add.status, 201);
+  assert.equal((await add.json()).user.email, dave.email);
+
+  // Dave can now see the challenge and is already in the team, with no action of his own.
+  const daveDashboard = await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: dave.cookie } })).json();
+  const daveChallenge = daveDashboard.challenges.find(c => c.id === challengeId);
+  assert.ok(daveChallenge, 'adding by email should also grant challenge membership');
+  assert.equal(daveChallenge.teams[0].id, teamId);
+
+  // The roster is visible to any team member (Bob), but only managers may act on it.
+  const rosterAsBob = await (await fetch(`${origin}/api/teams/${teamId}/members`, { headers: { cookie: bob.cookie } })).json();
+  assert.equal(rosterAsBob.canManage, false);
+  assert.equal(rosterAsBob.members.length, 3);
+
+  const rosterAsAlice = await (await fetch(`${origin}/api/teams/${teamId}/members`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(rosterAsAlice.canManage, true);
+  const daveMember = rosterAsAlice.members.find(m => m.email === dave.email);
+
+  // Bob cannot remove Dave.
+  const forbiddenRemove = await fetch(`${origin}/api/teams/${teamId}/members/${daveMember.id}`, { method: 'DELETE', headers: { cookie: bob.cookie } });
+  assert.equal(forbiddenRemove.status, 403);
+
+  // Alice removes Dave from the team; he keeps his challenge membership.
+  const remove = await fetch(`${origin}/api/teams/${teamId}/members/${daveMember.id}`, { method: 'DELETE', headers: { cookie: alice.cookie } });
+  assert.equal(remove.status, 200);
+  const rosterAfter = await (await fetch(`${origin}/api/teams/${teamId}/members`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(rosterAfter.members.length, 2);
+  const daveChallengeAfter = (await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: dave.cookie } })).json()).challenges.find(c => c.id === challengeId);
+  assert.ok(daveChallengeAfter, 'removing from the team should not remove challenge membership');
+  assert.equal(daveChallengeAfter.teams.length, 0);
+});
+
+test('someone outside a team cannot view its member roster', async () => {
+  const alice = await register('Alice RosterPrivate');
+  const outsider = await register('Outsider RosterPrivate');
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Private Roster Challenge', start_date: '2026-08-01', end_date: '2026-08-31' }),
+  });
+  const { id: challengeId } = await challengeRes.json();
+  const teamRes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Secret Team' }),
+  });
+  const { id: teamId } = await teamRes.json();
+  const forbidden = await fetch(`${origin}/api/teams/${teamId}/members`, { headers: { cookie: outsider.cookie } });
+  assert.equal(forbidden.status, 403);
+});
+
 test('the challenge owner can delete a team created by someone else, and it takes its activity with it', async () => {
   const alice = await register('Alice ChallengeOwner');
   const bob = await register('Bob TeamCreator');

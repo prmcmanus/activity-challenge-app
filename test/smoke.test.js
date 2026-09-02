@@ -635,3 +635,206 @@ test('the general per-IP API rate limit applies across endpoints', async () => {
     await srv.stop();
   }
 });
+
+test('a user can edit their own name freely, but changing email or password requires the current password', async () => {
+  const alice = await register('Alice Profile');
+
+  const renameOnly = await fetch(`${origin}/api/me`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Alice Renamed' }),
+  });
+  assert.equal(renameOnly.status, 200);
+  assert.equal((await renameOnly.json()).user.name, 'Alice Renamed');
+
+  const newEmail = `alice.new.${Date.now()}@example.com`;
+  const noPassword = await fetch(`${origin}/api/me`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: newEmail }),
+  });
+  assert.equal(noPassword.status, 400);
+
+  const wrongPassword = await fetch(`${origin}/api/me`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: newEmail, currentPassword: 'wrong-password' }),
+  });
+  assert.equal(wrongPassword.status, 400);
+
+  const rightPassword = await fetch(`${origin}/api/me`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: newEmail, currentPassword: 'SuperSecret123!' }),
+  });
+  assert.equal(rightPassword.status, 200);
+  assert.equal((await rightPassword.json()).user.email, newEmail);
+
+  // The now-changed email can sign in with the original password.
+  const login = await fetch(`${origin}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: newEmail, password: 'SuperSecret123!' }),
+  });
+  assert.equal(login.status, 200);
+});
+
+test('changing your own password invalidates other sessions but not the one making the change', async () => {
+  const alice = await register('Alice TwoSessions');
+  const secondLogin = await fetch(`${origin}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: alice.email, password: 'SuperSecret123!' }),
+  });
+  const secondCookie = secondLogin.headers.get('set-cookie').split(';')[0];
+  assert.equal((await fetch(`${origin}/api/me`, { headers: { cookie: secondCookie } })).status, 200);
+
+  const change = await fetch(`${origin}/api/me`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ newPassword: 'BrandNewPassword123', currentPassword: 'SuperSecret123!' }),
+  });
+  assert.equal(change.status, 200);
+
+  // The session that made the change still works...
+  const stillIn = await fetch(`${origin}/api/me`, { headers: { cookie: alice.cookie } });
+  assert.equal(stillIn.status, 200);
+  assert.notEqual((await stillIn.json()).user, null);
+
+  // ...but the other, older session was signed out by the password change.
+  const loggedOut = await fetch(`${origin}/api/me`, { headers: { cookie: secondCookie } });
+  const loggedOutBody = await loggedOut.json();
+  assert.equal(loggedOutBody.user, null);
+
+  // The new password works; the old one no longer does.
+  const newLogin = await fetch(`${origin}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: alice.email, password: 'BrandNewPassword123' }),
+  });
+  assert.equal(newLogin.status, 200);
+  const oldLogin = await fetch(`${origin}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: alice.email, password: 'SuperSecret123!' }),
+  });
+  assert.equal(oldLogin.status, 401);
+});
+
+test('a global admin can edit any user, including a password reset that signs them out everywhere', async () => {
+  const bob = await register('Bob AdminEdited');
+
+  const adminLogin = await fetch(`${origin}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }),
+  });
+  const adminCookie = adminLogin.headers.get('set-cookie');
+
+  const bobUsers = await (await fetch(`${origin}/api/admin/users`, { headers: { cookie: adminCookie } })).json();
+  const bobId = bobUsers.users.find(u => u.email === bob.email).id;
+
+  const notAdmin = await fetch(`${origin}/api/admin/users/${bobId}`, {
+    method: 'PATCH',
+    headers: { cookie: bob.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Should Not Work' }),
+  });
+  assert.equal(notAdmin.status, 403);
+
+  const edit = await fetch(`${origin}/api/admin/users/${bobId}`, {
+    method: 'PATCH',
+    headers: { cookie: adminCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Bob Renamed By Admin', password: 'AdminSetPassword123' }),
+  });
+  assert.equal(edit.status, 200);
+
+  // Bob's existing session is now dead - the admin reset his password.
+  const bobsSession = await fetch(`${origin}/api/me`, { headers: { cookie: bob.cookie } });
+  assert.equal((await bobsSession.json()).user, null);
+
+  const bobLoginOld = await fetch(`${origin}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: bob.email, password: 'SuperSecret123!' }),
+  });
+  assert.equal(bobLoginOld.status, 401);
+  const bobLoginNew = await fetch(`${origin}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: bob.email, password: 'AdminSetPassword123' }),
+  });
+  assert.equal(bobLoginNew.status, 200);
+  assert.equal((await bobLoginNew.json()).user.name, 'Bob Renamed By Admin');
+
+  const missing = await fetch(`${origin}/api/admin/users/999999`, {
+    method: 'PATCH',
+    headers: { cookie: adminCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Nobody' }),
+  });
+  assert.equal(missing.status, 404);
+});
+
+test('an activity can be edited or deleted only by the person who logged it', async () => {
+  const alice = await register('Alice ActivityOwner');
+  const bob = await register('Bob NotOwner');
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Activity Edit Challenge', start_date: '2026-09-01', end_date: '2026-09-30' }),
+  });
+  const { id: challengeId, invite_code: challengeCode } = await challengeRes.json();
+  const teamRes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Activity Edit Team' }),
+  });
+  const { id: teamId } = await teamRes.json();
+  await fetch(`${origin}/api/join`, { method: 'POST', headers: { cookie: bob.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: challengeCode }) });
+  await fetch(`${origin}/api/teams/${teamId}/join`, { method: 'POST', headers: { cookie: bob.cookie } });
+
+  const logged = await fetch(`${origin}/api/activities`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ team_id: teamId, challenge_id: challengeId, activity_type: 'Walking', minutes: 20, activity_date: '2026-09-05' }),
+  });
+  assert.equal(logged.status, 201);
+  const dashboardAfterLog = await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: alice.cookie } })).json();
+  const activityId = dashboardAfterLog.mine.find(a => a.challenge_id === challengeId).id;
+
+  // Bob cannot edit or delete Alice's activity.
+  const forbiddenEdit = await fetch(`${origin}/api/activities/${activityId}`, {
+    method: 'PATCH',
+    headers: { cookie: bob.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ minutes: 999 }),
+  });
+  assert.equal(forbiddenEdit.status, 403);
+  const forbiddenDelete = await fetch(`${origin}/api/activities/${activityId}`, { method: 'DELETE', headers: { cookie: bob.cookie } });
+  assert.equal(forbiddenDelete.status, 403);
+
+  // Alice can edit it - fixing the minutes and activity type.
+  const edit = await fetch(`${origin}/api/activities/${activityId}`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ activity_type: 'Running', minutes: 35 }),
+  });
+  assert.equal(edit.status, 200);
+  const board = await (await fetch(`${origin}/api/challenges/${challengeId}/leaderboard`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(board.teams[0].minutes, 35);
+
+  // Invalid edits are rejected.
+  const badEdit = await fetch(`${origin}/api/activities/${activityId}`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ minutes: 0 }),
+  });
+  assert.equal(badEdit.status, 400);
+
+  // Alice deletes it; it disappears from the leaderboard entirely.
+  const del = await fetch(`${origin}/api/activities/${activityId}`, { method: 'DELETE', headers: { cookie: alice.cookie } });
+  assert.equal(del.status, 200);
+  const boardAfter = await (await fetch(`${origin}/api/challenges/${challengeId}/leaderboard`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(boardAfter.teams[0].minutes, 0);
+
+  const missing = await fetch(`${origin}/api/activities/${activityId}`, { method: 'DELETE', headers: { cookie: alice.cookie } });
+  assert.equal(missing.status, 404);
+});

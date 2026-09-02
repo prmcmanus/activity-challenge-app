@@ -98,6 +98,10 @@ function teamAccess(uid,tid){return db.prepare('SELECT team_role FROM team_membe
 function challengeAccess(uid,cid){return db.prepare('SELECT challenge_role FROM challenge_members WHERE user_id=? AND challenge_id=?').get(uid,cid)}
 // A team's own admin, the owner of its parent challenge, or a global admin may rename/delete it.
 function canManageTeam(u,team){if(u.role==='global_admin')return true;if(teamAccess(u.id,team.id)?.team_role==='team_admin')return true;return challengeAccess(u.id,team.challenge_id)?.challenge_role==='owner'}
+// Shared by self-service PATCH /api/me and admin PATCH /api/admin/users/:id. Role is deliberately
+// not handled here - only the admin route may touch it, so a self-service caller can never grant
+// themselves admin.
+function updateUserFields(id,{name,email,passwordHash}){const sets=[],params=[];if(name!==undefined){sets.push('name=?');params.push(name)}if(email!==undefined){sets.push('email=?');params.push(email)}if(passwordHash!==undefined){sets.push('password_hash=?');params.push(passwordHash)}if(!sets.length)return false;params.push(id);db.prepare(`UPDATE users SET ${sets.join(',')} WHERE id=?`).run(...params);return true}
 
 function dashboard(uid){
   const challenges=db.prepare(`SELECT c.id,c.name,c.start_date,c.end_date,c.active,c.invite_code,cm.challenge_role FROM challenges c JOIN challenge_members cm ON cm.challenge_id=c.id WHERE cm.user_id=? ORDER BY c.start_date DESC`).all(uid);
@@ -141,6 +145,26 @@ async function api(req,res,url){
  }
  if(m==='POST'&&url.pathname==='/api/logout'){if(u){const t=sessionToken(req);db.prepare('DELETE FROM sessions WHERE token_hash=?').run(crypto.createHash('sha256').update(t).digest('hex'))}return send(res,200,{ok:true},{'Set-Cookie':'session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})}
  if(m==='GET'&&url.pathname==='/api/me')return send(res,200,{user:u});
+ if(m==='PATCH'&&url.pathname==='/api/me'){
+   if(!need(res,u))return;
+   const b=await body(req);
+   const name=b.name!==undefined?String(b.name).trim():undefined;
+   if(name!==undefined&&!name)return send(res,400,{error:'Name cannot be empty'});
+   const email=b.email!==undefined?String(b.email).toLowerCase().trim():undefined;
+   if(email!==undefined&&!email)return send(res,400,{error:'Email cannot be empty'});
+   const changingSensitive=email!==undefined||!!b.newPassword;
+   if(changingSensitive){
+     const current=db.prepare('SELECT password_hash FROM users WHERE id=?').get(u.id);
+     if(!b.currentPassword||!verify(b.currentPassword,current.password_hash))return send(res,400,{error:'Current password is required and must be correct to change your email or password'});
+   }
+   let passwordHash;
+   if(b.newPassword){if(String(b.newPassword).length<8)return send(res,400,{error:'New password must be at least 8 characters'});passwordHash=hash(b.newPassword)}
+   try{
+     if(!updateUserFields(u.id,{name,email,passwordHash}))return send(res,400,{error:'Nothing to update'});
+   }catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
+   if(passwordHash){const t=sessionToken(req);db.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash!=?').run(u.id,crypto.createHash('sha256').update(t).digest('hex'))}
+   return send(res,200,{ok:true,user:db.prepare('SELECT id,email,name,role FROM users WHERE id=?').get(u.id)});
+ }
  if(m==='GET'&&url.pathname==='/api/dashboard'){if(!need(res,u))return;return send(res,200,{user:u,...dashboard(u.id)})}
  if(m==='GET'&&url.pathname==='/api/mobile/bootstrap'){if(!need(res,u))return;return send(res,200,{user:u,...dashboard(u.id),health:{healthConnect:{platform:'Android',mode:'native-companion-required'},healthKit:{platform:'iOS',mode:'native-companion-required'},acceptedRecord:'exercise session duration',uploadEndpoint:'/api/health/import'}})}
 
@@ -161,10 +185,49 @@ async function api(req,res,url){
  if(m==='POST'&&url.pathname==='/api/invites/accept'){if(!need(res,u))return;const b=await body(req),inv=db.prepare("SELECT * FROM invites WHERE token=? AND accepted_at IS NULL AND expires_at>datetime('now')").get(b.token);if(!inv)return send(res,400,{error:'Invite invalid or expired'});if(inv.email!==u.email)return send(res,403,{error:'This invite was issued to another email address'});const team=db.prepare('SELECT challenge_id FROM teams WHERE id=?').get(inv.team_id);db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(team.challenge_id,u.id);db.prepare('INSERT OR REPLACE INTO team_members(team_id,user_id,team_role) VALUES(?,?,?)').run(inv.team_id,u.id,inv.team_role);db.prepare("UPDATE invites SET accepted_at=datetime('now') WHERE id=?").run(inv.id);return send(res,200,{ok:true,challengeId:team.challenge_id,teamId:inv.team_id})}
 
  if(m==='POST'&&url.pathname==='/api/activities'){if(!need(res,u))return;const b=await body(req),teamId=Number(b.team_id),challengeId=Number(b.challenge_id),team=db.prepare('SELECT challenge_id FROM teams WHERE id=?').get(teamId);if(!team||team.challenge_id!==challengeId)return send(res,400,{error:'That team is not part of this challenge'});if(!teamAccess(u.id,teamId))return send(res,403,{error:'You are not in this team'});try{db.prepare('INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,activity_date,source,source_ref) VALUES(?,?,?,?,?,?,?,?)').run(u.id,teamId,challengeId,b.activity_type,Number(b.minutes),b.activity_date,b.source||'manual',b.source_ref||null);return send(res,201,{ok:true})}catch(e){return send(res,400,{error:'Invalid or duplicate activity'})}}
+ // Only the person who logged an entry may edit or delete it - team_id/challenge_id are
+ // intentionally not editable here, so "fixing" an entry never re-attributes it elsewhere.
+ if(m==='PATCH'&&url.pathname.match(/^\/api\/activities\/\d+$/)){
+   if(!need(res,u))return;
+   const id=Number(url.pathname.split('/')[3]),existing=db.prepare('SELECT * FROM activities WHERE id=?').get(id);
+   if(!existing)return send(res,404,{error:'Activity not found'});
+   if(existing.user_id!==u.id)return send(res,403,{error:'You can only edit your own activity'});
+   const b=await body(req);
+   const activity_type=b.activity_type!==undefined?String(b.activity_type).trim():existing.activity_type;
+   const minutes=b.minutes!==undefined?Number(b.minutes):existing.minutes;
+   const activity_date=b.activity_date!==undefined?b.activity_date:existing.activity_date;
+   if(!activity_type||!Number.isFinite(minutes)||minutes<=0||!activity_date)return send(res,400,{error:'Invalid activity fields'});
+   db.prepare('UPDATE activities SET activity_type=?,minutes=?,activity_date=? WHERE id=?').run(activity_type,minutes,activity_date,id);
+   return send(res,200,{ok:true});
+ }
+ if(m==='DELETE'&&url.pathname.match(/^\/api\/activities\/\d+$/)){
+   if(!need(res,u))return;
+   const id=Number(url.pathname.split('/')[3]),existing=db.prepare('SELECT * FROM activities WHERE id=?').get(id);
+   if(!existing)return send(res,404,{error:'Activity not found'});
+   if(existing.user_id!==u.id)return send(res,403,{error:'You can only delete your own activity'});
+   db.prepare('DELETE FROM activities WHERE id=?').run(id);
+   return send(res,200,{ok:true});
+ }
 
  if(m==='GET'&&url.pathname==='/api/admin/users'){if(!need(res,u,['global_admin']))return;return send(res,200,{users:db.prepare('SELECT id,email,name,role,created_at FROM users ORDER BY name').all()})}
  if(m==='POST'&&url.pathname==='/api/admin/users'){if(!need(res,u,['global_admin']))return;const b=await body(req);try{const r=db.prepare('INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,?)').run(String(b.email).toLowerCase(),b.name,hash(b.password),b.role||'member');return send(res,201,{id:Number(r.lastInsertRowid)})}catch(e){return send(res,400,{error:'Email already exists or fields are invalid'})}}
- if(m==='PATCH'&&url.pathname.match(/^\/api\/admin\/users\/\d+$/)){if(!need(res,u,['global_admin']))return;const id=Number(url.pathname.split('/').pop()),b=await body(req);db.prepare('UPDATE users SET role=? WHERE id=?').run(b.role,id);return send(res,200,{ok:true})}
+ if(m==='PATCH'&&url.pathname.match(/^\/api\/admin\/users\/\d+$/)){
+   if(!need(res,u,['global_admin']))return;
+   const id=Number(url.pathname.split('/').pop()),b=await body(req);
+   if(!db.prepare('SELECT id FROM users WHERE id=?').get(id))return send(res,404,{error:'User not found'});
+   const name=b.name!==undefined?String(b.name).trim():undefined;
+   if(name!==undefined&&!name)return send(res,400,{error:'Name cannot be empty'});
+   const email=b.email!==undefined?String(b.email).toLowerCase().trim():undefined;
+   if(email!==undefined&&!email)return send(res,400,{error:'Email cannot be empty'});
+   let passwordHash;
+   if(b.password){if(String(b.password).length<8)return send(res,400,{error:'Password must be at least 8 characters'});passwordHash=hash(b.password)}
+   try{
+     updateUserFields(id,{name,email,passwordHash});
+     if(b.role!==undefined)db.prepare('UPDATE users SET role=? WHERE id=?').run(b.role,id);
+   }catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
+   if(passwordHash)db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+   return send(res,200,{ok:true})
+ }
 
  if(m==='GET'&&url.pathname==='/api/health/status'){if(!need(res,u))return;return send(res,200,{healthConnect:{platform:'Android',mode:'native-companion-required'},healthKit:{platform:'iOS',mode:'native-companion-required'},acceptedRecord:'exercise session duration',uploadEndpoint:'/api/health/import'})}
  if(m==='POST'&&url.pathname==='/api/health/import'){if(!need(res,u))return;const b=await body(req);if(!Array.isArray(b.records))return send(res,400,{error:'records array required'});if(!['health_connect','health_kit'].includes(b.source))return send(res,400,{error:'source must be health_connect or health_kit'});let added=0,skipped=0;for(const x of b.records){const teamId=Number(x.team_id),challengeId=Number(x.challenge_id),minutes=Number(x.minutes),team=db.prepare('SELECT challenge_id FROM teams WHERE id=?').get(teamId);if(!team||team.challenge_id!==challengeId||!teamAccess(u.id,teamId)||!Number.isInteger(minutes)||minutes<=0||!x.activity_date||!x.source_ref){skipped++;continue}try{db.prepare('INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,activity_date,source,source_ref) VALUES(?,?,?,?,?,?,?,?)').run(u.id,teamId,challengeId,x.activity_type||'Synced activity',minutes,x.activity_date,b.source,x.source_ref);added++}catch(e){skipped++}}return send(res,200,{added,skipped})}

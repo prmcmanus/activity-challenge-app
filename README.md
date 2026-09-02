@@ -12,6 +12,10 @@ A dependency-free Node.js MVP for time-based team activity challenges.
 - Per-challenge leaderboards, both by team and by individual member
 - Team admins/challenge owners can rename or delete a team, add an existing user to it directly by
   email, or remove someone from it
+- Everyone can edit their own name/email/password (via My account); a global admin can edit any
+  user's fields, including a password reset. Either kind of password change signs out that user's
+  other sessions.
+- Anyone can edit or delete an activity entry they logged themselves
 - Time-based challenges and manual activity logging
 - SQLite persistence, password hashing, HTTP-only sessions and duplicate-safe health imports
 - Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes in

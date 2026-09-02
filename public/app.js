@@ -33,8 +33,8 @@ initRecaptcha();
 
 async function load(){
   const m=await api('/api/me'); me=m.user;
-  if(!me){$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');renderAuth();return}
-  $('#authSection').classList.add('hidden');$('#app').classList.remove('hidden');$('#logout').classList.remove('hidden');
+  if(!me){$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');renderAuth();return}
+  $('#authSection').classList.add('hidden');$('#app').classList.remove('hidden');$('#logout').classList.remove('hidden');$('#myAccount').classList.remove('hidden');
   if(pendingInviteToken){try{await api('/api/invites/accept',{method:'POST',body:JSON.stringify({token:pendingInviteToken})})}catch(e){alert(e.message)}pendingInviteToken=null}
   if(pendingCode){try{await api('/api/join',{method:'POST',body:JSON.stringify({code:pendingCode})})}catch(e){alert(e.message)}pendingCode=null}
   await loadDashboard();
@@ -100,7 +100,31 @@ function renderChallenge(){
   $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><b>${esc(t.name)}</b><span>${t.minutes} min</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
   $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader"><span class="rank">${i+1}</span><b>${esc(x.name)}</b><span>${x.minutes} min</span></div>`).join('')||'<p class="muted">No members yet.</p>';
   const recent=dash.mine.filter(a=>a.challenge_id===c.id);
-  $('#recent').innerHTML=recent.map(x=>`<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${esc(x.team_name)} · ${x.activity_date} · ${x.source}</div></div><b>${x.minutes} min</b></div>`).join('')||'<p class="muted">No activity logged yet in this challenge.</p>';
+  $('#recent').innerHTML=recent.map(x=>`<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${esc(x.team_name)} · ${x.activity_date} · ${x.source}</div></div><div class="btnrow"><b>${x.minutes} min</b><button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></div></div>`).join('')||'<p class="muted">No activity logged yet in this challenge.</p>';
+  $all('[data-editactivity]').forEach(b=>{const x=recent.find(a=>a.id===Number(b.dataset.editactivity));b.onclick=()=>openEditActivity(x)});
+  $all('[data-delactivity]').forEach(b=>b.onclick=async()=>{
+    if(!confirm('Delete this activity entry?'))return;
+    try{await api(`/api/activities/${b.dataset.delactivity}`,{method:'DELETE'});await refreshChallenge()}catch(e){alert(e.message)}
+  });
+}
+
+function openEditActivity(x){
+  $('#modalBody').innerHTML=`<h2>Edit activity</h2>
+    <form id="editActivityForm">
+      <label>Activity<input id="eaType" value="${esc(x.activity_type)}" required></label>
+      <div class="two"><label>Minutes<input id="eaMinutes" type="number" min="1" value="${x.minutes}" required></label><label>Date<input id="eaDate" type="date" value="${x.activity_date}" required></label></div>
+      <button>Save changes</button>
+    </form>
+    <p id="eaMsg" class="error"></p>`;
+  $('#modal').showModal();
+  $('#editActivityForm').onsubmit=async e=>{
+    e.preventDefault();
+    try{
+      await api(`/api/activities/${x.id}`,{method:'PATCH',body:JSON.stringify({activity_type:$('#eaType').value,minutes:$('#eaMinutes').value,activity_date:$('#eaDate').value})});
+      $('#modal').close();
+      await refreshChallenge();
+    }catch(err){$('#eaMsg').textContent=err.message}
+  };
 }
 
 async function openTeamManage(tid,tname){
@@ -134,10 +158,59 @@ async function openTeamManage(tid,tname){
 }
 
 async function renderAdmin(){
-  const u=await api('/api/admin/users');
-  $('#adminPanel').innerHTML=`<form id="newUser" class="adminform"><label>Name<input name="name" required></label><label>Email<input name="email" type="email" required></label><label>Temporary password<input name="password" required></label><label>Role<select name="role"><option value="member">Member</option><option value="global_admin">Global admin</option></select></label><button>Create user</button></form>`+u.users.map(x=>`<div class="listrow"><span><b>${esc(x.name)}</b><small class="muted"> · ${esc(x.email)}</small></span><span>${esc(x.role)}</span></div>`).join('');
+  const data=await api('/api/admin/users');
+  $('#adminPanel').innerHTML=`<form id="newUser" class="adminform"><label>Name<input name="name" required></label><label>Email<input name="email" type="email" required></label><label>Temporary password<input name="password" required></label><label>Role<select name="role"><option value="member">Member</option><option value="global_admin">Global admin</option></select></label><button>Create user</button></form>`+data.users.map(x=>`<div class="listrow"><span><b>${esc(x.name)}</b><small class="muted"> · ${esc(x.email)}</small></span><span class="btnrow"><span class="muted">${esc(x.role)}</span><button class="ghost" data-edituser="${x.id}">Edit</button></span></div>`).join('');
   $('#newUser').onsubmit=async e=>{e.preventDefault();await api('/api/admin/users',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});renderAdmin()};
+  $all('[data-edituser]').forEach(b=>{const x=data.users.find(x2=>x2.id===Number(b.dataset.edituser));b.onclick=()=>openEditUser(x)});
 }
+
+function openEditUser(x){
+  $('#modalBody').innerHTML=`<h2>Edit ${esc(x.name)}</h2>
+    <form id="editUserForm">
+      <label>Name<input id="euName" value="${esc(x.name)}" required></label>
+      <label>Email<input id="euEmail" type="email" value="${esc(x.email)}" required></label>
+      <label>Role<select id="euRole"><option value="member"${x.role==='member'?' selected':''}>Member</option><option value="global_admin"${x.role==='global_admin'?' selected':''}>Global admin</option></select></label>
+      <label>Reset password (leave blank to keep current)<input id="euPassword" type="password" minlength="8"></label>
+      <button>Save changes</button>
+    </form>
+    <p id="euMsg" class="error"></p>`;
+  $('#modal').showModal();
+  $('#editUserForm').onsubmit=async e=>{
+    e.preventDefault();
+    const payload={name:$('#euName').value.trim(),email:$('#euEmail').value.trim(),role:$('#euRole').value};
+    const pw=$('#euPassword').value;
+    if(pw)payload.password=pw;
+    try{await api(`/api/admin/users/${x.id}`,{method:'PATCH',body:JSON.stringify(payload)});$('#modal').close();renderAdmin()}catch(err){$('#euMsg').textContent=err.message}
+  };
+}
+
+function openMyAccount(){
+  $('#modalBody').innerHTML=`<h2>My account</h2>
+    <form id="accountForm">
+      <label>Name<input id="acctName" value="${esc(me.name)}" required></label>
+      <label>Email<input id="acctEmail" type="email" value="${esc(me.email)}" required></label>
+      <label>New password (leave blank to keep current)<input id="acctNewPassword" type="password" minlength="8"></label>
+      <label>Current password (required to change email or password)<input id="acctCurrentPassword" type="password"></label>
+      <button>Save changes</button>
+    </form>
+    <p id="acctMsg" class="error"></p>`;
+  $('#modal').showModal();
+  $('#accountForm').onsubmit=async e=>{
+    e.preventDefault();
+    const payload={name:$('#acctName').value.trim(),email:$('#acctEmail').value.trim()};
+    const newPassword=$('#acctNewPassword').value;
+    if(newPassword)payload.newPassword=newPassword;
+    const currentPassword=$('#acctCurrentPassword').value;
+    if(currentPassword)payload.currentPassword=currentPassword;
+    try{
+      const r=await api('/api/me',{method:'PATCH',body:JSON.stringify(payload)});
+      me=r.user;
+      $('#modal').close();
+      renderHome();
+    }catch(x){$('#acctMsg').textContent=x.message}
+  };
+}
+$('#myAccount').onclick=openMyAccount;
 
 $('#logout').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload()};
 $('#backHome').onclick=()=>showHome();

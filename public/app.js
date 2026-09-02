@@ -322,7 +322,7 @@ function openMyAccount(){
   $('#modalBody').innerHTML=`<h2>My account</h2>
     <form id="accountForm">
       <label>Avatar (optional)</label>
-      ${avatarHtml(me.avatar_url,me.name,'imgpreview')}
+      <div id="acctAvatarPreview">${avatarHtml(me.avatar_url,me.name,'imgpreview')}</div>
       <input type="file" id="acctAvatar" accept="image/*">
       <label>Name<input id="acctName" value="${esc(me.name)}" required></label>
       <label>Email<input id="acctEmail" type="email" value="${esc(me.email)}" required></label>
@@ -335,7 +335,7 @@ function openMyAccount(){
   $('#acctAvatar').addEventListener('change',()=>{
     const f=$('#acctAvatar').files[0];
     if(!f)return;
-    $('.imgpreview,.avatar-placeholder').outerHTML=`<img src="${URL.createObjectURL(f)}" class="imgpreview" alt="">`;
+    $('#acctAvatarPreview').innerHTML=`<img src="${URL.createObjectURL(f)}" class="imgpreview" alt="">`;
   });
   $('#accountForm').onsubmit=async e=>{
     e.preventDefault();

@@ -1,0 +1,46 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Privacy Policy — Active Together</title><link rel="icon" type="image/svg+xml" href="favicon.svg"><link rel="stylesheet" href="style.css"><style>.policy h2{margin-top:28px}.policy ul{padding-left:20px}.policy li{margin:6px 0}.policy p{line-height:1.6}</style></head><body>
+<header><div><svg class="mark" width="36" height="36" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#d40511"/><path d="M8 34 L20 34 L26 20 L34 46 L40 34 L56 34" fill="none" stroke="#ffcc00" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/></svg><b>Active Together</b></div><div class="btnrow"><a href="/" class="ghost">&larr; Back to app</a></div></header>
+<main>
+<section class="card policy">
+<h1>Privacy Policy</h1>
+<p class="muted">Last updated 2026-09-02.</p>
+
+<p>Active Together is a small, self-hosted app for running team activity challenges. This page explains what data it holds, who can see it, and how long it keeps it. It's written in plain language rather than legal boilerplate, because that's a better match for what this app actually is: a tool a small group of people use together, not a commercial product.</p>
+
+<h2>What we collect</h2>
+<ul>
+<li><b>Account:</b> the name and email address you register with, and a salted, hashed copy of your password — never the password itself.</li>
+<li><b>Activity entries:</b> activity type, duration in minutes, date, an optional start/finish time, and an optional comment you write yourself.</li>
+<li><b>Uploaded images:</b> an optional profile avatar, an optional team logo, and any images you insert into a challenge description.</li>
+<li><b>Challenge/team content:</b> challenge and team names, descriptions, and your membership/role in them.</li>
+<li><b>Device sync data (Android/iOS companion apps only):</b> if you use a companion app, it reads workout duration, date, type and start/finish time from Health Connect or Apple Health and uploads only that. It never reads or uploads routes, heart rate, calories, or any other health data, and never reads records beyond exercise/workout sessions.</li>
+</ul>
+
+<h2>Who can see what</h2>
+<p>Challenges and teams are private by default — nobody can see a challenge, its teams, its members, or its leaderboard unless they've joined it with an invite code or been added directly. Within a challenge you're a member of:</p>
+<ul>
+<li>Anyone in the challenge can see its team and individual leaderboards, including names and avatars.</li>
+<li>Anyone in a team can see that team's member list (names and emails).</li>
+<li>Only a challenge owner or a global admin can export leaderboard data as a CSV file, or add another owner.</li>
+</ul>
+<p>A global admin (the person who runs this server) can access account records for user administration — creating accounts, resetting passwords, and similar housekeeping.</p>
+
+<h2>Third parties</h2>
+<p>If reCAPTCHA is enabled on this deployment, Google receives your IP address and browser information when you register or sign in, in order to distinguish humans from bots. No other activity or account data is shared with Google or anyone else. This app sends no analytics or tracking data to any third party.</p>
+
+<h2>Data retention</h2>
+<p><b>A challenge — and everything scoped to it (its teams, memberships, activity entries and logged minutes) — is automatically and permanently deleted 60 days after the challenge's end date.</b> This runs on a daily schedule with no manual step required, and cannot be undone once it happens. If you want to keep a record of a challenge's results, export the leaderboard CSVs (or take your own copy) before that window closes.</p>
+<p>Your account itself is not deleted when a challenge is purged — only the challenge-specific data is. Your account, and any other challenges you belong to, are unaffected.</p>
+<p>Images you've uploaded (avatars, team logos, description images) are not automatically cleaned up when a challenge is purged — this is a known gap, not a promise that they're removed. If you want an uploaded image removed, ask the server administrator.</p>
+
+<h2>Account deletion</h2>
+<p>There's no self-service "delete my account" button yet. If you'd like your account removed, ask the person administering this server.</p>
+
+<h2>Security</h2>
+<p>Passwords are hashed (never stored in plain text), sessions are HTTP-only cookies, and rich-text challenge descriptions are filtered server-side to strip anything that could run as code. This is a small, self-hosted app run in good faith, not an audited enterprise product — treat it accordingly and don't put anything genuinely sensitive into it.</p>
+
+<h2>Changes to this policy</h2>
+<p>If this policy changes in a way that matters (for example, a change to the retention window), the "last updated" date at the top will change. There's no mailing list or notification system to announce it beyond that.</p>
+</section>
+</main>
+</body></html>

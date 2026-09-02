@@ -5,23 +5,28 @@
 <section class="hero"><div><p class="eyebrow">ACTIVE TOGETHER</p><h1 id="hello"></h1><p>Join a challenge with an invite code, or start your own.</p></div></section>
 <div class="grid">
 <section class="card"><h2>Join with an invite code</h2><p class="muted">Codes work for a whole challenge or for one specific team — either kind can be entered here.</p><form id="joinForm"><label>Invite code<input id="joinCode" required placeholder="e.g. K7P2M9QX" style="text-transform:uppercase"></label><button>Join</button></form><p id="joinMsg" class="error"></p></section>
-<section class="card"><h2>Start a new challenge</h2><form id="newChallengeForm"><label>Name<input name="name" required></label><label>Description (optional)<textarea name="description" rows="2" placeholder="What's this challenge about?"></textarea></label><div class="two"><label>Start<input name="start_date" type="date" required></label><label>End<input name="end_date" type="date" required></label></div><button>Create challenge</button></form></section>
+<section class="card"><h2>Start a new challenge</h2><form id="newChallengeForm">
+<label>Name<input name="name" required></label>
+<label>Description (optional)</label>
+<div class="rte" data-rte><div class="rte-toolbar"><button type="button" data-cmd="bold" title="Bold"><b>B</b></button><button type="button" data-cmd="italic" title="Italic"><i>I</i></button><button type="button" data-cmd="insertUnorderedList" title="Bullet list">&bull; List</button><button type="button" data-cmd="insertOrderedList" title="Numbered list">1. List</button><button type="button" data-cmd="createLink" title="Link">Link</button><button type="button" data-cmd="insertImage" title="Insert image">Image</button></div><div class="rte-editor" contenteditable="true" data-placeholder="What's this challenge about?"></div></div>
+<div class="two"><label>Start<input name="start_date" type="date" required></label><label>End<input name="end_date" type="date" required></label></div>
+<button>Create challenge</button></form></section>
 </div>
 <section class="card"><h2>My challenges</h2><div id="challengeList"></div></section>
 <section id="admin" class="card hidden"><h2>Administration</h2><div id="adminPanel"></div></section>
 </div>
 <div id="challengeView" class="hidden">
 <button id="backHome" class="ghost">&larr; My challenges</button>
-<section class="hero"><div><p class="eyebrow" id="challengeDates"></p><h1 id="challengeName"></h1><p id="challengeDescription" class="hidden"></p><p id="challengeCode"></p><div id="challengeActions" class="btnrow"></div></div><div class="metric"><b id="myChMinutes">0</b><span>my minutes</span></div></section>
+<section class="hero"><div><p class="eyebrow" id="challengeDates"></p><h1 id="challengeName"></h1><div id="challengeDescription" class="hidden rte-display"></div><p id="challengeCode"></p><div id="challengeActions" class="btnrow"></div></div><div class="metric"><b id="myChMinutes">0</b><span>my minutes</span></div></section>
 <div class="grid">
-<section class="card"><h2>Log activity</h2><form id="activityForm"><label>Team<select id="team" required></select></label><label>Activity<input id="activityType" placeholder="Walking, cycling, gym..." required></label><div class="two"><label>Minutes<input id="minutes" type="number" min="1" required></label><label>Date<input id="activityDate" type="date" required></label></div><div class="two"><label>Start time (optional)<input id="startTime" type="time"></label><label>Finish time (optional)<input id="endTime" type="time"></label></div><button>Save activity</button></form><p id="activityMsg" class="error"></p></section>
-<section class="card"><h2>Teams in this challenge</h2><div id="teamList"></div><hr><form id="newTeamForm"><label>New team name<input name="name" required></label><button>Create team</button></form></section>
+<section class="card"><h2>Log activity</h2><form id="activityForm"><label>Team<select id="team" required></select></label><label>Activity<input id="activityType" placeholder="Walking, cycling, gym..." required></label><div class="two"><label>Minutes<input id="minutes" type="number" min="1" required></label><label>Date<input id="activityDate" type="date" required></label></div><div class="two"><label>Start time (optional)<input id="startTime" type="time"></label><label>Finish time (optional)<input id="endTime" type="time"></label></div><label>Comment (optional)<input id="activityComment" maxlength="500" placeholder="How did it go?"></label><button>Save activity</button></form><p id="activityMsg" class="error"></p></section>
+<section class="card"><h2>Teams in this challenge</h2><div id="teamList"></div><hr><form id="newTeamForm"><label>New team name<input name="name" required></label><label>Team image/logo (optional)<input type="file" id="newTeamImage" accept="image/*"></label><img id="newTeamImagePreview" class="imgpreview hidden" alt="Preview"><button>Create team</button></form></section>
 </div>
 <div class="grid">
-<section class="card"><h2>Team leaderboard</h2><div id="teamLeaderboard"></div></section>
-<section class="card"><h2>Individual leaderboard</h2><div id="userLeaderboard"></div></section>
+<section class="card"><div class="row"><h2>Team leaderboard</h2><a id="exportTeamsCsv" class="ghost hidden" href="#">Export CSV</a></div><div id="teamLeaderboard"></div></section>
+<section class="card"><div class="row"><h2>Individual leaderboard</h2><a id="exportUsersCsv" class="ghost hidden" href="#">Export CSV</a></div><div id="userLeaderboard"></div></section>
 </div>
 <section class="card"><div class="row"><h2>My recent activity</h2><button id="health" class="secondary">Device sync info</button></div><div id="recent"></div></section>
 </div>
 </div>
-</main><dialog id="modal"><button class="close" onclick="this.closest('dialog').close()">×</button><div id="modalBody"></div></dialog><script src="app.js"></script></body></html>
+</main><footer><a href="privacy.html">Privacy Policy</a></footer><dialog id="modal"><button class="close" onclick="this.closest('dialog').close()">×</button><div id="modalBody"></div></dialog><script src="app.js"></script></body></html>

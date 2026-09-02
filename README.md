@@ -17,7 +17,16 @@ A dependency-free Node.js MVP for time-based team activity challenges.
   other sessions.
 - Anyone can edit or delete an activity entry they logged themselves, with an optional start/finish
   time (auto-filling minutes) alongside the required date and duration
-- The challenge owner (or a global admin) can edit a challenge's name, dates and optional description
+- The challenge owner (or a global admin) can edit a challenge's name, dates and description — the
+  description supports rich text (bold/italic/lists/links/images), sanitized server-side
+- A team can have an optional logo image, set at creation or changed later; a user can have an
+  optional avatar, both shown next to the name in team lists and leaderboards
+- Activity entries support an optional free-text comment
+- A challenge owner (or global admin) can promote another member to co-owner, and export either
+  leaderboard as CSV
+- A [privacy policy](public/privacy.html) is linked from the registration page and every page's
+  footer. **A challenge and everything scoped to it is automatically deleted 60 days after its end
+  date**, on a daily schedule — see that page for the full retention policy
 - Time-based challenges and manual activity logging
 - SQLite persistence, password hashing, HTTP-only sessions and duplicate-safe health imports
 - Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes in
@@ -89,6 +98,62 @@ For emulator testing with the local server, use `http://10.0.2.2:3000` as the se
 ## iOS companion app
 An iOS HealthKit companion MVP with the same behaviour is included in [companion/ios](companion/ios), as Swift source plus setup instructions (it ships without an `.xcodeproj` — see that folder's README for why, and the two-minute Xcode setup).
 
+## Uploaded images (avatars, team logos, description images)
+
+One endpoint, `POST /api/uploads`, backs all three. The client resizes the image with a `<canvas>`
+before sending it (avatars to 320px, team logos to 400px, description images to 900px, all
+re-encoded as JPEG) — no image library needed server-side, so this stays dependency-free. The
+server still enforces a hard 10MB cap on the decoded payload regardless of what the client did.
+
+It never trusts the client's claimed mime type: it sniffs the actual magic bytes (PNG/JPEG/GIF/
+WEBP) and names the file itself (`<32 hex chars>.<sniffed extension>`), so neither the extension
+nor the content-type served back can be influenced by the uploader. `image_url`/`avatarUrl` fields
+elsewhere in the API are validated against that exact naming pattern — a hand-crafted request
+pointing a team logo at an external URL is rejected, not silently accepted.
+
+Uploaded files live under `DATA_DIR/uploads/`, not `public/` — the latter is baked into the Docker
+image and wiped on every rebuild, so anything meant to survive a deploy has to be on the volume.
+`GET /uploads/*` streams them back with a one-year immutable cache header (filenames are random,
+never reused) and `X-Content-Type-Options: nosniff`.
+
+**Known gap:** deleting a challenge, team, or clearing an avatar doesn't delete the underlying
+uploaded file — there's no reference-counting cleanup. Orphaned files accumulate in `uploads/`
+over time. Documented here and in the privacy policy rather than silently ignored.
+
+## Rich text challenge descriptions
+
+Descriptions support a small set of formatting (bold/italic/lists/links/images) via a
+`contenteditable` toolbar (`document.execCommand` — deprecated but still functional everywhere,
+and the only no-dependency way to build this). What actually makes it safe is server-side: every
+write path (`POST`/`PATCH /api/challenges`) runs the HTML through `sanitizeHtml()` in `server.js`
+before it ever reaches the database, and the client trusts stored `description` values as already
+clean and renders them with `innerHTML` directly — it does **not** re-sanitize on read, so the
+server-side pass on every write path is the entire security boundary. That matters because the API
+is a public HTTP interface: a direct `curl` to `POST /api/challenges` skips the browser (and any
+client-side sanitizer) entirely.
+
+`sanitizeHtml()` is a hand-rolled allowlist tokenizer, not a battle-tested library like DOMPurify —
+consistent with this app staying dependency-free, but worth being honest about: it's a streaming
+scan (never a find/replace over the whole string), and any tag not on the allowlist is dropped
+while its own text content survives as inert, escaped text — which is what neutralises
+`<script>alert(1)</script>` into the harmless text `alert(1)`. No tag, allowed or not, may ever
+carry a `style` or `on*` attribute (neither appears in the attribute allowlist for anything, so
+they're stripped unconditionally rather than pattern-matched), and `href`/`src` are restricted to
+`https:`/`mailto:` and `https:`/`/uploads/` respectively — a `javascript:` URL never survives.
+It hasn't been fuzzed against the kind of parser-differential bypasses that real sanitizer
+libraries are hardened against, so treat it as solid for this app's threat model (a small,
+trusted user base) rather than as a guarantee against a determined, sophisticated attacker.
+
+## Data retention
+
+Per the [privacy policy](public/privacy.html): a challenge, and everything scoped to it (teams,
+memberships, activity entries), is deleted 60 days after its `end_date`. `purgeExpiredChallenges()`
+in `server.js` runs once at boot and then every 24 hours. Activities have no `ON DELETE CASCADE` on
+`challenge_id` (unlike `challenge_members`/`team_members`, which do), so they're deleted explicitly
+first, inside the same transaction — same pattern as the existing team-delete endpoint. This is not
+configurable via an environment variable; changing the window means changing the `-60 days` literal
+in that function (and updating the privacy policy to match).
+
 ## Bot and abuse precautions
 
 - **reCAPTCHA v2** ("I'm not a robot") on the registration and sign-in *pages*. Optional — unset
@@ -102,10 +167,12 @@ An iOS HealthKit companion MVP with the same behaviour is included in [companion
   rate limit below instead.
 - **Per-IP rate limiting**, in-memory, no dependency: `register` and `login` (and `/api/mobile/login`)
   each get their own bucket, default 20 attempts per 15 minutes per IP
-  (`AUTH_RATE_LIMIT_MAX`/`AUTH_RATE_LIMIT_WINDOW_MS`), on top of a general ceiling across every
-  `/api/` route, default 300 requests/minute/IP (`API_RATE_LIMIT_MAX`/`API_RATE_LIMIT_WINDOW_MS`).
-  All four are overridable in `.env`. Counters reset on container restart — an acceptable escape
-  hatch at this scale, same tradeoff ITCM's login lockout makes.
+  (`AUTH_RATE_LIMIT_MAX`/`AUTH_RATE_LIMIT_WINDOW_MS`); `POST /api/uploads` gets its own, default 30
+  per 15 minutes (`UPLOAD_RATE_LIMIT_MAX`/`UPLOAD_RATE_LIMIT_WINDOW_MS`); all on top of a general
+  ceiling across every `/api/` route, default 300 requests/minute/IP
+  (`API_RATE_LIMIT_MAX`/`API_RATE_LIMIT_WINDOW_MS`). All six are overridable in `.env`. Counters
+  reset on container restart — an acceptable escape hatch at this scale, same tradeoff ITCM's
+  login lockout makes.
 - Order of checks matters for cost: the rate limit (cheap) runs before reCAPTCHA verification
   (a network call), which runs before password hashing (deliberately CPU-expensive, `scrypt`) —
   so a scripted flood gets turned away before it can burn CPU or hit Google's API.
@@ -116,5 +183,9 @@ An iOS HealthKit companion MVP with the same behaviour is included in [companion
 - Put behind HTTPS and a reverse proxy.
 - Replace local accounts with approved enterprise SSO if deployed at Company.
 - Add CSRF protection, email delivery, password reset and audit logs.
-- Complete privacy impact, retention, consent and app-store health-data declarations.
+- A plain-language [privacy policy](public/privacy.html) exists and states the 60-day challenge
+  retention window, which is enforced in code. A formal DPIA, consent-capture flow, and the
+  app-store health-data declarations the companion apps would need for a real store listing are
+  still outside this project's scope.
 - Do not collect medical records, routes, heart rate or other health data when activity duration is sufficient.
+- Orphaned uploaded images (see "Uploaded images" above) are not garbage collected.

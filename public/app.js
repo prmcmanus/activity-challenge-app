@@ -2,6 +2,60 @@ const $=s=>document.querySelector(s), $all=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const api=async(url,opt={})=>{const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opt});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||'Request failed');return j};
 
+// --- image upload: resize client-side (canvas) before sending, server enforces a 10MB hard cap
+// as a backstop. The server never trusts our chosen mime type either way - it sniffs the bytes.
+async function resizeImageFile(file,maxDim,quality){
+  const bitmap=await createImageBitmap(file);
+  let {width,height}=bitmap;
+  if(width>maxDim||height>maxDim){const scale=maxDim/Math.max(width,height);width=Math.round(width*scale);height=Math.round(height*scale)}
+  const canvas=document.createElement('canvas');
+  canvas.width=width;canvas.height=height;
+  canvas.getContext('2d').drawImage(bitmap,0,0,width,height);
+  return new Promise((resolve,reject)=>canvas.toBlob(blob=>{
+    if(!blob){reject(Error('Could not process that image'));return}
+    const reader=new FileReader();
+    reader.onload=()=>resolve(reader.result);
+    reader.onerror=()=>reject(Error('Could not read that image'));
+    reader.readAsDataURL(blob);
+  },'image/jpeg',quality));
+}
+async function uploadImageFile(file,maxDim=900,quality=0.85){
+  if(file.size>10*1024*1024)throw Error('Image is too large (max 10MB).');
+  const dataUrl=await resizeImageFile(file,maxDim,quality);
+  const r=await api('/api/uploads',{method:'POST',body:JSON.stringify({dataUrl})});
+  return r.url;
+}
+
+// --- rich text editor: contenteditable + document.execCommand, no library. The server is the
+// real sanitization boundary (this HTML is sent as-is and trusted only once the server has
+// cleaned it); this editor just gives the user a small, safe-by-construction toolbar so nothing
+// they can produce through it needs sanitizing in the first place.
+function initRichTextEditor(root){
+  const editor=root.querySelector('.rte-editor');
+  root.querySelectorAll('[data-cmd]').forEach(btn=>{
+    btn.onclick=async()=>{
+      const cmd=btn.dataset.cmd;
+      editor.focus();
+      if(cmd==='createLink'){
+        const url=prompt('Link URL (https://...)');
+        if(url)document.execCommand('createLink',false,url);
+      }else if(cmd==='insertImage'){
+        const input=document.createElement('input');
+        input.type='file';input.accept='image/*';
+        input.onchange=async()=>{
+          const file=input.files[0];
+          if(!file)return;
+          try{const url=await uploadImageFile(file,900,0.82);editor.focus();document.execCommand('insertHTML',false,`<img src="${url}" alt="">`)}
+          catch(e){alert(e.message)}
+        };
+        input.click();
+      }else{
+        document.execCommand(cmd,false,null);
+      }
+    };
+  });
+}
+
 let me=null, dash=null, curChallenge=null, curLeaderboard=null, authTab='login';
 const params=new URLSearchParams(location.search);
 let pendingInviteToken=params.get('invite');
@@ -48,7 +102,7 @@ function renderAuth(){
     $('#authPanel').innerHTML=`<h1>Welcome back</h1><p>Sign in to log activity and support your team.</p><form id="loginForm"><label>Email<input id="email" type="email" required></label><label>Password<input id="password" type="password" required></label><div id="recaptcha-auth"></div><button>Sign in</button></form><p id="authMsg" class="error"></p>`;
     $('#loginForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{method:'POST',body:JSON.stringify({email:$('#email').value,password:$('#password').value,recaptchaToken:getRecaptchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;resetRecaptcha()}};
   }else{
-    $('#authPanel').innerHTML=`<h1>Create your account</h1><p>Then create a challenge or join one with an invite code.</p><form id="registerForm"><label>Name<input id="rname" required></label><label>Email<input id="remail" type="email" required></label><label>Password<input id="rpassword" type="password" required minlength="8"></label><div id="recaptcha-auth"></div><button>Create account</button></form><p id="authMsg" class="error"></p>`;
+    $('#authPanel').innerHTML=`<h1>Create your account</h1><p>Then create a challenge or join one with an invite code.</p><form id="registerForm"><label>Name<input id="rname" required></label><label>Email<input id="remail" type="email" required></label><label>Password<input id="rpassword" type="password" required minlength="8"></label><div id="recaptcha-auth"></div><button>Create account</button></form><p class="muted">By creating an account you agree to our <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</p><p id="authMsg" class="error"></p>`;
     $('#registerForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/register',{method:'POST',body:JSON.stringify({name:$('#rname').value,email:$('#remail').value,password:$('#rpassword').value,recaptchaToken:getRecaptchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;resetRecaptcha()}};
   }
   renderRecaptchaIfReady();
@@ -77,15 +131,23 @@ async function refreshChallenge(){
   renderChallenge();
 }
 
+function avatarHtml(url,name,cls){
+  return url?`<img src="${esc(url)}" class="${cls}" alt="">`:`<span class="${cls} avatar-placeholder">${esc((name||'?')[0].toUpperCase())}</span>`;
+}
+
 function renderChallenge(){
   const c=curChallenge;
   $('#challengeName').textContent=c.name;
   $('#challengeDates').textContent=`${c.start_date} → ${c.end_date} · YOUR ROLE: ${c.role.toUpperCase()}`;
-  $('#challengeDescription').textContent=c.description||'';
+  // The server already sanitized this on write (POST/PATCH /api/challenges) - safe to render as-is.
+  $('#challengeDescription').innerHTML=c.description||'';
   $('#challengeDescription').classList.toggle('hidden',!c.description);
   $('#challengeCode').innerHTML=`Invite code: <b>${esc(c.invite_code)}</b> — share it so others can join this challenge.`;
   $('#challengeActions').innerHTML=c.canManage?'<button class="ghost" data-editchallenge="1">Edit challenge</button>':'';
   if(c.canManage)$('[data-editchallenge]').onclick=()=>openEditChallenge(c);
+  $('#exportTeamsCsv').classList.toggle('hidden',!c.canManage);
+  $('#exportUsersCsv').classList.toggle('hidden',!c.canManage);
+  if(c.canManage){$('#exportTeamsCsv').href=`/api/challenges/${c.id}/leaderboard/export?type=teams`;$('#exportUsersCsv').href=`/api/challenges/${c.id}/leaderboard/export?type=users`}
   const mine=dash.challenges.find(x=>x.id===c.id);
   $('#myChMinutes').textContent=mine?mine.myMinutes:0;
   const myTeams=c.teams.filter(t=>t.mine);
@@ -97,16 +159,17 @@ function renderChallenge(){
     const bits=[`${t.members} member(s)`];
     if(t.mine)bits.push('you are in this team');
     if(t.invite_code)bits.push(`code: <b>${esc(t.invite_code)}</b>`);
-    return `<div class="listrow"><div><b>${esc(t.name)}</b><div class="muted">${bits.join(' · ')}</div></div><div class="btnrow">${actions.join('')}</div></div>`;
+    return `<div class="listrow"><div class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<div><b>${esc(t.name)}</b><div class="muted">${bits.join(' · ')}</div></div></div><div class="btnrow">${actions.join('')}</div></div>`;
   }).join('')||'<p class="muted">No teams yet — create the first one.</p>';
   $all('[data-jointeam]').forEach(b=>b.onclick=async()=>{await api(`/api/teams/${b.dataset.jointeam}/join`,{method:'POST'});await refreshChallenge()});
   $all('[data-manageteam]').forEach(b=>b.onclick=()=>openTeamManage(Number(b.dataset.manageteam),b.dataset.name));
-  $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><b>${esc(t.name)}</b><span>${t.minutes} min</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
-  $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader"><span class="rank">${i+1}</span><b>${esc(x.name)}</b><span>${x.minutes} min</span></div>`).join('')||'<p class="muted">No members yet.</p>';
+  $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${t.minutes} min</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
+  $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b></span><span>${x.minutes} min</span></div>`).join('')||'<p class="muted">No members yet.</p>';
   const recent=dash.mine.filter(a=>a.challenge_id===c.id);
   $('#recent').innerHTML=recent.map(x=>{
     const timeBit=x.start_time&&x.end_time?` · ${x.start_time}–${x.end_time}`:'';
-    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${esc(x.team_name)} · ${x.activity_date}${timeBit} · ${x.source}</div></div><div class="btnrow"><b>${x.minutes} min</b><button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></div></div>`;
+    const commentBit=x.comment?`<div class="muted">“${esc(x.comment)}”</div>`:'';
+    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${esc(x.team_name)} · ${x.activity_date}${timeBit} · ${x.source}</div>${commentBit}</div><div class="btnrow"><b>${x.minutes} min</b><button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></div></div>`;
   }).join('')||'<p class="muted">No activity logged yet in this challenge.</p>';
   $all('[data-editactivity]').forEach(b=>{const x=recent.find(a=>a.id===Number(b.dataset.editactivity));b.onclick=()=>openEditActivity(x)});
   $all('[data-delactivity]').forEach(b=>b.onclick=async()=>{
@@ -115,23 +178,34 @@ function renderChallenge(){
   });
 }
 
-function openEditChallenge(c){
+async function openEditChallenge(c){
+  const membersData=await api(`/api/challenges/${c.id}/members`);
   $('#modalBody').innerHTML=`<h2>Edit challenge</h2>
     <form id="editChallengeForm">
       <label>Name<input id="ecName" value="${esc(c.name)}" required></label>
-      <label>Description (optional)<textarea id="ecDescription" rows="3">${esc(c.description||'')}</textarea></label>
+      <label>Description (optional)</label>
+      <div class="rte" data-rte><div class="rte-toolbar"><button type="button" data-cmd="bold" title="Bold"><b>B</b></button><button type="button" data-cmd="italic" title="Italic"><i>I</i></button><button type="button" data-cmd="insertUnorderedList" title="Bullet list">&bull; List</button><button type="button" data-cmd="insertOrderedList" title="Numbered list">1. List</button><button type="button" data-cmd="createLink" title="Link">Link</button><button type="button" data-cmd="insertImage" title="Insert image">Image</button></div><div id="ecDescription" class="rte-editor" contenteditable="true" data-placeholder="What's this challenge about?">${c.description||''}</div></div>
       <div class="two"><label>Start<input id="ecStart" type="date" value="${c.start_date}" required></label><label>End<input id="ecEnd" type="date" value="${c.end_date}" required></label></div>
       <button>Save changes</button>
     </form>
-    <p id="ecMsg" class="error"></p>`;
+    <p id="ecMsg" class="error"></p>
+    <h2 style="margin-top:24px">Challenge owners</h2>
+    <div id="ownersList">${membersData.members.filter(m=>m.challenge_role==='owner').map(m=>`<div class="listrow"><div><b>${esc(m.name)}</b><div class="muted">${esc(m.email)}</div></div></div>`).join('')||'<p class="muted">No owners.</p>'}</div>
+    <form id="addOwnerForm"><label>Add an owner by email<input id="addOwnerEmail" type="email" required placeholder="name@example.com"></label><button>Add owner</button></form>
+    <p id="ownerMsg" class="error"></p>`;
   $('#modal').showModal();
+  initRichTextEditor($('[data-rte]'));
   $('#editChallengeForm').onsubmit=async e=>{
     e.preventDefault();
     try{
-      await api(`/api/challenges/${c.id}`,{method:'PATCH',body:JSON.stringify({name:$('#ecName').value.trim(),description:$('#ecDescription').value.trim(),start_date:$('#ecStart').value,end_date:$('#ecEnd').value})});
+      await api(`/api/challenges/${c.id}`,{method:'PATCH',body:JSON.stringify({name:$('#ecName').value.trim(),description:$('#ecDescription').innerHTML,start_date:$('#ecStart').value,end_date:$('#ecEnd').value})});
       $('#modal').close();
       await refreshChallenge();
     }catch(x){$('#ecMsg').textContent=x.message}
+  };
+  $('#addOwnerForm').onsubmit=async e=>{
+    e.preventDefault();
+    try{await api(`/api/challenges/${c.id}/owners`,{method:'POST',body:JSON.stringify({email:$('#addOwnerEmail').value})});await openEditChallenge(c)}catch(x){$('#ownerMsg').textContent=x.message}
   };
 }
 
@@ -150,6 +224,7 @@ function openEditActivity(x){
       <label>Activity<input id="eaType" value="${esc(x.activity_type)}" required></label>
       <div class="two"><label>Minutes<input id="eaMinutes" type="number" min="1" value="${x.minutes}" required></label><label>Date<input id="eaDate" type="date" value="${x.activity_date}" required></label></div>
       <div class="two"><label>Start time (optional)<input id="eaStart" type="time" value="${x.start_time||''}"></label><label>Finish time (optional)<input id="eaEnd" type="time" value="${x.end_time||''}"></label></div>
+      <label>Comment (optional)<input id="eaComment" maxlength="500" value="${esc(x.comment||'')}" placeholder="How did it go?"></label>
       <button>Save changes</button>
     </form>
     <p id="eaMsg" class="error"></p>`;
@@ -160,7 +235,7 @@ function openEditActivity(x){
   $('#editActivityForm').onsubmit=async e=>{
     e.preventDefault();
     try{
-      await api(`/api/activities/${x.id}`,{method:'PATCH',body:JSON.stringify({activity_type:$('#eaType').value,minutes:$('#eaMinutes').value,activity_date:$('#eaDate').value,start_time:$('#eaStart').value,end_time:$('#eaEnd').value})});
+      await api(`/api/activities/${x.id}`,{method:'PATCH',body:JSON.stringify({activity_type:$('#eaType').value,minutes:$('#eaMinutes').value,activity_date:$('#eaDate').value,start_time:$('#eaStart').value,end_time:$('#eaEnd').value,comment:$('#eaComment').value})});
       $('#modal').close();
       await refreshChallenge();
     }catch(err){$('#eaMsg').textContent=err.message}
@@ -169,19 +244,38 @@ function openEditActivity(x){
 
 async function openTeamManage(tid,tname){
   const data=await api(`/api/teams/${tid}/members`);
+  const team=curChallenge.teams.find(t=>t.id===tid);
   $('#modalBody').innerHTML=`<h2>Manage ${esc(tname)}</h2>
-    <form id="renameTeamForm"><label>Team name<input id="renameTeamName" value="${esc(tname)}" required></label><button>Save name</button></form>
+    <form id="renameTeamForm">
+      <label>Team name<input id="renameTeamName" value="${esc(tname)}" required></label>
+      <label>Team image/logo (optional)<input type="file" id="renameTeamImage" accept="image/*"></label>
+      <img id="renameTeamImagePreview" class="imgpreview${team&&team.image_url?'':' hidden'}" src="${team&&team.image_url?esc(team.image_url):''}" alt="Preview">
+      <button>Save changes</button>
+    </form>
     <h2 style="margin-top:24px">Members</h2>
     <div id="teamMembersList">${data.members.map(m=>`<div class="listrow"><div><b>${esc(m.name)}</b><div class="muted">${esc(m.email)} · ${esc(m.team_role)}</div></div><button class="ghost" data-removemember="${m.id}">Remove</button></div>`).join('')||'<p class="muted">No members.</p>'}</div>
     <form id="addMemberForm"><label>Add someone by email<input id="addMemberEmail" type="email" required placeholder="name@example.com"></label><button>Add to team</button></form>
     <p id="manageMsg" class="error"></p>
     <hr><button id="deleteTeamBtn" class="ghost" style="color:var(--red)">Delete this team</button>`;
   $('#modal').showModal();
+  $('#renameTeamImage').addEventListener('change',()=>{
+    const f=$('#renameTeamImage').files[0];
+    if(!f)return;
+    $('#renameTeamImagePreview').src=URL.createObjectURL(f);
+    $('#renameTeamImagePreview').classList.remove('hidden');
+  });
   $('#renameTeamForm').onsubmit=async e=>{
     e.preventDefault();
     const name=$('#renameTeamName').value.trim();
     if(!name)return;
-    try{await api(`/api/teams/${tid}`,{method:'PATCH',body:JSON.stringify({name})});$('#modal').close();await refreshChallenge()}catch(x){$('#manageMsg').textContent=x.message}
+    const payload={name};
+    const file=$('#renameTeamImage').files[0];
+    try{
+      if(file)payload.image_url=await uploadImageFile(file,400,0.85);
+      await api(`/api/teams/${tid}`,{method:'PATCH',body:JSON.stringify(payload)});
+      $('#modal').close();
+      await refreshChallenge();
+    }catch(x){$('#manageMsg').textContent=x.message}
   };
   $('#addMemberForm').onsubmit=async e=>{
     e.preventDefault();
@@ -227,6 +321,9 @@ function openEditUser(x){
 function openMyAccount(){
   $('#modalBody').innerHTML=`<h2>My account</h2>
     <form id="accountForm">
+      <label>Avatar (optional)</label>
+      ${avatarHtml(me.avatar_url,me.name,'imgpreview')}
+      <input type="file" id="acctAvatar" accept="image/*">
       <label>Name<input id="acctName" value="${esc(me.name)}" required></label>
       <label>Email<input id="acctEmail" type="email" value="${esc(me.email)}" required></label>
       <label>New password (leave blank to keep current)<input id="acctNewPassword" type="password" minlength="8"></label>
@@ -235,6 +332,11 @@ function openMyAccount(){
     </form>
     <p id="acctMsg" class="error"></p>`;
   $('#modal').showModal();
+  $('#acctAvatar').addEventListener('change',()=>{
+    const f=$('#acctAvatar').files[0];
+    if(!f)return;
+    $('.imgpreview,.avatar-placeholder').outerHTML=`<img src="${URL.createObjectURL(f)}" class="imgpreview" alt="">`;
+  });
   $('#accountForm').onsubmit=async e=>{
     e.preventDefault();
     const payload={name:$('#acctName').value.trim(),email:$('#acctEmail').value.trim()};
@@ -242,7 +344,9 @@ function openMyAccount(){
     if(newPassword)payload.newPassword=newPassword;
     const currentPassword=$('#acctCurrentPassword').value;
     if(currentPassword)payload.currentPassword=currentPassword;
+    const file=$('#acctAvatar').files[0];
     try{
+      if(file)payload.avatarUrl=await uploadImageFile(file,320,0.85);
       const r=await api('/api/me',{method:'PATCH',body:JSON.stringify(payload)});
       me=r.user;
       $('#modal').close();
@@ -255,8 +359,35 @@ $('#myAccount').onclick=openMyAccount;
 $('#logout').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload()};
 $('#backHome').onclick=()=>showHome();
 $('#joinForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/join',{method:'POST',body:JSON.stringify({code:$('#joinCode').value})});$('#joinMsg').textContent='';e.target.reset();await loadDashboard();renderHome()}catch(x){$('#joinMsg').textContent=x.message}};
-$('#newChallengeForm').onsubmit=async e=>{e.preventDefault();await api('/api/challenges',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});e.target.reset();await loadDashboard();renderHome()};
-$('#newTeamForm').onsubmit=async e=>{e.preventDefault();await api('/api/teams',{method:'POST',body:JSON.stringify({challenge_id:curChallenge.id,name:new FormData(e.target).get('name')})});e.target.reset();await refreshChallenge()};
+const newChallengeRte=document.querySelector('#newChallengeForm [data-rte]');
+initRichTextEditor(newChallengeRte);
+$('#newChallengeForm').onsubmit=async e=>{
+  e.preventDefault();
+  const fields=Object.fromEntries(new FormData(e.target));
+  fields.description=newChallengeRte.querySelector('.rte-editor').innerHTML;
+  await api('/api/challenges',{method:'POST',body:JSON.stringify(fields)});
+  e.target.reset();
+  newChallengeRte.querySelector('.rte-editor').innerHTML='';
+  await loadDashboard();renderHome();
+};
+$('#newTeamImage').addEventListener('change',()=>{
+  const f=$('#newTeamImage').files[0];
+  if(!f){$('#newTeamImagePreview').classList.add('hidden');return}
+  $('#newTeamImagePreview').src=URL.createObjectURL(f);
+  $('#newTeamImagePreview').classList.remove('hidden');
+});
+$('#newTeamForm').onsubmit=async e=>{
+  e.preventDefault();
+  const file=$('#newTeamImage').files[0];
+  const payload={challenge_id:curChallenge.id,name:new FormData(e.target).get('name')};
+  try{
+    if(file)payload.image_url=await uploadImageFile(file,400,0.85);
+    await api('/api/teams',{method:'POST',body:JSON.stringify(payload)});
+    e.target.reset();
+    $('#newTeamImagePreview').classList.add('hidden');
+    await refreshChallenge();
+  }catch(err){alert(err.message)}
+};
 $('#activityDate').value=new Date().toISOString().slice(0,10);
 $('#startTime').addEventListener('change',()=>{const m=minutesBetween($('#startTime').value,$('#endTime').value);if(m)$('#minutes').value=m});
 $('#endTime').addEventListener('change',()=>{const m=minutesBetween($('#startTime').value,$('#endTime').value);if(m)$('#minutes').value=m});
@@ -265,7 +396,7 @@ $('#activityForm').onsubmit=async e=>{
   const teamId=$('#team').value;
   if(!teamId){alert('Join a team first');return}
   try{
-    await api('/api/activities',{method:'POST',body:JSON.stringify({team_id:teamId,challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,activity_date:$('#activityDate').value,start_time:$('#startTime').value,end_time:$('#endTime').value})});
+    await api('/api/activities',{method:'POST',body:JSON.stringify({team_id:teamId,challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,activity_date:$('#activityDate').value,start_time:$('#startTime').value,end_time:$('#endTime').value,comment:$('#activityComment').value})});
     $('#activityMsg').textContent='';
     e.target.reset();
     $('#activityDate').value=new Date().toISOString().slice(0,10);

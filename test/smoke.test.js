@@ -1039,3 +1039,257 @@ test('a challenge can have an optional description, settable at creation and lat
   const clearedView = await (await fetch(`${origin}/api/challenges/${describedId}`, { headers: { cookie: alice.cookie } })).json();
   assert.equal(clearedView.description, null);
 });
+
+// A minimal valid 1x1 transparent PNG, used wherever a real (tiny) uploaded image is needed.
+const TINY_PNG_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+async function uploadTinyPng(cookie) {
+  const r = await fetch(`${origin}/api/uploads`, {
+    method: 'POST',
+    headers: { cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataUrl: TINY_PNG_DATA_URL }),
+  });
+  const j = await r.json();
+  assert.equal(r.status, 201, `upload failed: ${JSON.stringify(j)}`);
+  return j.url;
+}
+
+test('image uploads: a real PNG is accepted and served back; junk and oversized payloads are rejected', async () => {
+  const alice = await register('Alice Uploads');
+
+  const url = await uploadTinyPng(alice.cookie);
+  assert.match(url, /^\/uploads\/[a-f0-9]{32}\.png$/);
+  const fetched = await fetch(`${origin}${url}`);
+  assert.equal(fetched.status, 200);
+  assert.equal(fetched.headers.get('content-type'), 'image/png');
+
+  const notAnImage = await fetch(`${origin}/api/uploads`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataUrl: `data:image/png;base64,${Buffer.from('not actually a png').toString('base64')}` }),
+  });
+  assert.equal(notAnImage.status, 400);
+
+  const notADataUrl = await fetch(`${origin}/api/uploads`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataUrl: 'https://example.com/not-a-data-url.png' }),
+  });
+  assert.equal(notADataUrl.status, 400);
+
+  const tooLarge = 'A'.repeat(15 * 1024 * 1024); // ~15MB of base64 text, over the 10MB decoded cap
+  const oversized = await fetch(`${origin}/api/uploads`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataUrl: `data:image/png;base64,${tooLarge}` }),
+  });
+  assert.equal(oversized.status, 413);
+});
+
+test('challenge description HTML is sanitized on write: scripts and event handlers are stripped, safe formatting survives', async () => {
+  const alice = await register('Alice Sanitize');
+  const imageUrl = await uploadTinyPng(alice.cookie);
+  const malicious = `<p>Hello <b>team</b></p><script>alert(1)</script><img src="${imageUrl}" onerror="alert(2)" alt="pic"><a href="javascript:alert(3)">bad link</a><a href="https://example.com">good link</a><div style="color:red">nope</div>`;
+
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Sanitize Challenge', description: malicious, start_date: '2027-01-01', end_date: '2027-01-31' }),
+  });
+  const { id: challengeId } = await challengeRes.json();
+  const view = await (await fetch(`${origin}/api/challenges/${challengeId}`, { headers: { cookie: alice.cookie } })).json();
+
+  assert.ok(!view.description.includes('<script'), 'script tag must be stripped');
+  assert.ok(!view.description.includes('alert(1)') || !view.description.includes('<script'), 'script content must not be executable');
+  assert.ok(!view.description.includes('onerror'), 'event handler attribute must be stripped');
+  assert.ok(!view.description.includes('javascript:'), 'javascript: href must be stripped');
+  assert.ok(!view.description.includes('style='), 'style attribute must be stripped entirely');
+  assert.ok(view.description.includes('<b>team</b>'), 'safe formatting tag must survive');
+  assert.ok(view.description.includes(`<img src="${imageUrl}" alt="pic">`), 'our own uploaded image src must survive');
+  assert.ok(view.description.includes('href="https://example.com"'), 'a safe https link must survive');
+});
+
+test('a team can have a logo image set at creation and changed later, shown in challenge detail and the leaderboard', async () => {
+  const alice = await register('Alice TeamLogo');
+  const imageUrl = await uploadTinyPng(alice.cookie);
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Logo Challenge', start_date: '2027-02-01', end_date: '2027-02-28' }),
+  });
+  const { id: challengeId } = await challengeRes.json();
+
+  const badImage = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Bad Logo Team', image_url: 'https://evil.com/x.png' }),
+  });
+  assert.equal(badImage.status, 400);
+
+  const teamRes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Logo Team', image_url: imageUrl }),
+  });
+  const { id: teamId } = await teamRes.json();
+  const view = await (await fetch(`${origin}/api/challenges/${challengeId}`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(view.teams[0].image_url, imageUrl);
+
+  const board = await (await fetch(`${origin}/api/challenges/${challengeId}/leaderboard`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(board.teams[0].image_url, imageUrl);
+
+  const secondImage = await uploadTinyPng(alice.cookie);
+  const rename = await fetch(`${origin}/api/teams/${teamId}`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Logo Team', image_url: secondImage }),
+  });
+  assert.equal(rename.status, 200);
+  const viewAfter = await (await fetch(`${origin}/api/challenges/${challengeId}`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(viewAfter.teams[0].image_url, secondImage);
+});
+
+test('activities support an optional comment, editable like the other fields', async () => {
+  const alice = await register('Alice Comments');
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Comment Challenge', start_date: '2027-03-01', end_date: '2027-03-31' }),
+  });
+  const { id: challengeId } = await challengeRes.json();
+  const teamRes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Comment Team' }),
+  });
+  const { id: teamId } = await teamRes.json();
+
+  await fetch(`${origin}/api/activities`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ team_id: teamId, challenge_id: challengeId, activity_type: 'Walking', minutes: 20, activity_date: '2027-03-05', comment: 'felt great today!' }),
+  });
+  const dashboard = await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: alice.cookie } })).json();
+  const logged = dashboard.mine.find(a => a.challenge_id === challengeId);
+  assert.equal(logged.comment, 'felt great today!');
+
+  const edit = await fetch(`${origin}/api/activities/${logged.id}`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ comment: '' }),
+  });
+  assert.equal(edit.status, 200);
+  const afterClear = (await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: alice.cookie } })).json()).mine.find(a => a.id === logged.id);
+  assert.equal(afterClear.comment, null);
+});
+
+test('a user can set an avatar (only from an uploaded image), shown in the leaderboard', async () => {
+  const alice = await register('Alice Avatar');
+  const imageUrl = await uploadTinyPng(alice.cookie);
+
+  const badAvatar = await fetch(`${origin}/api/me`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ avatarUrl: 'https://evil.com/x.png' }),
+  });
+  assert.equal(badAvatar.status, 400);
+
+  const setAvatar = await fetch(`${origin}/api/me`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ avatarUrl: imageUrl }),
+  });
+  assert.equal(setAvatar.status, 200);
+  assert.equal((await setAvatar.json()).user.avatar_url, imageUrl);
+
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Avatar Challenge', start_date: '2027-04-01', end_date: '2027-04-30' }),
+  });
+  const { id: challengeId } = await challengeRes.json();
+  const board = await (await fetch(`${origin}/api/challenges/${challengeId}/leaderboard`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(board.users.find(x => x.name === 'Alice Avatar').avatar_url, imageUrl);
+});
+
+test('challenge owners/global admins can add another owner to a challenge; a plain member cannot', async () => {
+  const alice = await register('Alice AddOwner');
+  const bob = await register('Bob NewOwner');
+  const carol = await register('Carol PlainMember');
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Co-Owned Challenge', start_date: '2027-05-01', end_date: '2027-05-31' }),
+  });
+  const { id: challengeId, invite_code: challengeCode } = await challengeRes.json();
+  await fetch(`${origin}/api/join`, { method: 'POST', headers: { cookie: bob.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: challengeCode }) });
+  await fetch(`${origin}/api/join`, { method: 'POST', headers: { cookie: carol.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: challengeCode }) });
+
+  const forbiddenList = await fetch(`${origin}/api/challenges/${challengeId}/members`, { headers: { cookie: carol.cookie } });
+  assert.equal(forbiddenList.status, 403);
+  const forbiddenAdd = await fetch(`${origin}/api/challenges/${challengeId}/owners`, {
+    method: 'POST', headers: { cookie: carol.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ email: bob.email }),
+  });
+  assert.equal(forbiddenAdd.status, 403);
+
+  // Bob is already a member (joined via code) - adding him as owner promotes him in place.
+  const addExisting = await fetch(`${origin}/api/challenges/${challengeId}/owners`, {
+    method: 'POST', headers: { cookie: alice.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ email: bob.email }),
+  });
+  assert.equal(addExisting.status, 201);
+  const membersAfter = await (await fetch(`${origin}/api/challenges/${challengeId}/members`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(membersAfter.members.find(m => m.email === bob.email).challenge_role, 'owner');
+
+  // Bob, now an owner, can add a fresh account directly (not previously a member) as owner too.
+  const dave = await register('Dave BrandNewOwner');
+  const addNew = await fetch(`${origin}/api/challenges/${challengeId}/owners`, {
+    method: 'POST', headers: { cookie: bob.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ email: dave.email }),
+  });
+  assert.equal(addNew.status, 201);
+  const daveDashboard = await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: dave.cookie } })).json();
+  const daveChallenge = daveDashboard.challenges.find(c => c.id === challengeId);
+  assert.equal(daveChallenge.role, 'owner');
+
+  const unknownEmail = await fetch(`${origin}/api/challenges/${challengeId}/owners`, {
+    method: 'POST', headers: { cookie: alice.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'nobody@example.com' }),
+  });
+  assert.equal(unknownEmail.status, 404);
+});
+
+test('leaderboard CSV export is restricted to the challenge owner/global admin and produces valid CSV', async () => {
+  const alice = await register('Alice CsvOwner');
+  const bob = await register('Bob CsvMember');
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'CSV Challenge', start_date: '2027-06-01', end_date: '2027-06-30' }),
+  });
+  const { id: challengeId, invite_code: challengeCode } = await challengeRes.json();
+  await fetch(`${origin}/api/join`, { method: 'POST', headers: { cookie: bob.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: challengeCode }) });
+  const teamRes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'CSV Team' }),
+  });
+  const { id: teamId } = await teamRes.json();
+  await fetch(`${origin}/api/activities`, { method: 'POST', headers: { cookie: alice.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ team_id: teamId, challenge_id: challengeId, activity_type: 'Walking', minutes: 25, activity_date: '2027-06-05' }) });
+
+  const forbidden = await fetch(`${origin}/api/challenges/${challengeId}/leaderboard/export?type=teams`, { headers: { cookie: bob.cookie } });
+  assert.equal(forbidden.status, 403);
+
+  const teamsCsv = await fetch(`${origin}/api/challenges/${challengeId}/leaderboard/export?type=teams`, { headers: { cookie: alice.cookie } });
+  assert.equal(teamsCsv.status, 200);
+  assert.match(teamsCsv.headers.get('content-type'), /text\/csv/);
+  assert.match(teamsCsv.headers.get('content-disposition'), /attachment/);
+  const teamsBody = await teamsCsv.text();
+  assert.match(teamsBody, /^Rank,Team,Minutes\r\n/);
+  assert.match(teamsBody, /CSV Team,25/);
+
+  const usersCsv = await fetch(`${origin}/api/challenges/${challengeId}/leaderboard/export?type=users`, { headers: { cookie: alice.cookie } });
+  const usersBody = await usersCsv.text();
+  assert.match(usersBody, /^Rank,Name,Email,Minutes\r\n/);
+  assert.match(usersBody, new RegExp(`Alice CsvOwner,${alice.email},25`));
+
+  const missing = await fetch(`${origin}/api/challenges/999999/leaderboard/export?type=teams`, { headers: { cookie: alice.cookie } });
+  assert.equal(missing.status, 404);
+});

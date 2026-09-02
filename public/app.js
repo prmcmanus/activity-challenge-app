@@ -86,8 +86,22 @@ function renderChallenge(){
   $('#myChMinutes').textContent=mine?mine.myMinutes:0;
   const myTeams=c.teams.filter(t=>t.mine);
   $('#team').innerHTML=myTeams.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')||'<option value="">Join a team first</option>';
-  $('#teamList').innerHTML=c.teams.map(t=>`<div class="listrow"><div><b>${esc(t.name)}</b><div class="muted">${t.members} member(s)${t.mine?' · you are in this team'+(t.invite_code?` · code: <b>${esc(t.invite_code)}</b>`:''):''}</div></div>${t.mine?'':`<button data-jointeam="${t.id}">Join</button>`}</div>`).join('')||'<p class="muted">No teams yet — create the first one.</p>';
+  $('#teamList').innerHTML=c.teams.map(t=>{
+    const actions=[];
+    if(!t.mine)actions.push(`<button data-jointeam="${t.id}">Join</button>`);
+    if(t.canManage){actions.push(`<button class="ghost" data-editteam="${t.id}" data-name="${esc(t.name)}">Rename</button>`);actions.push(`<button class="ghost" data-delteam="${t.id}" data-name="${esc(t.name)}">Delete</button>`)}
+    return `<div class="listrow"><div><b>${esc(t.name)}</b><div class="muted">${t.members} member(s)${t.mine?' · you are in this team'+(t.invite_code?` · code: <b>${esc(t.invite_code)}</b>`:''):''}</div></div><div class="btnrow">${actions.join('')}</div></div>`;
+  }).join('')||'<p class="muted">No teams yet — create the first one.</p>';
   $all('[data-jointeam]').forEach(b=>b.onclick=async()=>{await api(`/api/teams/${b.dataset.jointeam}/join`,{method:'POST'});await refreshChallenge()});
+  $all('[data-editteam]').forEach(b=>b.onclick=async()=>{
+    const name=prompt('Rename team to:',b.dataset.name);
+    if(!name||!name.trim()||name.trim()===b.dataset.name)return;
+    try{await api(`/api/teams/${b.dataset.editteam}`,{method:'PATCH',body:JSON.stringify({name:name.trim()})});await refreshChallenge()}catch(e){alert(e.message)}
+  });
+  $all('[data-delteam]').forEach(b=>b.onclick=async()=>{
+    if(!confirm(`Delete team "${b.dataset.name}"? This removes its members and any activity logged under it. This cannot be undone.`))return;
+    try{await api(`/api/teams/${b.dataset.delteam}`,{method:'DELETE'});await refreshChallenge()}catch(e){alert(e.message)}
+  });
   $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><b>${esc(t.name)}</b><span>${t.minutes} min</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
   $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader"><span class="rank">${i+1}</span><b>${esc(x.name)}</b><span>${x.minutes} min</span></div>`).join('')||'<p class="muted">No members yet.</p>';
   const recent=dash.mine.filter(a=>a.challenge_id===c.id);

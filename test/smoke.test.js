@@ -278,6 +278,77 @@ test('challenges and teams are invisible until joined, then joinable by invite c
   assert.equal(badCode.status, 400);
 });
 
+test('a team admin can rename their team; a plain member cannot rename or delete it', async () => {
+  const alice = await register('Alice TeamAdmin');
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Rename Challenge', start_date: '2026-06-01', end_date: '2026-06-30' }),
+  });
+  const { id: challengeId, invite_code: challengeCode } = await challengeRes.json();
+  const teamRes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Original Name' }),
+  });
+  const { id: teamId } = await teamRes.json();
+
+  const bob = await register('Bob PlainMember');
+  await fetch(`${origin}/api/join`, { method: 'POST', headers: { cookie: bob.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: challengeCode }) });
+  await fetch(`${origin}/api/teams/${teamId}/join`, { method: 'POST', headers: { cookie: bob.cookie } });
+
+  const forbiddenRename = await fetch(`${origin}/api/teams/${teamId}`, {
+    method: 'PATCH',
+    headers: { cookie: bob.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Hijacked Name' }),
+  });
+  assert.equal(forbiddenRename.status, 403);
+  const forbiddenDelete = await fetch(`${origin}/api/teams/${teamId}`, { method: 'DELETE', headers: { cookie: bob.cookie } });
+  assert.equal(forbiddenDelete.status, 403);
+
+  const rename = await fetch(`${origin}/api/teams/${teamId}`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Renamed Team' }),
+  });
+  assert.equal(rename.status, 200);
+  const view = await (await fetch(`${origin}/api/challenges/${challengeId}`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(view.teams[0].name, 'Renamed Team');
+  assert.equal(view.teams[0].canManage, true);
+  const bobView = await (await fetch(`${origin}/api/challenges/${challengeId}`, { headers: { cookie: bob.cookie } })).json();
+  assert.equal(bobView.teams[0].canManage, false);
+});
+
+test('the challenge owner can delete a team created by someone else, and it takes its activity with it', async () => {
+  const alice = await register('Alice ChallengeOwner');
+  const bob = await register('Bob TeamCreator');
+  const challengeRes = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Delete Challenge', start_date: '2026-07-01', end_date: '2026-07-31' }),
+  });
+  const { id: challengeId, invite_code: challengeCode } = await challengeRes.json();
+  await fetch(`${origin}/api/join`, { method: 'POST', headers: { cookie: bob.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: challengeCode }) });
+  const teamRes = await fetch(`${origin}/api/teams`, {
+    method: 'POST',
+    headers: { cookie: bob.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, name: 'Bobs Team' }),
+  });
+  const { id: teamId } = await teamRes.json();
+  await fetch(`${origin}/api/activities`, { method: 'POST', headers: { cookie: bob.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ team_id: teamId, challenge_id: challengeId, activity_type: 'Running', minutes: 15, activity_date: '2026-07-05' }) });
+
+  const del = await fetch(`${origin}/api/teams/${teamId}`, { method: 'DELETE', headers: { cookie: alice.cookie } });
+  assert.equal(del.status, 200);
+
+  const view = await (await fetch(`${origin}/api/challenges/${challengeId}`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(view.teams.length, 0);
+  const board = await (await fetch(`${origin}/api/challenges/${challengeId}/leaderboard`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(board.teams.length, 0);
+
+  const missing = await fetch(`${origin}/api/teams/${teamId}`, { method: 'DELETE', headers: { cookie: alice.cookie } });
+  assert.equal(missing.status, 404);
+});
+
 test('per-challenge team and individual leaderboards only aggregate that challenge', async () => {
   const alice = await register('Alice Board');
   const bob = await register('Bob Board');

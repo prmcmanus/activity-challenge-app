@@ -7,12 +7,58 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const port = 3100 + Number(process.env.TEST_WORKER_ID || 0);
+const basePort = 3100 + Number(process.env.TEST_WORKER_ID || 0) * 100;
+let nextPort = basePort;
+
+async function spawnServer(extraEnv = {}) {
+  const p = nextPort++;
+  const o = `http://127.0.0.1:${p}`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-challenge-'));
+  const proc = spawn(process.execPath, ['server.js'], {
+    cwd: path.join(__dirname, '..'),
+    env: {
+      ...process.env,
+      PORT: String(p),
+      DATA_DIR: dir,
+      APP_ORIGIN: o,
+      SEED_ADMIN_EMAIL: 'admin@example.com',
+      SEED_ADMIN_PASSWORD: 'ChangeMe123!',
+      ...extraEnv,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Server did not start in time')), 10000);
+    proc.once('exit', code => reject(new Error(`Server exited before tests with code ${code}`)));
+    proc.stdout.on('data', chunk => {
+      if (chunk.toString().includes('Activity Challenge running')) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+    proc.stderr.on('data', chunk => process.stderr.write(chunk));
+  });
+
+  return {
+    origin: o,
+    async stop() {
+      if (!proc.killed) {
+        proc.kill();
+        await new Promise(resolve => proc.once('exit', resolve));
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+const port = basePort;
 const origin = `http://127.0.0.1:${port}`;
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-challenge-'));
 let server;
 
 before(async () => {
+  nextPort = port + 1;
   server = spawn(process.execPath, ['server.js'], {
     cwd: path.join(__dirname, '..'),
     env: {
@@ -22,6 +68,10 @@ before(async () => {
       APP_ORIGIN: origin,
       SEED_ADMIN_EMAIL: 'admin@example.com',
       SEED_ADMIN_PASSWORD: 'ChangeMe123!',
+      // High enough that this suite's normal traffic (many register() calls from one IP) never
+      // trips it; the rate-limit behaviour itself is exercised against dedicated servers below
+      // with tiny explicit limits instead.
+      AUTH_RATE_LIMIT_MAX: '200',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -317,4 +367,100 @@ test('supports companion app bearer auth and idempotent health imports', async (
   });
   assert.equal(duplicateImport.status, 200);
   assert.deepEqual(await duplicateImport.json(), { added: 0, skipped: 1 });
+});
+
+test('GET /api/config reports reCAPTCHA as disabled when no keys are configured', async () => {
+  const cfg = await (await fetch(`${origin}/api/config`)).json();
+  assert.equal(cfg.recaptchaSiteKey, null);
+});
+
+test('the mobile-only login endpoint works without a recaptcha token and sets no cookie', async () => {
+  const eve = await register('Eve Mobile');
+  const login = await fetch(`${origin}/api/mobile/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: eve.email, password: 'SuperSecret123!' }),
+  });
+  assert.equal(login.status, 200);
+  const body = await login.json();
+  assert.match(body.sessionToken, /^[a-f0-9]+$/);
+  assert.equal(body.user.email, eve.email);
+  assert.equal(login.headers.get('set-cookie'), null);
+});
+
+test('registration and login are rate limited per IP', async () => {
+  const srv = await spawnServer({ AUTH_RATE_LIMIT_MAX: '3', AUTH_RATE_LIMIT_WINDOW_MS: '60000' });
+  try {
+    for (let i = 0; i < 3; i++) {
+      const r = await fetch(`${srv.origin}/api/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: `Bucket ${i}`, email: `bucket${i}@example.com`, password: 'SuperSecret123!' }),
+      });
+      assert.equal(r.status, 201, `attempt ${i} should still be within the limit`);
+    }
+    const blocked = await fetch(`${srv.origin}/api/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Bucket 4', email: 'bucket4@example.com', password: 'SuperSecret123!' }),
+    });
+    assert.equal(blocked.status, 429);
+
+    // Login has its own independent bucket, so it isn't affected by register's being exhausted.
+    const login = await fetch(`${srv.origin}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }),
+    });
+    assert.equal(login.status, 200);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('reCAPTCHA is enforced once configured, rejecting register/login with no token but exempting mobile login', async () => {
+  const srv = await spawnServer({ RECAPTCHA_SITE_KEY: 'test-site-key', RECAPTCHA_SECRET_KEY: 'test-secret-key' });
+  try {
+    const cfg = await (await fetch(`${srv.origin}/api/config`)).json();
+    assert.equal(cfg.recaptchaSiteKey, 'test-site-key');
+
+    const noTokenRegister = await fetch(`${srv.origin}/api/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'No Token', email: 'notoken@example.com', password: 'SuperSecret123!' }),
+    });
+    assert.equal(noTokenRegister.status, 400);
+    assert.match((await noTokenRegister.json()).error, /captcha/i);
+
+    const noTokenLogin = await fetch(`${srv.origin}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }),
+    });
+    assert.equal(noTokenLogin.status, 400);
+    assert.match((await noTokenLogin.json()).error, /captcha/i);
+
+    const mobileLogin = await fetch(`${srv.origin}/api/mobile/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }),
+    });
+    assert.equal(mobileLogin.status, 200);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('the general per-IP API rate limit applies across endpoints', async () => {
+  const srv = await spawnServer({ API_RATE_LIMIT_MAX: '5', API_RATE_LIMIT_WINDOW_MS: '60000' });
+  try {
+    for (let i = 0; i < 5; i++) {
+      const r = await fetch(`${srv.origin}/api/me`);
+      assert.equal(r.status, 200, `request ${i} should still be within the limit`);
+    }
+    const blocked = await fetch(`${srv.origin}/api/me`);
+    assert.equal(blocked.status, 429);
+  } finally {
+    await srv.stop();
+  }
 });

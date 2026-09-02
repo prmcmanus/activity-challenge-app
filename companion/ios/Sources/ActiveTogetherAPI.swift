@@ -33,8 +33,11 @@ final class ActiveTogetherAPI {
         self.baseURL = baseURL
     }
 
+    // Uses the mobile-specific login endpoint, not the web /api/login: that one requires a
+    // reCAPTCHA token from a page this app never renders. This path relies on server-side rate
+    // limiting instead for abuse resistance.
     func login(email: String, password: String) async throws -> String {
-        let json = try await request(path: "/api/login", method: "POST", token: nil, body: ["email": email, "password": password])
+        let json = try await request(path: "/api/mobile/login", method: "POST", token: nil, body: ["email": email, "password": password])
         guard let token = json["sessionToken"] as? String else { throw APIError.invalidResponse }
         return token
     }

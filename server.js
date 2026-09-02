@@ -16,6 +16,33 @@ CREATE TABLE IF NOT EXISTS activities(id INTEGER PRIMARY KEY,user_id INTEGER NOT
 const hash=p=>{const salt=crypto.randomBytes(16).toString('hex');return salt+':'+crypto.scryptSync(p,salt,64).toString('hex')};
 const verify=(p,h)=>{const [s,k]=h.split(':');return crypto.timingSafeEqual(Buffer.from(k,'hex'),crypto.scryptSync(p,s,64))};
 
+// --- bot/abuse precautions ---------------------------------------------------------------
+// In-memory, per-IP, fixed-window counters. Resets on restart, which is an acceptable escape
+// hatch for a self-hosted app this size (matches how ITCM's login lockout works).
+const API_RATE_LIMIT_MAX=Number(process.env.API_RATE_LIMIT_MAX||300), API_RATE_LIMIT_WINDOW_MS=Number(process.env.API_RATE_LIMIT_WINDOW_MS||60_000);
+const AUTH_RATE_LIMIT_MAX=Number(process.env.AUTH_RATE_LIMIT_MAX||20), AUTH_RATE_LIMIT_WINDOW_MS=Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS||15*60_000);
+const rateBuckets=new Map();
+function hitRateLimit(key,max,windowMs){const now=Date.now(),b=rateBuckets.get(key);if(!b||b.resetAt<=now){rateBuckets.set(key,{count:1,resetAt:now+windowMs});return false}b.count++;return b.count>max}
+setInterval(()=>{const now=Date.now();for(const [k,b] of rateBuckets)if(b.resetAt<=now)rateBuckets.delete(k)},10*60_000).unref();
+// Prefer Cloudflare's own header (this deployment sits behind a Cloudflare Tunnel) over the
+// generic, more easily spoofed X-Forwarded-For.
+const clientIp=req=>req.headers['cf-connecting-ip']||(req.headers['x-forwarded-for']||'').split(',')[0].trim()||req.socket.remoteAddress||'unknown';
+
+// reCAPTCHA is opt-in: unset RECAPTCHA_SECRET_KEY (the default) disables verification entirely,
+// so local dev and automated tests work with no Google keys registered. The site key is public
+// and served from /api/config so the frontend never needs it baked in at build time.
+const RECAPTCHA_SITE_KEY=process.env.RECAPTCHA_SITE_KEY||'', RECAPTCHA_SECRET_KEY=process.env.RECAPTCHA_SECRET_KEY||'';
+async function verifyRecaptcha(token,ip){
+  if(!RECAPTCHA_SECRET_KEY)return true;
+  if(!token)return false;
+  try{
+    const r=await fetch('https://www.google.com/recaptcha/api/siteverify',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({secret:RECAPTCHA_SECRET_KEY,response:token,remoteip:ip})});
+    const j=await r.json();
+    return j.success===true;
+  }catch(e){console.error('reCAPTCHA verification request failed',e);return false}
+}
+function attemptLogin(email,password){const x=db.prepare('SELECT * FROM users WHERE email=?').get(String(email||'').toLowerCase());if(!x||!verify(password||'',x.password_hash))return null;const t=startSession(x.id);return {sessionToken:t,user:{id:x.id,email:x.email,name:x.name,role:x.role}}}
+
 // Excludes 0/O/1/I/L to avoid transcription mistakes when someone reads a code aloud or off a screen.
 const CODE_ALPHABET='ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const genCode=(len=8)=>{const b=crypto.randomBytes(len);let s='';for(let i=0;i<len;i++)s+=CODE_ALPHABET[b[i]%CODE_ALPHABET.length];return s};
@@ -81,9 +108,35 @@ function dashboard(uid){
   return {challenges,mine};
 }
 
-async function api(req,res,url){const u=auth(req), m=req.method;
- if(m==='POST'&&url.pathname==='/api/register'){const b=await body(req),email=String(b.email||'').toLowerCase().trim(),name=String(b.name||'').trim();if(!name||!email||!b.password||String(b.password).length<8)return send(res,400,{error:'Name, email and a password of at least 8 characters are required'});try{const r=db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'member')").run(email,name,hash(b.password));const uid=Number(r.lastInsertRowid),t=startSession(uid);return send(res,201,{ok:true,sessionToken:t,user:{id:uid,email,name,role:'member'}},setSessionCookie(t))}catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}}
- if(m==='POST'&&url.pathname==='/api/login'){const b=await body(req),x=db.prepare('SELECT * FROM users WHERE email=?').get(String(b.email||'').toLowerCase());if(!x||!verify(b.password||'',x.password_hash))return send(res,401,{error:'Invalid email or password'});const t=startSession(x.id);return send(res,200,{ok:true,sessionToken:t,user:{id:x.id,email:x.email,name:x.name,role:x.role}},setSessionCookie(t))}
+async function api(req,res,url){
+ const ip=clientIp(req);
+ if(hitRateLimit('all:'+ip,API_RATE_LIMIT_MAX,API_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many requests. Please slow down and try again shortly.'});
+ const u=auth(req), m=req.method;
+ if(m==='GET'&&url.pathname==='/api/config')return send(res,200,{recaptchaSiteKey:RECAPTCHA_SITE_KEY||null});
+ if(m==='POST'&&url.pathname==='/api/register'){
+   if(hitRateLimit('register:'+ip,AUTH_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many registration attempts from this network. Please try again later.'});
+   const b=await body(req),email=String(b.email||'').toLowerCase().trim(),name=String(b.name||'').trim();
+   if(!name||!email||!b.password||String(b.password).length<8)return send(res,400,{error:'Name, email and a password of at least 8 characters are required'});
+   if(!(await verifyRecaptcha(b.recaptchaToken,ip)))return send(res,400,{error:'Captcha verification failed. Please try again.'});
+   try{const r=db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'member')").run(email,name,hash(b.password));const uid=Number(r.lastInsertRowid),t=startSession(uid);return send(res,201,{ok:true,sessionToken:t,user:{id:uid,email,name,role:'member'}},setSessionCookie(t))}catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
+ }
+ if(m==='POST'&&url.pathname==='/api/login'){
+   if(hitRateLimit('login:'+ip,AUTH_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many sign-in attempts from this network. Please try again later.'});
+   const b=await body(req);
+   if(!(await verifyRecaptcha(b.recaptchaToken,ip)))return send(res,400,{error:'Captcha verification failed. Please try again.'});
+   const result=attemptLogin(b.email,b.password);
+   if(!result)return send(res,401,{error:'Invalid email or password'});
+   return send(res,200,{ok:true,...result},setSessionCookie(result.sessionToken));
+ }
+ // Bearer-token login for the Android/iOS companion apps, which have no web page to render a
+ // captcha widget in. Deliberately not recaptcha-gated; relies on the same per-IP rate limit
+ // below plus the normal password check for abuse resistance instead.
+ if(m==='POST'&&url.pathname==='/api/mobile/login'){
+   if(hitRateLimit('mobilelogin:'+ip,AUTH_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many sign-in attempts from this network. Please try again later.'});
+   const b=await body(req),result=attemptLogin(b.email,b.password);
+   if(!result)return send(res,401,{error:'Invalid email or password'});
+   return send(res,200,{ok:true,...result});
+ }
  if(m==='POST'&&url.pathname==='/api/logout'){if(u){const t=sessionToken(req);db.prepare('DELETE FROM sessions WHERE token_hash=?').run(crypto.createHash('sha256').update(t).digest('hex'))}return send(res,200,{ok:true},{'Set-Cookie':'session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})}
  if(m==='GET'&&url.pathname==='/api/me')return send(res,200,{user:u});
  if(m==='GET'&&url.pathname==='/api/dashboard'){if(!need(res,u))return;return send(res,200,{user:u,...dashboard(u.id)})}

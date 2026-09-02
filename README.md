@@ -13,6 +13,7 @@ A dependency-free Node.js MVP for time-based team activity challenges.
 - Time-based challenges and manual activity logging
 - SQLite persistence, password hashing, HTTP-only sessions and duplicate-safe health imports
 - Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes in
+- Optional reCAPTCHA on registration/sign-in, plus per-IP rate limiting everywhere, against bots
 
 ## How the data model fits together
 
@@ -80,9 +81,32 @@ For emulator testing with the local server, use `http://10.0.2.2:3000` as the se
 ## iOS companion app
 An iOS HealthKit companion MVP with the same behaviour is included in [companion/ios](companion/ios), as Swift source plus setup instructions (it ships without an `.xcodeproj` — see that folder's README for why, and the two-minute Xcode setup).
 
+## Bot and abuse precautions
+
+- **reCAPTCHA v2** ("I'm not a robot") on the registration and sign-in *pages*. Optional — unset
+  `RECAPTCHA_SITE_KEY`/`RECAPTCHA_SECRET_KEY` (the default) disables it everywhere with no code
+  change, which is what local dev and the automated tests rely on. Get a key pair at
+  [google.com/recaptcha/admin](https://www.google.com/recaptcha/admin) for your real domain, put
+  them in the server's `.env`, and `docker compose up -d --build` to pick them up. `GET /api/config`
+  tells the frontend whether a widget should render, so nothing needs rebuilding client-side either.
+- The **Android/iOS companion apps sign in through a separate endpoint**, `/api/mobile/login`, not
+  the recaptcha-gated `/api/login` — there's no page there to render a widget in. It relies on the
+  rate limit below instead.
+- **Per-IP rate limiting**, in-memory, no dependency: `register` and `login` (and `/api/mobile/login`)
+  each get their own bucket, default 20 attempts per 15 minutes per IP
+  (`AUTH_RATE_LIMIT_MAX`/`AUTH_RATE_LIMIT_WINDOW_MS`), on top of a general ceiling across every
+  `/api/` route, default 300 requests/minute/IP (`API_RATE_LIMIT_MAX`/`API_RATE_LIMIT_WINDOW_MS`).
+  All four are overridable in `.env`. Counters reset on container restart — an acceptable escape
+  hatch at this scale, same tradeoff ITCM's login lockout makes.
+- Order of checks matters for cost: the rate limit (cheap) runs before reCAPTCHA verification
+  (a network call), which runs before password hashing (deliberately CPU-expensive, `scrypt`) —
+  so a scripted flood gets turned away before it can burn CPU or hit Google's API.
+- Client IP is read from `CF-Connecting-IP` first (this deployment sits behind a Cloudflare Tunnel),
+  falling back to `X-Forwarded-For` then the raw socket address.
+
 ## Production checklist
 - Put behind HTTPS and a reverse proxy.
 - Replace local accounts with approved enterprise SSO if deployed at Company.
-- Add CSRF protection, rate limiting, email delivery, password reset and audit logs.
+- Add CSRF protection, email delivery, password reset and audit logs.
 - Complete privacy impact, retention, consent and app-store health-data declarations.
 - Do not collect medical records, routes, heart rate or other health data when activity duration is sufficient.

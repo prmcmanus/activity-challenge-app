@@ -8,6 +8,29 @@ let pendingInviteToken=params.get('invite');
 let pendingCode=(params.get('code')||'').toUpperCase();
 if(pendingInviteToken||pendingCode)history.replaceState({},'',location.pathname);
 
+// reCAPTCHA is optional: /api/config only returns a site key once the server has one
+// configured, so a deployment with no Google keys set just skips rendering the widget and the
+// server-side check becomes a no-op too.
+let recaptchaSiteKey=null, recaptchaWidgetId=null;
+function renderRecaptchaIfReady(){
+  const el=document.getElementById('recaptcha-auth');
+  if(!el||!recaptchaSiteKey||!window.grecaptcha||!grecaptcha.render)return;
+  el.innerHTML='';
+  recaptchaWidgetId=grecaptcha.render(el,{sitekey:recaptchaSiteKey});
+}
+function getRecaptchaToken(){return (recaptchaSiteKey&&window.grecaptcha&&recaptchaWidgetId!==null)?grecaptcha.getResponse(recaptchaWidgetId):''}
+function resetRecaptcha(){if(recaptchaSiteKey&&window.grecaptcha&&recaptchaWidgetId!==null)grecaptcha.reset(recaptchaWidgetId)}
+async function initRecaptcha(){
+  try{const cfg=await api('/api/config');recaptchaSiteKey=cfg.recaptchaSiteKey||null}catch(e){recaptchaSiteKey=null}
+  if(!recaptchaSiteKey)return;
+  window.onRecaptchaLoad=renderRecaptchaIfReady;
+  const s=document.createElement('script');
+  s.src='https://www.google.com/recaptcha/api.js?onload=onRecaptchaLoad&render=explicit';
+  s.async=true;
+  document.head.appendChild(s);
+}
+initRecaptcha();
+
 async function load(){
   const m=await api('/api/me'); me=m.user;
   if(!me){$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');renderAuth();return}
@@ -22,12 +45,13 @@ async function load(){
 function renderAuth(){
   $all('[data-authtab]').forEach(b=>b.classList.toggle('active',b.dataset.authtab===authTab));
   if(authTab==='login'){
-    $('#authPanel').innerHTML=`<h1>Welcome back</h1><p>Sign in to log activity and support your team.</p><form id="loginForm"><label>Email<input id="email" type="email" required></label><label>Password<input id="password" type="password" required></label><button>Sign in</button></form><p id="authMsg" class="error"></p>`;
-    $('#loginForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{method:'POST',body:JSON.stringify({email:$('#email').value,password:$('#password').value})});await load()}catch(x){$('#authMsg').textContent=x.message}};
+    $('#authPanel').innerHTML=`<h1>Welcome back</h1><p>Sign in to log activity and support your team.</p><form id="loginForm"><label>Email<input id="email" type="email" required></label><label>Password<input id="password" type="password" required></label><div id="recaptcha-auth"></div><button>Sign in</button></form><p id="authMsg" class="error"></p>`;
+    $('#loginForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{method:'POST',body:JSON.stringify({email:$('#email').value,password:$('#password').value,recaptchaToken:getRecaptchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;resetRecaptcha()}};
   }else{
-    $('#authPanel').innerHTML=`<h1>Create your account</h1><p>Then create a challenge or join one with an invite code.</p><form id="registerForm"><label>Name<input id="rname" required></label><label>Email<input id="remail" type="email" required></label><label>Password<input id="rpassword" type="password" required minlength="8"></label><button>Create account</button></form><p id="authMsg" class="error"></p>`;
-    $('#registerForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/register',{method:'POST',body:JSON.stringify({name:$('#rname').value,email:$('#remail').value,password:$('#rpassword').value})});await load()}catch(x){$('#authMsg').textContent=x.message}};
+    $('#authPanel').innerHTML=`<h1>Create your account</h1><p>Then create a challenge or join one with an invite code.</p><form id="registerForm"><label>Name<input id="rname" required></label><label>Email<input id="remail" type="email" required></label><label>Password<input id="rpassword" type="password" required minlength="8"></label><div id="recaptcha-auth"></div><button>Create account</button></form><p id="authMsg" class="error"></p>`;
+    $('#registerForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/register',{method:'POST',body:JSON.stringify({name:$('#rname').value,email:$('#remail').value,password:$('#rpassword').value,recaptchaToken:getRecaptchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;resetRecaptcha()}};
   }
+  renderRecaptchaIfReady();
 }
 $all('[data-authtab]').forEach(b=>b.onclick=()=>{authTab=b.dataset.authtab;renderAuth()});
 

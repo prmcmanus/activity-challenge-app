@@ -14,9 +14,12 @@ data class HealthRecord(val teamId: Int, val challengeId: Int, val activityType:
 data class ImportResult(val added: Int, val skipped: Int)
 
 class ActiveTogetherApi(private val baseUrl: String) {
+    // Uses the mobile-specific login endpoint, not the web /api/login: that one requires a
+    // reCAPTCHA token from a page this app never renders. This path relies on server-side rate
+    // limiting instead for abuse resistance.
     fun login(email: String, password: String): String {
         val response = request(
-            path = "/api/login",
+            path = "/api/mobile/login",
             method = "POST",
             body = JSONObject().put("email", email).put("password", password),
         )

@@ -81,6 +81,8 @@ function renderChallenge(){
   const c=curChallenge;
   $('#challengeName').textContent=c.name;
   $('#challengeDates').textContent=`${c.start_date} → ${c.end_date} · YOUR ROLE: ${c.role.toUpperCase()}`;
+  $('#challengeDescription').textContent=c.description||'';
+  $('#challengeDescription').classList.toggle('hidden',!c.description);
   $('#challengeCode').innerHTML=`Invite code: <b>${esc(c.invite_code)}</b> — share it so others can join this challenge.`;
   $('#challengeActions').innerHTML=c.canManage?'<button class="ghost" data-editchallenge="1">Edit challenge</button>':'';
   if(c.canManage)$('[data-editchallenge]').onclick=()=>openEditChallenge(c);
@@ -117,6 +119,7 @@ function openEditChallenge(c){
   $('#modalBody').innerHTML=`<h2>Edit challenge</h2>
     <form id="editChallengeForm">
       <label>Name<input id="ecName" value="${esc(c.name)}" required></label>
+      <label>Description (optional)<textarea id="ecDescription" rows="3">${esc(c.description||'')}</textarea></label>
       <div class="two"><label>Start<input id="ecStart" type="date" value="${c.start_date}" required></label><label>End<input id="ecEnd" type="date" value="${c.end_date}" required></label></div>
       <button>Save changes</button>
     </form>
@@ -125,7 +128,7 @@ function openEditChallenge(c){
   $('#editChallengeForm').onsubmit=async e=>{
     e.preventDefault();
     try{
-      await api(`/api/challenges/${c.id}`,{method:'PATCH',body:JSON.stringify({name:$('#ecName').value.trim(),start_date:$('#ecStart').value,end_date:$('#ecEnd').value})});
+      await api(`/api/challenges/${c.id}`,{method:'PATCH',body:JSON.stringify({name:$('#ecName').value.trim(),description:$('#ecDescription').value.trim(),start_date:$('#ecStart').value,end_date:$('#ecEnd').value})});
       $('#modal').close();
       await refreshChallenge();
     }catch(x){$('#ecMsg').textContent=x.message}

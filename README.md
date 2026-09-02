@@ -17,7 +17,7 @@ A dependency-free Node.js MVP for time-based team activity challenges.
   other sessions.
 - Anyone can edit or delete an activity entry they logged themselves, with an optional start/finish
   time (auto-filling minutes) alongside the required date and duration
-- The challenge owner (or a global admin) can edit a challenge's name and dates
+- The challenge owner (or a global admin) can edit a challenge's name, dates and optional description
 - Time-based challenges and manual activity logging
 - SQLite persistence, password hashing, HTTP-only sessions and duplicate-safe health imports
 - Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes in

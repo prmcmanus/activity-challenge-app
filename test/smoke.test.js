@@ -995,3 +995,47 @@ test('a challenge owner can edit its name and dates; a plain member cannot', asy
   });
   assert.equal(missing.status, 404);
 });
+
+test('a challenge can have an optional description, settable at creation and later edited or cleared', async () => {
+  const alice = await register('Alice Description');
+
+  const withoutDescription = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'No Description Challenge', start_date: '2026-12-01', end_date: '2026-12-31' }),
+  });
+  const { id: plainId } = await withoutDescription.json();
+  const plainView = await (await fetch(`${origin}/api/challenges/${plainId}`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(plainView.description, null);
+
+  const withDescription = await fetch(`${origin}/api/challenges`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Described Challenge', description: 'Walk 10,000 steps a day.', start_date: '2026-12-01', end_date: '2026-12-31' }),
+  });
+  const { id: describedId } = await withDescription.json();
+  const describedView = await (await fetch(`${origin}/api/challenges/${describedId}`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(describedView.description, 'Walk 10,000 steps a day.');
+
+  // It also shows up on the dashboard, not just the single-challenge view.
+  const dashboard = await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(dashboard.challenges.find(c => c.id === describedId).description, 'Walk 10,000 steps a day.');
+
+  const edited = await fetch(`${origin}/api/challenges/${describedId}`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description: 'Updated: run instead of walk.' }),
+  });
+  assert.equal(edited.status, 200);
+  const editedView = await (await fetch(`${origin}/api/challenges/${describedId}`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(editedView.description, 'Updated: run instead of walk.');
+
+  const cleared = await fetch(`${origin}/api/challenges/${describedId}`, {
+    method: 'PATCH',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description: '' }),
+  });
+  assert.equal(cleared.status, 200);
+  const clearedView = await (await fetch(`${origin}/api/challenges/${describedId}`, { headers: { cookie: alice.cookie } })).json();
+  assert.equal(clearedView.description, null);
+});

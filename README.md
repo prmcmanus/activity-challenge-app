@@ -33,6 +33,12 @@ A dependency-free Node.js MVP for time-based team activity challenges.
   challenge and there is one leaderboard); switchable later by the owner
 - The challenge owner (or a global admin) can delete a challenge, with all its teams and activity,
   after typing its name to confirm
+- One activity can count in several challenges at once (the Android app logs and syncs into every
+  challenge a workout fits); each challenge gets its own entry
+- Optional GPS routes: upload a GPX file with an activity on the web, or switch on routes in the
+  Android app. Routes are stored once per workout, shown on an OpenStreetMap map under My activity,
+  and visible only to their owner
+- My activity on the home page lists everything you've logged across every challenge
 - SQLite persistence, password hashing, HTTP-only sessions and duplicate-safe health imports
 - Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes and distance in
 - Optional reCAPTCHA on registration/sign-in, plus per-IP rate limiting everywhere, against bots

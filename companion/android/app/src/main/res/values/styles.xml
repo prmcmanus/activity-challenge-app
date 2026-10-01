@@ -1,7 +1,8 @@
 <resources>
+    <!-- Only the window before Compose draws; the real theme is ActiveTogetherTheme (ui/Theme.kt). -->
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
-        <item name="android:fontFamily">sans</item>
-        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowBackground">@android:color/white</item>
         <item name="android:colorAccent">#D40511</item>
+        <item name="android:colorPrimary">#D40511</item>
     </style>
 </resources>

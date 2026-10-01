@@ -13,13 +13,15 @@
 <li><b>Activity entries:</b> activity type, duration in minutes and/or distance, date, an optional start/finish time, and an optional comment you write yourself.</li>
 <li><b>Uploaded images:</b> an optional profile avatar, an optional team logo, and any images you insert into a challenge description.</li>
 <li><b>Challenge/team content:</b> challenge and team names, descriptions, and your membership/role in them.</li>
-<li><b>Device sync data (Android/iOS companion apps only):</b> if you use a companion app, it reads workout duration, date, type and start/finish time, plus the distance covered during each workout if you allow it, from Health Connect or Apple Health and uploads only that. It never reads or uploads routes, heart rate, calories, or any other health data, and never reads records beyond exercise/workout sessions and the distance recorded during them.</li>
+<li><b>Device sync data (Android/iOS companion apps only):</b> if you use a companion app, it reads workout duration, date, type and start/finish time, plus the distance covered during each workout if you allow it, from Health Connect or Apple Health and uploads only that. It never reads or uploads heart rate, calories, or any other health data, and never reads records beyond exercise/workout sessions, the distance recorded during them and - only if you turn it on - their routes.</li>
+<li><b>GPS routes (optional):</b> a workout's route - a series of map positions with times - is stored only if you upload a GPX file on the website or switch on "Include GPS routes" in the Android app. A route is precise location data and can show where you live or work, so it is off by default, it is visible only to you (never to other members, team admins, challenge owners or in exports), and it is deleted along with the last activity entry that uses it.</li>
 </ul>
 
 <h2>Who can see what</h2>
 <p>Challenges and teams are private by default — nobody can see a challenge, its teams, its members, or its leaderboard unless they've joined it with an invite code or been added directly. Within a challenge you're a member of:</p>
 <ul>
 <li>Anyone in the challenge can see its team and individual leaderboards, including names and avatars.</li>
+<li>Your GPS routes are visible only to you.</li>
 <li>Anyone in a team can see that team's member list (names and emails).</li>
 <li>Only a challenge owner or a global admin can export leaderboard data as a CSV file, or add another owner.</li>
 </ul>

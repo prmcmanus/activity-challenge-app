@@ -662,7 +662,9 @@ async function api(req,res,url){
      // midnight-crossing pair just means "no times", not "reject the whole synced session".
      let times={start_time:null,end_time:null};try{times=validateTimes(x.start_time,x.end_time)}catch(e){}
      try{
-       const routeId=route?saveRoute(u.id,b.source,String(x.source_ref),route):null;
+       // A workout already synced into another challenge keeps its stored route, so a later record
+       // for the same workout need not send the points again.
+       const routeId=route?saveRoute(u.id,b.source,String(x.source_ref),route):(db.prepare('SELECT id FROM routes WHERE user_id=? AND source=? AND source_ref=?').get(u.id,b.source,String(x.source_ref))?.id??null);
        db.prepare('INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,distance_m,activity_date,source,source_ref,start_time,end_time,route_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(u.id,teamId,challengeId,String(x.activity_type||'Synced activity').trim().slice(0,60)||'Synced activity',minutes,distance_m,x.activity_date,b.source,x.source_ref,times.start_time,times.end_time,routeId);added++
      }catch(e){skipped++}
    }

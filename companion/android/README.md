@@ -1,31 +1,60 @@
-# Active Together Android Companion
+# Active Together for Android
 
-Native Android companion MVP for syncing exercise session durations and distances from Health Connect into Active Together.
+The Active Together app for Android, written in Kotlin with Jetpack Compose (Material 3, in the web
+app's red and yellow, with a dark theme). It talks to `https://activetogether.team`.
 
 ## What it does
 
-- Signs in to the Active Together server with the same email/password as the web app.
-- Stores the returned bearer session token in app preferences.
-- Loads the member's challenge/team memberships from `/api/mobile/bootstrap` and offers them as one combined "Challenge — Team" picker, since a synced record needs a valid team+challenge pairing.
-- Requests Health Connect read access for exercise sessions (required) and distance (optional - asked once; declining it still syncs sessions, but a distance challenge then skips them).
-- Reads exercise sessions from the last 30 days.
-- Uploads whole-minute durations, plus the distance recorded during each session (`distance_m`, from an aggregate that de-duplicates watch and phone), to `/api/health/import` with stable `source_ref` values so repeated syncs are idempotent.
+- **Challenges:** every challenge you're in, with your total, its dates and what it measures; open
+  one for its description and team / individual leaderboards.
+- **Activity:** everything you've logged across all challenges, newest first. A workout logged into
+  several challenges shows once, listing them; open it to see its route on an OpenStreetMap map
+  (if it has one) and to remove it from any challenge.
+- **Log activity:** type, date, optional start/finish (fills in minutes), distance in miles or km,
+  minutes and a comment, counted in every challenge running on that day (tick the ones you want).
+- **Sync:** reads workouts from Health Connect for the span of your challenges and lists them for
+  review: tick which to send, change the activity type, type or correct the distance (miles/km),
+  and choose the challenges each counts in - all the ones it fits are pre-selected, already-synced
+  ones are shown as such, and distance challenges are left out for a workout with no distance until
+  one is typed. With routes switched on, a route Health Connect shares is included; a route recorded
+  by another app needs a tap ("Add route from ...") because Health Connect asks consent per workout.
+- **Automatic sync** (Me -> Sync settings): new workouts go into every challenge they fit, every
+  1-24 hours in the background where Health Connect allows background reading, and each time the
+  app opens. A notification says what was synced.
+- **Me:** change your photo, name, email and password; sync settings; sign out.
 
-This companion is sync-only: it does not create accounts or join challenges/teams. Register, join with an invite code, and create/join a team in the web app first, then sign in here with the same credentials.
+Health Connect permissions: exercise (required), distance, history older than 30 days (for
+challenges that started earlier) and background reading (for automatic sync) - each asked for only
+when needed. Nothing else is read.
 
-## Local testing
+## Building
 
-1. Start the web/server app:
+The APK to install is the shrunk release build, signed with the debug key so it updates in place:
 
-   ```powershell
-   .\start-local.ps1
-   ```
+```powershell
+./build-local.ps1 -Task assembleRelease -JavaHome <jdk-17> -GradleHome <gradle-8.9>
+# -> app/build/outputs/apk/release/app-release.apk
+```
 
-2. In the web app (`http://localhost:3000`), register an account (or sign in as the seeded admin, `admin@example.com` / `ChangeMe123!`), create or join a challenge, and create or join a team in it.
-3. In Android Studio, open `companion/android`.
-4. Run the app on a physical Android device or emulator with Health Connect available.
-5. The server address is fixed to `https://activetogether.team` (`SERVER_URL` in `MainActivity.kt`). To test against a local server, change that constant temporarily (e.g. `http://10.0.2.2:3000` for the emulator) and set `android:usesCleartextTraffic="true"` in the manifest for plain http.
-6. Sign in with the same credentials used in step 2, then pick the "Challenge — Team" entry to sync into.
+On a machine whose project folder is synced by OneDrive, build from a copy outside it - OneDrive
+locks files under `app/build` and Gradle fails with "Unable to delete directory".
+
+## Trying it on an emulator
+
+The `emulator` build type points at a local server (`http://10.0.2.2:3911` by default, override
+with `-PlocalServer=...`) and adds `SeedActivity`, which writes sample workouts into Health Connect:
+
+```powershell
+gradle assembleEmulator
+adb install -r app/build/outputs/apk/emulator/app-emulator.apk
+adb shell am start -S -n com.activetogether.companion.emulator/com.activetogether.companion.SeedActivity              # 3 sample workouts
+adb shell am start -S -n com.activetogether.companion.emulator/com.activetogether.companion.SeedActivity --ez fresh true    # one new run
+adb shell am start -S -n com.activetogether.companion.emulator/com.activetogether.companion.SeedActivity --ez runSync true  # background sync in 20s
+```
+
+Behind a TLS-inspecting proxy, put its root certificate (PEM) at
+`app/src/emulator/res/raw/corp_root_ca.pem` (git-ignored) so map tiles load on the emulator; the
+emulator build trusts it, the release build never does.
 
 ## Build prerequisites
 
@@ -196,15 +225,15 @@ independent and doesn't touch it.
 
 ## Privacy boundary
 
-The companion reads only exercise session records and the distance recorded during them, and uploads only:
+The app reads only exercise sessions, the distance recorded during them and - if "Include GPS routes" is on - their routes, and uploads only:
 
-- team ID
-- challenge ID
+- challenge ID (and team ID in a team challenge)
 - activity type
 - whole minutes
 - distance in metres (when recorded and permitted)
 - activity date
 - clock start/finish time (only when the session doesn't cross midnight; otherwise omitted)
 - stable source reference
+- the route's points (latitude, longitude, time, altitude) when routes are on; only you can see them
 
-It does not upload routes, heart rate, calories, medical records, GPS data, or raw Health Connect records.
+It does not upload heart rate, calories, medical records or raw Health Connect records.

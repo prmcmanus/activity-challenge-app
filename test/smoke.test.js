@@ -1673,4 +1673,14 @@ test('a synced workout can go into every challenge it fits, its route stored onc
   check.close();
   assert.equal(routes.length, 1, 'one route row for the two entries');
   assert.equal(routes[0].point_count, 3000);
+
+  // Syncing the same workout into a third challenge later, without the points, still links the route.
+  const cC = await jsonFetch(`${origin}/api/challenges`, pat.cookie, 'POST', { name: 'Late joiner', start_date: '2027-07-01', end_date: '2027-07-31', participation: 'individual' });
+  await fetch(`${origin}/api/health/import`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${pat.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: 'health_connect', records: [{ ...rec, route: undefined, challenge_id: cC.body.id }] }),
+  });
+  const late = (await jsonFetch(`${origin}/api/me/activities`, pat.cookie)).body.activities.find(x => x.challenge_id === cC.body.id);
+  assert.equal(late.has_route, true);
 });

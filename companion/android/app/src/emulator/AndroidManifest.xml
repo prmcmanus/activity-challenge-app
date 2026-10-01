@@ -1,0 +1,9 @@
+<!-- Emulator build only: lets the seeding tool write sample workouts into Health Connect. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.health.WRITE_EXERCISE" />
+    <uses-permission android:name="android.permission.health.WRITE_DISTANCE" />
+    <uses-permission android:name="android.permission.health.WRITE_EXERCISE_ROUTE" />
+    <application android:networkSecurityConfig="@xml/network_security_config">
+        <activity android:name=".SeedActivity" android:exported="true" />
+    </application>
+</manifest>

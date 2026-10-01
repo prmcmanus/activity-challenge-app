@@ -1,0 +1,10 @@
+<!-- Emulator build only: plain http to the local test server, and trust for the corporate TLS
+     inspection proxy's root so OpenStreetMap tiles load on a work laptop's emulator. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/corp_root_ca" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

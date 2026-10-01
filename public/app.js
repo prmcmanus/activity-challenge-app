@@ -138,6 +138,7 @@ function renderHome(){
   $('#hello').textContent=`Welcome, ${me.name}`;
   $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${isIndividual(c)?'individuals':`${c.teams.length} of your team(s)`} · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
   $all('[data-open]').forEach(b=>b.onclick=()=>openChallenge(Number(b.dataset.open)));
+  loadMyActivity().catch(()=>{});
 }
 
 async function openChallenge(id){
@@ -206,9 +207,10 @@ function renderChallenge(){
   $('#recent').innerHTML=recent.map(x=>{
     const timeBit=x.start_time&&x.end_time?` · ${x.start_time}–${x.end_time}`:'';
     const commentBit=x.comment?`<div class="muted">“${esc(x.comment)}”</div>`:'';
-    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${x.team_name?`${esc(x.team_name)} · `:''}${x.activity_date}${timeBit} · ${x.source}</div>${commentBit}</div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b><button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></div></div>`;
+    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${x.team_name?`${esc(x.team_name)} · `:''}${x.activity_date}${timeBit} · ${x.source}</div>${commentBit}</div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b>${x.has_route?`<button class="ghost" data-maproute="${x.id}">Map</button>`:''}<button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></div></div>`;
   }).join('')||'<p class="muted">No activity logged yet in this challenge.</p>';
   $all('[data-editactivity]').forEach(b=>{const x=recent.find(a=>a.id===Number(b.dataset.editactivity));b.onclick=()=>openEditActivity(x)});
+  $all('[data-maproute]').forEach(b=>{const x=recent.find(a=>a.id===Number(b.dataset.maproute));b.onclick=()=>openRouteMap(x)});
   $all('[data-delactivity]').forEach(b=>b.onclick=async()=>{
     if(!confirm('Delete this activity entry?'))return;
     try{await api(`/api/activities/${b.dataset.delactivity}`,{method:'DELETE'});await refreshChallenge()}catch(e){alert(e.message)}
@@ -469,7 +471,10 @@ $('#activityForm').onsubmit=async e=>{
   const solo=isIndividual(curChallenge),teamId=solo?null:$('#team').value;
   if(!solo&&!teamId){alert('Join a team first');return}
   try{
-    await api('/api/activities',{method:'POST',body:JSON.stringify({...(solo?{}:{team_id:teamId}),challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,...(isDistance(curChallenge)?{distance:$('#distance').value,distance_unit:$('#distanceUnit').value}:{}),activity_date:$('#activityDate').value,start_time:$('#startTime').value,end_time:$('#endTime').value,comment:$('#activityComment').value})});
+    // A minutes challenge has no distance box, so a GPX file's distance goes along as extra detail.
+    const dist=isDistance(curChallenge)?{distance:$('#distance').value,distance_unit:$('#distanceUnit').value}:(pendingRoute&&pendingRoute.meters?{distance_m:pendingRoute.meters}:{});
+    await api('/api/activities',{method:'POST',body:JSON.stringify({...(solo?{}:{team_id:teamId}),challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,...dist,activity_date:$('#activityDate').value,start_time:$('#startTime').value,end_time:$('#endTime').value,comment:$('#activityComment').value,...(pendingRoute?{route:pendingRoute.points}:{})})});
+    pendingRoute=null;$('#gpxInfo').classList.add('hidden');
     $('#activityMsg').textContent='';
     const keepUnit=$('#distanceUnit').value;
     e.target.reset();
@@ -478,6 +483,87 @@ $('#activityForm').onsubmit=async e=>{
     await refreshChallenge();
   }catch(x){$('#activityMsg').textContent=x.message}
 };
+// --- GPX routes: read in the browser, so only the points (not the file) are uploaded -------------
+let pendingRoute=null;
+const R_EARTH=6371008.8;
+function haversine(a,b){const r=Math.PI/180,dLat=(b[0]-a[0])*r,dLon=(b[1]-a[1])*r,h=Math.sin(dLat/2)**2+Math.cos(a[0]*r)*Math.cos(b[0]*r)*Math.sin(dLon/2)**2;return 2*R_EARTH*Math.asin(Math.sqrt(h))}
+function routeMeters(pts){let m=0;for(let i=1;i<pts.length;i++)m+=haversine(pts[i-1],pts[i]);return m}
+function parseGpx(text){
+  const doc=new DOMParser().parseFromString(text,'application/xml');
+  if(doc.querySelector('parsererror'))throw Error('That file is not valid GPX');
+  // Track points first; a route-only file (rtept) is accepted too.
+  let nodes=[...doc.getElementsByTagName('trkpt')];
+  if(!nodes.length)nodes=[...doc.getElementsByTagName('rtept')];
+  const pts=nodes.map(n=>{
+    const t=n.getElementsByTagName('time')[0],e=n.getElementsByTagName('ele')[0];
+    const ms=t?Date.parse(t.textContent):NaN;
+    return [Number(n.getAttribute('lat')),Number(n.getAttribute('lon')),Number.isFinite(ms)?ms:null,e?Number(e.textContent):null];
+  }).filter(p=>Number.isFinite(p[0])&&Number.isFinite(p[1]));
+  if(pts.length<2)throw Error('No track points found in that GPX file');
+  return pts;
+}
+const pad2=n=>String(n).padStart(2,'0');
+$('#gpxFile').addEventListener('change',async()=>{
+  const f=$('#gpxFile').files[0];
+  pendingRoute=null;$('#gpxInfo').classList.add('hidden');
+  if(!f)return;
+  try{
+    const pts=parseGpx(await f.text()),meters=routeMeters(pts);
+    pendingRoute={points:pts,meters};
+    // Fill whatever the person has left empty from the track itself.
+    const times=pts.map(p=>p[2]).filter(t=>t!=null);
+    if(times.length>1){
+      const s=new Date(times[0]),e=new Date(times[times.length-1]);
+      if(!$('#startTime').value)$('#startTime').value=`${pad2(s.getHours())}:${pad2(s.getMinutes())}`;
+      if(!$('#endTime').value&&e.toDateString()===s.toDateString())$('#endTime').value=`${pad2(e.getHours())}:${pad2(e.getMinutes())}`;
+      if(!$('#minutes').value)$('#minutes').value=Math.max(1,Math.round((times[times.length-1]-times[0])/60000));
+      $('#activityDate').value=`${s.getFullYear()}-${pad2(s.getMonth()+1)}-${pad2(s.getDate())}`;
+    }
+    if(isDistance(curChallenge)&&!$('#distance').value)$('#distance').value=(meters/($('#distanceUnit').value==='km'?1000:1609.344)).toFixed(2);
+    $('#gpxInfo').textContent=`Route loaded: ${pts.length} points, ${(meters/1000).toFixed(2)} km (${(meters/1609.344).toFixed(2)} mi). Only you can see your route.`;
+    $('#gpxInfo').classList.remove('hidden');
+  }catch(err){$('#gpxInfo').textContent=err.message;$('#gpxInfo').classList.remove('hidden');$('#gpxFile').value=''}
+});
+// Leaflet (OpenStreetMap tiles) is loaded only the first time a map is opened.
+let leafletReady=null;
+function loadLeaflet(){
+  if(leafletReady)return leafletReady;
+  leafletReady=new Promise((resolve,reject)=>{
+    const css=document.createElement('link');css.rel='stylesheet';css.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';document.head.appendChild(css);
+    const js=document.createElement('script');js.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';js.onload=()=>resolve(window.L);js.onerror=()=>{leafletReady=null;reject(Error('Could not load the map library'))};document.head.appendChild(js);
+  });
+  return leafletReady;
+}
+// Everything I've logged, across every challenge, newest first - with a map where a route exists.
+let myActivity=[],myActivityMore=false;
+async function loadMyActivity(append=false){
+  const r=await api(`/api/me/activities?limit=20&offset=${append?myActivity.length:0}`);
+  myActivity=append?myActivity.concat(r.activities):r.activities;myActivityMore=r.more;
+  $('#myActivity').innerHTML=myActivity.map(x=>{
+    const c={metric:x.metric,distance_unit:x.distance_unit};
+    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${esc(x.challenge_name)}${x.team_name?` · ${esc(x.team_name)}`:''} · ${x.activity_date}${x.start_time?` · ${x.start_time}`:''}</div></div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b>${x.has_route?`<button class="ghost" data-mymap="${x.id}">Map</button>`:''}</div></div>`;
+  }).join('')||'<p class="muted">Nothing logged yet.</p>';
+  $('#moreActivity').classList.toggle('hidden',!myActivityMore);
+  $all('[data-mymap]').forEach(b=>{const x=myActivity.find(a=>a.id===Number(b.dataset.mymap));b.onclick=()=>openRouteMap(x,{metric:x.metric,distance_unit:x.distance_unit})});
+}
+$('#moreActivity').onclick=()=>loadMyActivity(true);
+async function openRouteMap(x,cc=curChallenge){
+  const dlg=$('#modal');
+  $('#modalBody').innerHTML=`<h2>${esc(x.activity_type)}</h2><p class="muted">${x.activity_date}${x.start_time?` · ${x.start_time}–${x.end_time||''}`:''} · ${esc(fmtEntry(cc,x))}</p><div id="routeMap" class="route-map"></div><p class="muted">Only you can see this route.</p>`;
+  dlg.classList.add('wide');
+  dlg.addEventListener('close',()=>dlg.classList.remove('wide'),{once:true});
+  dlg.showModal();
+  try{
+    const [L,r]=await Promise.all([loadLeaflet(),api(`/api/activities/${x.id}/route`)]);
+    const line=r.points.map(p=>[p[0],p[1]]);
+    const map=L.map('routeMap');
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+    const poly=L.polyline(line,{color:'#d40511',weight:4}).addTo(map);
+    L.circleMarker(line[0],{radius:6,color:'#1a7f37',fillOpacity:1}).addTo(map).bindTooltip('Start');
+    L.circleMarker(line[line.length-1],{radius:6,color:'#171717',fillOpacity:1}).addTo(map).bindTooltip('Finish');
+    map.fitBounds(poly.getBounds(),{padding:[20,20]});
+  }catch(err){$('#routeMap').outerHTML=`<p class="error">${esc(err.message)}</p>`}
+}
 $('#health').onclick=()=>{$('#modalBody').innerHTML='<h2>Phone activity sync</h2><p><b>Android:</b> use the native companion app to read exercise sessions from Health Connect after the user grants permission.</p><p><b>iPhone:</b> use the native iOS companion app to read workouts from Apple Health through HealthKit.</p><p>This web app already includes the authenticated <code>/api/health/import</code> endpoint and duplicate protection. Native projects, store declarations and explicit user consent are still required.</p>';$('#modal').showModal()};
 
 load();

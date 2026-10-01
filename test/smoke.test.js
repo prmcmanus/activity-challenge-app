@@ -1451,7 +1451,8 @@ test('an existing database from before distance challenges is migrated without l
     assert.equal(row.minutes, 42);
     assert.equal(row.source_ref, 'old-ref');
     assert.equal(check.prepare('SELECT metric FROM challenges WHERE id=1').get().metric, 'minutes');
-    // The UNIQUE(user_id,source,source_ref) rule survived the rebuild.
+    // The uniqueness rule survived the rebuild, now per challenge.
+    assert.equal(check.prepare("SELECT group_concat(name) n FROM pragma_index_info((SELECT name FROM pragma_index_list('activities') WHERE origin='u'))").get().n, 'user_id,source,source_ref,challenge_id');
     assert.throws(() => check.prepare("INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,activity_date,source,source_ref) VALUES(1,1,1,'Walking',5,date('now'),'health_connect','old-ref')").run(), /UNIQUE/);
     check.close();
   } finally {
@@ -1600,5 +1601,76 @@ test('activity must fall within the challenge dates - manual, edited and synced'
     headers: { authorization: `Bearer ${lou.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ source: 'health_connect', refs: ['in-run', 'old-run', 'never'] }),
   });
-  assert.deepEqual(await known.json(), { synced: ['in-run'] });
+  assert.deepEqual(await known.json(), { synced: ['in-run'], syncedIn: { 'in-run': [challengeId] } });
+});
+
+// --- routes, several challenges per workout, and my activity ------------------------------
+
+const ROUTE = Array.from({ length: 50 }, (_, i) => [51.5 + i * 0.0005, -0.12 + i * 0.0003, 1790000000000 + i * 10000, 20 + i * 0.1]);
+
+test('one workout can be logged into several challenges at once, with one shared route only its owner can see', async () => {
+  const mo = await register('Mo Multi');
+  const other = await register('Nosy Neighbour');
+  const a = await distanceChallenge(mo);
+  const bC = await jsonFetch(`${origin}/api/challenges`, mo.cookie, 'POST', { name: 'Solo July', start_date: '2027-07-01', end_date: '2027-07-31', participation: 'individual', metric: 'distance' });
+  const made = await jsonFetch(`${origin}/api/activities`, mo.cookie, 'POST', {
+    targets: [{ challenge_id: a.challengeId, team_id: a.teamId }, { challenge_id: bC.body.id }],
+    activity_type: 'Run', distance: 5, distance_unit: 'km', minutes: 27, activity_date: '2027-07-05', route: ROUTE,
+  });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.equal(made.body.created, 2);
+
+  const mine = await jsonFetch(`${origin}/api/me/activities`, mo.cookie);
+  const runs = mine.body.activities.filter(x => x.activity_date === '2027-07-05');
+  assert.deepEqual(runs.map(x => x.challenge_name).sort(), ['Mileage Month', 'Solo July']);
+  assert.ok(runs.every(x => x.has_route));
+
+  const route = await jsonFetch(`${origin}/api/activities/${runs[0].id}/route`, mo.cookie);
+  assert.equal(route.status, 200);
+  assert.equal(route.body.points.length, 50);
+  assert.deepEqual(route.body.points[0], [51.5, -0.12, 1790000000000, 20]);
+  assert.equal((await jsonFetch(`${origin}/api/activities/${runs[0].id}/route`, other.cookie)).status, 404, 'nobody else can read a route');
+
+  // All or none: one bad target refuses the whole thing.
+  const bad = await jsonFetch(`${origin}/api/activities`, mo.cookie, 'POST', {
+    targets: [{ challenge_id: a.challengeId, team_id: a.teamId }, { challenge_id: bC.body.id }],
+    activity_type: 'Run', distance: 1, activity_date: '2027-08-05',
+  });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /Mileage Month: .*2027-07-31/);
+
+  // Deleting one entry keeps the route for the other; deleting both removes it.
+  await jsonFetch(`${origin}/api/activities/${runs[0].id}`, mo.cookie, 'DELETE');
+  assert.equal((await jsonFetch(`${origin}/api/activities/${runs[1].id}/route`, mo.cookie)).status, 200);
+  await jsonFetch(`${origin}/api/activities/${runs[1].id}`, mo.cookie, 'DELETE');
+  const { DatabaseSync } = require('node:sqlite');
+  const check = new DatabaseSync(path.join(dataDir, 'activity.sqlite'));
+  assert.equal(check.prepare("SELECT count(*) n FROM routes WHERE source_ref LIKE 'gpx-%' AND user_id=?").get(mo.user.id).n, 0);
+  check.close();
+});
+
+test('a synced workout can go into every challenge it fits, its route stored once, and long routes are thinned', async () => {
+  const pat = await register('Pat Sync');
+  const a = await distanceChallenge(pat);
+  const bC = await jsonFetch(`${origin}/api/challenges`, pat.cookie, 'POST', { name: 'Minutes July', start_date: '2027-07-01', end_date: '2027-07-31', participation: 'individual' });
+  const long = Array.from({ length: 9000 }, (_, i) => [51 + i * 1e-5, 0.1 + i * 1e-5]);
+  const rec = { activity_type: 'Ride', minutes: 60, distance_m: 20000, activity_date: '2027-07-06', source_ref: 'hc-ride-1', route: long };
+  const r = await fetch(`${origin}/api/health/import`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${pat.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: 'health_connect', records: [{ ...rec, challenge_id: a.challengeId, team_id: a.teamId }, { ...rec, challenge_id: bC.body.id }] }),
+  });
+  assert.deepEqual(await r.json(), { added: 2, skipped: 0 });
+  const known = await fetch(`${origin}/api/health/synced`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${pat.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: 'health_connect', refs: ['hc-ride-1'] }),
+  });
+  assert.deepEqual((await known.json()).syncedIn['hc-ride-1'].sort((x, y) => x - y), [a.challengeId, bC.body.id].sort((x, y) => x - y));
+  const { DatabaseSync } = require('node:sqlite');
+  const check = new DatabaseSync(path.join(dataDir, 'activity.sqlite'));
+  const routes = check.prepare("SELECT point_count FROM routes WHERE source_ref='hc-ride-1'").all();
+  check.close();
+  assert.equal(routes.length, 1, 'one route row for the two entries');
+  assert.equal(routes[0].point_count, 3000);
 });

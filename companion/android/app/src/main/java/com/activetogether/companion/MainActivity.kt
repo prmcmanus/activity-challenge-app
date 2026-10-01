@@ -7,7 +7,9 @@ import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
@@ -272,14 +274,14 @@ class MainActivity : ComponentActivity() {
             runCatching {
                 withContext(Dispatchers.IO) {
                     val records = health.readExerciseSessions(option)
-                    records to api().syncedRefs(token, records.map { it.sourceRef })
+                    Triple(records, api().syncedRefs(token, records.map { it.sourceRef }), health.canReadDistance())
                 }
-            }.onSuccess { (records, synced) ->
+            }.onSuccess { (records, synced, distanceAllowed) ->
                 if (records.isEmpty()) {
                     status.text = "No workouts found in Health Connect between ${fmtDay(option.startDate)} and ${fmtDay(option.endDate)} (Health Connect shares at most the last 30 days)."
                 } else {
                     status.text = ""
-                    showReview(token, option, records, synced)
+                    showReview(token, option, records, synced, distanceAllowed)
                 }
             }.onFailure {
                 status.text = "Could not read workouts: ${it.message}"
@@ -288,65 +290,97 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * What is about to be uploaded, one row per workout: tick to include, and an activity type to
-     * change what it is logged as. Already-synced workouts are shown but can't be sent again, and
-     * in a distance challenge a workout with no distance can't count, so it is shown unticked.
+     * What is about to be uploaded, one row per workout: tick to include, an activity type to change
+     * what it is logged as, and the distance - filled in from Health Connect where it has one, and
+     * editable either way, since not every app shares distance (or shares it the way Health Connect
+     * totals it). Already-synced workouts are shown but can't be sent again. In a distance challenge
+     * a workout with no distance can't count, so it starts unticked and ticks itself once one is typed.
      */
-    private fun showReview(token: String, option: TeamOption, records: List<HealthRecord>, synced: Set<String>) {
-        data class Row(val record: HealthRecord, val check: CheckBox, val type: Spinner)
+    private fun showReview(token: String, option: TeamOption, records: List<HealthRecord>, synced: Set<String>, distanceAllowed: Boolean) {
+        data class Row(val record: HealthRecord, val check: CheckBox, val type: Spinner, val distance: EditText)
+        val unitMeters = if (option.distanceUnit == "km") 1000.0 else 1609.344
+        val unitName = if (option.distanceUnit == "km") "km" else "miles"
         val rows = mutableListOf<Row>()
+        lateinit var dialog: AlertDialog
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 16, 48, 0) }
         list.addView(TextView(this).apply {
-            text = "Into: $option\nTick the workouts to sync and check each activity type. Only the type, date, times, minutes and distance shown here are uploaded."
+            text = "Into: $option\nTick the workouts to sync, and check each activity type and distance. Only what is shown here is uploaded."
             setPadding(0, 0, 0, 16)
         })
+        if (!distanceAllowed) {
+            list.addView(TextView(this).apply {
+                text = "Health Connect isn't sharing distance with this app, so no distances could be read. Allow \"Distance\" for Active Together Companion, or type the distances below."
+                setTypeface(typeface, Typeface.BOLD)
+            })
+            list.addView(Button(this).apply {
+                text = "Allow distance in Health Connect"
+                setOnClickListener { dialog.dismiss(); openHealthConnectPermissions(); status.text = "After allowing Distance, tap Review and sync again." }
+            })
+        }
         for (r in records) {
             val already = r.sourceRef in synced
-            val noDistance = option.measuresDistance && r.distanceMeters == null
             val types = if (r.activityType in ACTIVITY_TYPES) ACTIVITY_TYPES else listOf(r.activityType) + ACTIVITY_TYPES
             val check = CheckBox(this).apply {
-                text = describe(r, option) + when {
-                    already -> "\nAlready synced"
-                    noDistance -> "\nNo distance recorded - doesn't count in a distance challenge"
-                    else -> ""
-                }
-                isChecked = !already && !noDistance
+                text = describe(r) + if (already) "\nAlready synced" else ""
+                isChecked = !already && !(option.measuresDistance && r.distanceMeters == null)
                 isEnabled = !already
-                if (!already && !noDistance) setTypeface(typeface, Typeface.BOLD)
+                setTypeface(typeface, Typeface.BOLD)
             }
             val type = Spinner(this).apply {
                 adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, types)
                 setSelection(types.indexOf(r.activityType).coerceAtLeast(0))
                 isEnabled = !already
             }
+            val distance = EditText(this).apply {
+                hint = if (option.measuresDistance) "Distance in $unitName (needed)" else "Distance in $unitName (optional)"
+                inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+                r.distanceMeters?.let { setText(String.format(Locale.US, "%.2f", it / unitMeters)) }
+                isEnabled = !already
+                // Typing a distance into a distance-challenge row that had none means "count this one".
+                addTextChangedListener(object : TextWatcher {
+                    override fun afterTextChanged(e: Editable?) { if (option.measuresDistance && !already && parseDistance(e) != null) check.isChecked = true }
+                    override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+                    override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+                })
+            }
             list.addView(check)
             list.addView(type)
-            rows.add(Row(r, check, type))
+            list.addView(distance)
+            rows.add(Row(r, check, type, distance))
         }
-        val dialog = AlertDialog.Builder(this)
+        dialog = AlertDialog.Builder(this)
             .setTitle("Review ${records.size} workout${if (records.size == 1) "" else "s"}")
             .setView(ScrollView(this).apply { addView(list) })
             .setNegativeButton("Cancel") { _, _ -> status.text = "Sync cancelled. Nothing was uploaded." }
             .setPositiveButton("Sync selected") { _, _ ->
-                val chosen = rows.filter { it.check.isEnabled && it.check.isChecked }
-                    .map { it.record.copy(activityType = it.type.selectedItem as String) }
-                upload(token, option, chosen)
+                val chosen = rows.filter { it.check.isEnabled && it.check.isChecked }.map {
+                    it.record.copy(
+                        activityType = it.type.selectedItem as String,
+                        distanceMeters = parseDistance(it.distance.text)?.let { v -> v * unitMeters },
+                    )
+                }
+                val missing = if (option.measuresDistance) chosen.count { it.distanceMeters == null } else 0
+                upload(token, option, chosen.filter { !option.measuresDistance || it.distanceMeters != null }, missing)
             }
             .create()
         dialog.show()
     }
 
-    private fun upload(token: String, option: TeamOption, records: List<HealthRecord>) {
+    /** A positive number typed in the distance box, accepting a comma as the decimal point. */
+    private fun parseDistance(text: CharSequence?): Double? =
+        text?.toString()?.trim()?.replace(',', '.')?.toDoubleOrNull()?.takeIf { it > 0 }
+
+    private fun upload(token: String, option: TeamOption, records: List<HealthRecord>, missingDistance: Int = 0) {
+        val missingNote = if (missingDistance > 0) " $missingDistance ticked workout(s) had no distance, so weren't sent - a distance challenge needs one." else ""
         if (records.isEmpty()) {
-            status.text = "Nothing selected, so nothing was uploaded."
+            status.text = "Nothing was uploaded.$missingNote"
             return
         }
         lifecycleScope.launch {
             status.text = "Uploading ${records.size} workout(s)..."
             runCatching { withContext(Dispatchers.IO) { api().importHealth(token, records) } }
                 .onSuccess {
-                    status.text = "Sync complete. Added ${it.added}" + (if (it.skipped > 0) ", skipped ${it.skipped}" else "") + "." +
-                        if (option.measuresDistance && it.skipped > 0) " Workouts with no recorded distance don't count in a distance challenge." else ""
+                    status.text = "Sync complete. Added ${it.added}" + (if (it.skipped > 0) ", skipped ${it.skipped}" else "") + "." + missingNote
                 }
                 .onFailure {
                     if (it is ApiException && it.status == 401) {
@@ -359,15 +393,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** e.g. "Tue 14 Oct, 07:00–07:42 · 42 min · 3.1 mi" */
-    private fun describe(r: HealthRecord, option: TeamOption): String {
-        val parts = mutableListOf("${fmtDay(LocalDate.parse(r.activityDate))}, ${r.startTime}–${r.endTime}", "${r.minutes} min")
-        r.distanceMeters?.let { m ->
-            val v = if (option.distanceUnit == "km") m / 1000 else m / 1609.344
-            parts.add(String.format(Locale.getDefault(), "%.2f %s", v, option.distanceUnit))
-        }
-        return parts.joinToString(" · ")
-    }
+    /** e.g. "Tue 14 Oct, 07:00–07:42 · 42 min" - the distance has its own editable box. */
+    private fun describe(r: HealthRecord): String =
+        "${fmtDay(LocalDate.parse(r.activityDate))}, ${r.startTime}–${r.endTime} · ${r.minutes} min"
 
     private fun fmtDay(d: LocalDate): String = d.format(DateTimeFormatter.ofPattern("EEE d MMM", Locale.getDefault()))
 

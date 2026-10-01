@@ -72,20 +72,41 @@ class HealthConnectSync(private val context: Context) {
         }.sortedByDescending { it.activityDate + it.startTime }
     }
 
+    suspend fun canReadDistance(): Boolean = grantedPermissions().contains(distancePermission)
+
     /**
      * Sessions don't carry a distance themselves - it is recorded as separate DistanceRecords over
      * the same period. The aggregate de-duplicates overlapping sources (a watch and a phone both
-     * counting the same walk), which summing raw records would not. Null when nothing was recorded.
+     * counting the same walk), so it is tried first. Some apps' records don't come through it
+     * (seen with a workout entered by hand in Google Fit), so the raw records are the fallback:
+     * per source app, each record's share that falls inside the session, preferring the app that
+     * wrote the session and otherwise taking the single largest source - never adding sources
+     * together, which would count the same walk twice. Null when nothing was recorded.
      */
     private suspend fun distanceDuring(client: HealthConnectClient, session: ExerciseSessionRecord): Double? {
-        val result = client.aggregate(
-            AggregateRequest(
-                metrics = setOf(DistanceRecord.DISTANCE_TOTAL),
-                timeRangeFilter = TimeRangeFilter.between(session.startTime, session.endTime),
-            ),
-        )
-        val meters = result[DistanceRecord.DISTANCE_TOTAL]?.inMeters ?: return null
-        return meters.takeIf { it > 0 }
+        val range = TimeRangeFilter.between(session.startTime, session.endTime)
+        val aggregated = runCatching {
+            client.aggregate(AggregateRequest(metrics = setOf(DistanceRecord.DISTANCE_TOTAL), timeRangeFilter = range))[DistanceRecord.DISTANCE_TOTAL]?.inMeters
+        }.getOrNull()
+        if (aggregated != null && aggregated > 0) return aggregated
+
+        val raw = runCatching {
+            client.readRecords(ReadRecordsRequest(recordType = DistanceRecord::class, timeRangeFilter = range)).records
+        }.getOrDefault(emptyList())
+        if (raw.isEmpty()) return null
+        val byOrigin = raw.groupBy { it.metadata.dataOrigin.packageName }.mapValues { (_, records) ->
+            records.sumOf { r -> r.distance.inMeters * overlapShare(r.startTime, r.endTime, session.startTime, session.endTime) }
+        }
+        val meters = byOrigin[session.metadata.dataOrigin.packageName]?.takeIf { it > 0 } ?: byOrigin.values.maxOrNull()
+        return meters?.takeIf { it > 0 }
+    }
+
+    /** The fraction of [rStart, rEnd] inside [sStart, sEnd]; a zero-length record counts whole if inside. */
+    private fun overlapShare(rStart: Instant, rEnd: Instant, sStart: Instant, sEnd: Instant): Double {
+        val total = Duration.between(rStart, rEnd).toMillis()
+        if (total <= 0) return if (!rStart.isBefore(sStart) && !rStart.isAfter(sEnd)) 1.0 else 0.0
+        val inside = Duration.between(maxOf(rStart, sStart), minOf(rEnd, sEnd)).toMillis()
+        return (inside.toDouble() / total).coerceIn(0.0, 1.0)
     }
 
     /** Short label for the common types; anything else uploads as "Exercise", as before. */

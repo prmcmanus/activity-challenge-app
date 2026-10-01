@@ -15,3 +15,4 @@ companion/android/**/build/
 companion/ios/**/xcuserdata/
 companion/ios/**/DerivedData/
 companion/ios/**/*.xcodeproj/project.xcworkspace/
+companion/android/*.apk

@@ -72,6 +72,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val leaderboards = mutableStateOf<Map<Int, Leaderboard>>(emptyMap())
 
     var review by mutableStateOf<List<ReviewItem>?>(null); private set
+    /** Help badge: unread replies on my tickets, plus (admins) tickets waiting for support. */
+    var helpBadge by mutableStateOf(0); private set
     var syncBusy by mutableStateOf(false); private set
     var syncStatus by mutableStateOf(prefs.lastSyncSummary); private set
 
@@ -94,6 +96,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         call { it.challenges() }?.let { challenges = it }
         loadingChallenges = false
         loadActivities(reset = true)
+        refreshHelpBadge()
         // "Sync when the app opens" half of automatic sync, for phones without background access.
         if (prefs.autoSync && challenges.isNotEmpty()) autoSyncNow(quiet = true)
     }
@@ -159,6 +162,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun updateMe(m: Me) { me = m }
 
     suspend fun refreshMe() { call { it.me() }?.let { me = it } }
+
+    /**
+     * Pull-to-refresh on the top-level lists. The screens hold their own "refreshing" flag around
+     * this: the shared loading flags flip at the wrong moments (or are gated on an empty list), which
+     * left the indicator stuck or never shown.
+     */
+    suspend fun refreshTopLevel() {
+        call { it.me() }?.let { me = it }
+        call { it.challenges() }?.let { challenges = it }
+        refreshActivities()
+        refreshHelpBadge()
+    }
+
+    suspend fun refreshHelpBadge() {
+        call { it.ticketBadge() }?.let { (mine, admin) -> helpBadge = mine + if (me?.isAdmin == true) admin else 0 }
+    }
 
     /** Pull-to-refresh on a challenge: its numbers and leaderboard. */
     suspend fun refreshChallenge(challengeId: Int) {

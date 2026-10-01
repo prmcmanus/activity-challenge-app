@@ -62,7 +62,9 @@ private fun stateLabel(c: Challenge): String {
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChallengesScreen(vm: AppViewModel, open: (Challenge) -> Unit) {
-    PullToRefreshBox(isRefreshing = vm.loadingChallenges, onRefresh = { vm.refreshAll() }) {
+    val scope = rememberCoroutineScope()
+    var refreshing by remember { mutableStateOf(false) }
+    PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; vm.refreshTopLevel(); refreshing = false } }) {
         LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 Hero(LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("EEEE d MMMM", java.util.Locale.getDefault())), "Hi ${vm.me?.name?.substringBefore(' ') ?: ""}".trim(), below = {

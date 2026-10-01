@@ -23,6 +23,9 @@ app's red and yellow, with a dark theme). It talks to `https://activetogether.te
   app opens. A notification says what was synced.
 - **Me:** your profile exactly as challenge-mates see it, with Edit (photo, name, about me, sharing
   level - Private / Totals / Full - email, password); sync settings; sign out.
+- **Help** (? in the top bar, with a badge for new replies): quick answers, report a bug or request a
+  feature (with an optional screenshot; phone model and app version are added), and your tickets
+  with their status, outcome and conversation. Admins also get the support dashboard.
 - Pull down to refresh on every page.
 
 Health Connect permissions: exercise (required), distance, history older than 30 days (for

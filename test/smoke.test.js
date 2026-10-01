@@ -1734,3 +1734,61 @@ test('profiles: only challenge-mates can see each other, and the sharing level d
   const me = await jsonFetch(`${origin}/api/me`, una.cookie);
   assert.equal(me.body.user.bio, 'Morning swimmer');
 });
+
+// --- help & support tickets ------------------------------------------------------------------
+
+async function adminCookie() {
+  const r = await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }) });
+  return r.headers.get('set-cookie').split(';')[0];
+}
+
+test('tickets: users report and follow their own; admins see all, reply, add internal notes and set the outcome', async () => {
+  const xia = await register('Xia Reporter');
+  const yan = await register('Yan Other');
+  const admin = await adminCookie();
+
+  const bad = await jsonFetch(`${origin}/api/tickets`, xia.cookie, 'POST', { type: 'complaint', title: 'x', description: 'y' });
+  assert.equal(bad.status, 400);
+  const made = await jsonFetch(`${origin}/api/tickets`, xia.cookie, 'POST', { type: 'bug', title: 'Sync skips my yoga', description: 'Yoga never appears in my distance challenge.', client_info: 'Android 15 · app 1.1.0' });
+  assert.equal(made.status, 201);
+  const id = made.body.id;
+
+  const mine = await jsonFetch(`${origin}/api/tickets`, xia.cookie);
+  assert.deepEqual(mine.body.tickets.map(t => [t.title, t.status, t.unread]), [['Sync skips my yoga', 'new', false]]);
+  assert.equal(mine.body.tickets[0].client_info, undefined, 'device details are for admins');
+  assert.equal((await jsonFetch(`${origin}/api/tickets?scope=all`, xia.cookie)).status, 403);
+  assert.equal((await jsonFetch(`${origin}/api/tickets/${id}`, yan.cookie)).status, 404, 'other users cannot see it');
+  assert.deepEqual((await jsonFetch(`${origin}/api/tickets`, yan.cookie)).body.tickets, []);
+
+  // Admin dashboard: everything, counts, and the new ticket flagged unread for admins.
+  const dash = await jsonFetch(`${origin}/api/tickets?scope=all`, admin);
+  const row = dash.body.tickets.find(t => t.id === id);
+  assert.equal(row.unread, true);
+  assert.equal(row.client_info, 'Android 15 · app 1.1.0');
+  assert.equal(row.reporter.email, xia.email);
+  assert.ok(dash.body.counts.new >= 1);
+  assert.ok((await jsonFetch(`${origin}/api/tickets/badge`, admin)).body.admin >= 1);
+
+  // Admin opens it (seen), adds an internal note and a reply, and sets the outcome.
+  await jsonFetch(`${origin}/api/tickets/${id}`, admin);
+  assert.equal((await jsonFetch(`${origin}/api/tickets/${id}/comments`, admin, 'POST', { body: 'Probably the distance filter', internal: true })).status, 201);
+  assert.equal((await jsonFetch(`${origin}/api/tickets/${id}/comments`, admin, 'POST', { body: 'Thanks - yoga has no distance, so it only counts in minutes challenges.' })).status, 201);
+  assert.equal((await jsonFetch(`${origin}/api/tickets/${id}`, xia.cookie, 'PATCH', { status: 'done' })).status, 403, 'only admins change status');
+  assert.equal((await jsonFetch(`${origin}/api/tickets/${id}`, admin, 'PATCH', { status: 'declined', resolution: 'Working as intended.' })).status, 200);
+  assert.equal((await jsonFetch(`${origin}/api/tickets/${id}`, admin, 'PATCH', { status: 'lost' })).status, 400);
+
+  // The reporter sees the reply and outcome (not the internal note), with a badge until they look.
+  assert.equal((await jsonFetch(`${origin}/api/tickets/badge`, xia.cookie)).body.mine, 1);
+  const seen = await jsonFetch(`${origin}/api/tickets/${id}`, xia.cookie);
+  assert.equal(seen.body.status, 'declined');
+  assert.equal(seen.body.resolution, 'Working as intended.');
+  assert.deepEqual(seen.body.comments.map(c => [c.body.slice(0, 6), c.from_support]), [['Thanks', true]]);
+  assert.equal((await jsonFetch(`${origin}/api/tickets/badge`, xia.cookie)).body.mine, 0);
+
+  // A reply from the reporter flags it for admins again.
+  await jsonFetch(`${origin}/api/tickets/${id}/comments`, xia.cookie, 'POST', { body: 'Makes sense, thanks!' });
+  const again = await jsonFetch(`${origin}/api/tickets?scope=all&status=declined`, admin);
+  assert.equal(again.body.tickets.find(t => t.id === id).unread, true);
+  const adminView = await jsonFetch(`${origin}/api/tickets/${id}`, admin);
+  assert.deepEqual(adminView.body.comments.map(c => c.internal), [true, false, false]);
+});

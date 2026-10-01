@@ -42,6 +42,10 @@ A dependency-free Node.js MVP for time-based team activity challenges.
 - Profiles: challenge-mates can open each other's profile (name, photo, an "about me" line). Each
   person chooses what else it shows - Private, Totals (default) or Full (recent activity) - and only
   for challenges they share; routes never appear
+- Help & support (web header and app): quick answers, plus tickets - bug reports, feature requests
+  and questions with an optional screenshot. Users follow their own tickets and replies (with a
+  "new reply" badge); global admins get a support dashboard (counts, status/type filters), reply,
+  add internal notes and set status (New, In progress, Planned, Done, Declined) and the outcome
 - SQLite persistence, password hashing, HTTP-only sessions and duplicate-safe health imports
 - Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes and distance in
 - Optional reCAPTCHA on registration/sign-in, plus per-IP rate limiting everywhere, against bots

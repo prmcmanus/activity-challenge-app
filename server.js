@@ -30,6 +30,15 @@ ensureColumn('users','avatar_url','TEXT');
 //   visible to challenge members whatever this says, and routes are never shared at any level.
 ensureColumn('users','bio','TEXT');
 ensureColumn('users','profile_sharing',"TEXT NOT NULL DEFAULT 'summary'");
+// Help & support: bug reports, feature requests and questions, as tickets with a conversation.
+// owner_seen_at / admin_seen_at against last_reply_at / last_user_reply_at drive the "new reply"
+// badges on each side; internal comments are admin-only notes the reporter never sees.
+db.exec(`CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,type TEXT NOT NULL,title TEXT NOT NULL,description TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'new',resolution TEXT,image_url TEXT,client_info TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  last_reply_at TEXT,last_user_reply_at TEXT DEFAULT CURRENT_TIMESTAMP,owner_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,admin_seen_at TEXT,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS ticket_comments(id INTEGER PRIMARY KEY,ticket_id INTEGER NOT NULL,user_id INTEGER NOT NULL,body TEXT NOT NULL,internal INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);`);
 // A challenge measures either active minutes (the original behaviour, and the default for every
 // existing challenge) or distance. Distance is stored on activities in metres whatever the
 // challenge's display unit, so changing a challenge between miles and km never rewrites history.
@@ -423,6 +432,28 @@ function leaderboard(challenge){
   return {teams:teams.map(shape),users:users.map(shape)};
 }
 
+// --- Help & support tickets ------------------------------------------------------------------
+const TICKET_TYPES=['bug','feature','question'];
+const TICKET_STATUSES=['new','in_progress','planned','done','declined'];
+const TICKET_RATE_MAX=Number(process.env.TICKET_RATE_LIMIT_MAX||20),TICKET_RATE_WINDOW_MS=60*60_000;
+const isAdmin=u=>u&&u.role==='global_admin';
+// A ticket row as the list and detail views want it, with the badge for whoever is looking: the
+// reporter sees "unread" when an admin replied or changed it since they last looked; an admin sees
+// it when the reporter wrote since any admin last looked.
+function ticketView(t,viewer){
+  const mine=t.user_id===viewer.id;
+  const unread=mine?!!(t.last_reply_at&&(!t.owner_seen_at||t.last_reply_at>t.owner_seen_at))
+    :isAdmin(viewer)?!t.admin_seen_at||(t.last_user_reply_at&&t.last_user_reply_at>t.admin_seen_at):false;
+  return {id:t.id,type:t.type,title:t.title,description:t.description,status:t.status,resolution:t.resolution||null,image_url:t.image_url||null,
+    client_info:isAdmin(viewer)?(t.client_info||null):undefined,created_at:t.created_at,updated_at:t.updated_at,
+    reporter:{id:t.user_id,name:t.reporter_name,avatar_url:t.reporter_avatar||null,email:isAdmin(viewer)?t.reporter_email:undefined},
+    comment_count:t.comment_count??undefined,unread,mine};
+}
+const TICKET_SELECT=`SELECT t.*,u.name reporter_name,u.email reporter_email,u.avatar_url reporter_avatar,
+  (SELECT COUNT(*) FROM ticket_comments c WHERE c.ticket_id=t.id AND c.internal=0) comment_count FROM tickets t JOIN users u ON u.id=t.user_id`;
+// Milliseconds, so a reply in the same second as a view still counts as new.
+const nowIso=()=>new Date().toISOString().replace('T',' ').slice(0,23);
+
 async function api(req,res,url){
  const ip=clientIp(req);
  if(hitRateLimit('all:'+ip,API_RATE_LIMIT_MAX,API_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many requests. Please slow down and try again shortly.'});
@@ -657,6 +688,90 @@ async function api(req,res,url){
    return send(res,200,{ok:true});
  }
 
+ // Report a bug, request a feature or ask a question.
+ if(m==='POST'&&url.pathname==='/api/tickets'){
+   if(!need(res,u))return;
+   if(hitRateLimit('ticket:'+u.id,TICKET_RATE_MAX,TICKET_RATE_WINDOW_MS))return send(res,429,{error:'That is a lot of tickets in an hour - please add to an existing one instead.'});
+   const b=await body(req);
+   const type=TICKET_TYPES.includes(b.type)?b.type:null,title=String(b.title||'').trim().slice(0,120),description=String(b.description||'').trim().slice(0,5000);
+   if(!type)return send(res,400,{error:'type must be bug, feature or question'});
+   if(!title||!description)return send(res,400,{error:'A title and a description are required'});
+   let image;try{image=validateImageUrl(b.image_url)??null}catch(e){return send(res,400,{error:e.message})}
+   const info=b.client_info?String(b.client_info).slice(0,300):null;
+   const r=db.prepare('INSERT INTO tickets(user_id,type,title,description,image_url,client_info) VALUES(?,?,?,?,?,?)').run(u.id,type,title,description,image,info);
+   return send(res,201,{id:Number(r.lastInsertRowid)});
+ }
+ // My tickets, or (admins, scope=all) everyone's, newest activity first, with optional filters.
+ if(m==='GET'&&url.pathname==='/api/tickets'){
+   if(!need(res,u))return;
+   const all=url.searchParams.get('scope')==='all';
+   if(all&&!isAdmin(u))return send(res,403,{error:'Admins only'});
+   const where=[],params=[];
+   if(!all){where.push('t.user_id=?');params.push(u.id)}
+   const st=url.searchParams.get('status'),ty=url.searchParams.get('type');
+   if(st==='open'){where.push("t.status IN ('new','in_progress','planned')")}else if(TICKET_STATUSES.includes(st)){where.push('t.status=?');params.push(st)}
+   if(TICKET_TYPES.includes(ty)){where.push('t.type=?');params.push(ty)}
+   const rows=db.prepare(`${TICKET_SELECT}${where.length?' WHERE '+where.join(' AND '):''} ORDER BY t.updated_at DESC,t.id DESC LIMIT 200`).all(...params);
+   const tickets=rows.map(t=>ticketView(t,u));
+   const out={tickets,unread:tickets.filter(t=>t.unread).length};
+   if(all){
+     out.counts=Object.fromEntries(TICKET_STATUSES.map(s=>[s,0]));
+     for(const r of db.prepare('SELECT status,COUNT(*) n FROM tickets GROUP BY status').all())out.counts[r.status]=r.n;
+     out.byType=Object.fromEntries(TICKET_TYPES.map(s=>[s,0]));
+     for(const r of db.prepare("SELECT type,COUNT(*) n FROM tickets WHERE status IN ('new','in_progress','planned') GROUP BY type").all())out.byType[r.type]=r.n;
+   }
+   return send(res,200,out);
+ }
+ // How many of my tickets have an unread reply - for the Help badge. Admins also get new/unread ones.
+ if(m==='GET'&&url.pathname==='/api/tickets/badge'){
+   if(!need(res,u))return;
+   const mine=db.prepare('SELECT COUNT(*) n FROM tickets WHERE user_id=? AND last_reply_at IS NOT NULL AND (owner_seen_at IS NULL OR last_reply_at>owner_seen_at)').get(u.id).n;
+   const admin=isAdmin(u)?db.prepare('SELECT COUNT(*) n FROM tickets WHERE user_id<>? AND (admin_seen_at IS NULL OR last_user_reply_at>admin_seen_at)').get(u.id).n:0;
+   return send(res,200,{mine,admin});
+ }
+ // One ticket and its conversation. Opening it marks it seen for that side.
+ if(m==='GET'&&url.pathname.match(/^\/api\/tickets\/\d+$/)){
+   if(!need(res,u))return;
+   const id=Number(url.pathname.split('/')[3]),t=db.prepare(`${TICKET_SELECT} WHERE t.id=?`).get(id);
+   if(!t||(t.user_id!==u.id&&!isAdmin(u)))return send(res,404,{error:'Not found'});
+   const view=ticketView(t,u);
+   const comments=db.prepare(`SELECT c.id,c.body,c.internal,c.created_at,c.user_id,u.name,u.avatar_url,u.role FROM ticket_comments c JOIN users u ON u.id=c.user_id WHERE c.ticket_id=?${isAdmin(u)?'':' AND c.internal=0'} ORDER BY c.id`).all(id)
+     .map(c=>({id:c.id,body:c.body,internal:!!c.internal,created_at:c.created_at,author:{id:c.user_id,name:c.name,avatar_url:c.avatar_url||null},from_support:c.role==='global_admin'&&c.user_id!==t.user_id}));
+   if(t.user_id===u.id)db.prepare('UPDATE tickets SET owner_seen_at=? WHERE id=?').run(nowIso(),id);
+   if(isAdmin(u)&&t.user_id!==u.id)db.prepare('UPDATE tickets SET admin_seen_at=? WHERE id=?').run(nowIso(),id);
+   return send(res,200,{...view,comments});
+ }
+ // Reply: the reporter on their own ticket, or an admin (optionally as an internal note).
+ if(m==='POST'&&url.pathname.match(/^\/api\/tickets\/\d+\/comments$/)){
+   if(!need(res,u))return;
+   const id=Number(url.pathname.split('/')[3]),t=db.prepare('SELECT * FROM tickets WHERE id=?').get(id);
+   if(!t||(t.user_id!==u.id&&!isAdmin(u)))return send(res,404,{error:'Not found'});
+   const b=await body(req),text=String(b.body||'').trim().slice(0,5000);
+   if(!text)return send(res,400,{error:'Write something first'});
+   const internal=isAdmin(u)&&!!b.internal;
+   db.prepare('INSERT INTO ticket_comments(ticket_id,user_id,body,internal) VALUES(?,?,?,?)').run(id,u.id,text,internal?1:0);
+   const at=nowIso();
+   if(internal)db.prepare('UPDATE tickets SET updated_at=?,admin_seen_at=? WHERE id=?').run(at,at,id);
+   else if(t.user_id===u.id)db.prepare('UPDATE tickets SET updated_at=?,last_user_reply_at=?,owner_seen_at=? WHERE id=?').run(at,at,at,id);
+   else db.prepare('UPDATE tickets SET updated_at=?,last_reply_at=?,admin_seen_at=? WHERE id=?').run(at,at,at,id);
+   return send(res,201,{ok:true});
+ }
+ // Admins set the status and the outcome the reporter sees.
+ if(m==='PATCH'&&url.pathname.match(/^\/api\/tickets\/\d+$/)){
+   if(!need(res,u,['global_admin']))return;
+   const id=Number(url.pathname.split('/')[3]),t=db.prepare('SELECT * FROM tickets WHERE id=?').get(id);
+   if(!t)return send(res,404,{error:'Not found'});
+   const b=await body(req);
+   const status=b.status!==undefined?b.status:t.status;
+   if(!TICKET_STATUSES.includes(status))return send(res,400,{error:'status must be one of '+TICKET_STATUSES.join(', ')});
+   const resolution=b.resolution!==undefined?(String(b.resolution).trim().slice(0,2000)||null):t.resolution;
+   const changed=status!==t.status||resolution!==t.resolution;
+   if(!changed)return send(res,200,{ok:true});
+   const at=nowIso();
+   // A status or outcome change is news to the reporter, like a reply.
+   db.prepare('UPDATE tickets SET status=?,resolution=?,updated_at=?,last_reply_at=?,admin_seen_at=? WHERE id=?').run(status,resolution,at,at,at,id);
+   return send(res,200,{ok:true});
+ }
  if(m==='GET'&&url.pathname==='/api/admin/users'){if(!need(res,u,['global_admin']))return;return send(res,200,{users:db.prepare('SELECT id,email,name,role,created_at FROM users ORDER BY name').all()})}
  if(m==='POST'&&url.pathname==='/api/admin/users'){if(!need(res,u,['global_admin']))return;const b=await body(req);try{const r=db.prepare('INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,?)').run(String(b.email).toLowerCase(),b.name,hash(b.password),b.role||'member');return send(res,201,{id:Number(r.lastInsertRowid)})}catch(e){return send(res,400,{error:'Email already exists or fields are invalid'})}}
  if(m==='PATCH'&&url.pathname.match(/^\/api\/admin\/users\/\d+$/)){

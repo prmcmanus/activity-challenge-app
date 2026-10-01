@@ -11,7 +11,17 @@ import java.time.LocalDate
 const val SERVER_URL = BuildConfig.SERVER_URL
 
 /** Who can see what on my profile: "private" (name, photo), "summary" (+ totals, rank), "full" (+ recent activity). */
-data class Me(val id: Int, val name: String, val email: String, val avatarUrl: String?, val bio: String? = null, val sharing: String = "summary")
+data class Me(val id: Int, val name: String, val email: String, val avatarUrl: String?, val bio: String? = null, val sharing: String = "summary",
+              val role: String = "member") {
+    val isAdmin: Boolean get() = role == "global_admin"
+}
+
+/** Help & support. type: bug | feature | question; status: new | in_progress | planned | done | declined. */
+data class Ticket(val id: Int, val type: String, val title: String, val description: String, val status: String, val resolution: String?,
+    val imageUrl: String?, val clientInfo: String?, val createdAt: String, val updatedAt: String, val reporterName: String, val reporterEmail: String?,
+    val commentCount: Int, val unread: Boolean, val mine: Boolean)
+data class TicketComment(val id: Int, val body: String, val internal: Boolean, val createdAt: String, val authorName: String, val fromSupport: Boolean)
+data class TicketList(val tickets: List<Ticket>, val counts: Map<String, Int>, val openByType: Map<String, Int>)
 
 data class ProfileChallenge(val id: Int, val name: String, val startDate: LocalDate, val endDate: LocalDate, val measuresDistance: Boolean,
     val distanceUnit: String, val team: String?, val minutes: Double, val distance: Double, val rank: Int, val of: Int)
@@ -269,13 +279,46 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         return parseMe(request("/api/me", "PATCH", body).getJSONObject("user"))
     }
 
+    // --- Help & support tickets ---
+    private fun parseTicket(t: JSONObject): Ticket {
+        fun str(k: String) = if (t.isNull(k)) null else t.optString(k).takeIf { it.isNotBlank() }
+        val rep = t.optJSONObject("reporter")
+        return Ticket(t.getInt("id"), t.getString("type"), t.getString("title"), t.optString("description"), t.getString("status"), str("resolution"),
+            str("image_url"), str("client_info"), t.optString("created_at"), t.optString("updated_at"), rep?.optString("name").orEmpty(),
+            rep?.let { if (it.isNull("email")) null else it.optString("email").takeIf { e -> e.isNotBlank() } },
+            t.optInt("comment_count"), t.optBoolean("unread"), t.optBoolean("mine"))
+    }
+    /** My tickets, or (admins) everyone's with counts; status may be "open" for new/in progress/planned. */
+    fun tickets(all: Boolean = false, status: String? = null, type: String? = null): TicketList {
+        val q = buildList { if (all) add("scope=all"); status?.let { add("status=$it") }; type?.let { add("type=$it") } }.joinToString("&")
+        val r = request("/api/tickets" + if (q.isNotEmpty()) "?$q" else "")
+        val arr = r.getJSONArray("tickets")
+        fun counts(k: String) = r.optJSONObject(k)?.let { o -> o.keys().asSequence().associateWith { o.getInt(it) } }.orEmpty()
+        return TicketList((0 until arr.length()).map { parseTicket(arr.getJSONObject(it)) }, counts("counts"), counts("byType"))
+    }
+    fun ticket(id: Int): Pair<Ticket, List<TicketComment>> {
+        val r = request("/api/tickets/$id")
+        val c = r.getJSONArray("comments")
+        return parseTicket(r) to (0 until c.length()).map { i -> c.getJSONObject(i).let {
+            TicketComment(it.getInt("id"), it.getString("body"), it.optBoolean("internal"), it.optString("created_at"),
+                it.optJSONObject("author")?.optString("name").orEmpty(), it.optBoolean("from_support"))
+        } }
+    }
+    fun createTicket(type: String, title: String, description: String, imageUrl: String?, clientInfo: String): Int =
+        request("/api/tickets", "POST", JSONObject().put("type", type).put("title", title).put("description", description)
+            .put("client_info", clientInfo).apply { imageUrl?.let { put("image_url", it) } }).getInt("id")
+    fun replyTicket(id: Int, body: String, internal: Boolean) { request("/api/tickets/$id/comments", "POST", JSONObject().put("body", body).put("internal", internal)) }
+    fun updateTicket(id: Int, status: String, resolution: String) { request("/api/tickets/$id", "PATCH", JSONObject().put("status", status).put("resolution", resolution)) }
+    /** Unread replies on my tickets, and (admins) tickets waiting for support. */
+    fun ticketBadge(): Pair<Int, Int> = request("/api/tickets/badge").let { it.optInt("mine") to it.optInt("admin") }
+
     /** Upload an image as a data: URL; returns its /uploads/... path. */
     fun uploadImage(dataUrl: String): String = request("/api/uploads", "POST", JSONObject().put("dataUrl", dataUrl)).getString("url")
 
     private fun parseMe(u: JSONObject) = Me(u.getInt("id"), u.getString("name"), u.getString("email"),
         u.optString("avatar_url").ifBlank { u.optString("avatarUrl") }.takeIf { it.isNotBlank() && it != "null" },
         if (u.isNull("bio")) null else u.optString("bio").takeIf { it.isNotBlank() },
-        u.optString("profile_sharing").ifBlank { "summary" })
+        u.optString("profile_sharing").ifBlank { "summary" }, u.optString("role").ifBlank { "member" })
 
     private fun request(path: String, method: String = "GET", body: JSONObject? = null): JSONObject {
         val connection = URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection

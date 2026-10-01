@@ -69,7 +69,9 @@ fun fmtEntry(a: MyActivity): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ActivityListScreen(vm: AppViewModel, open: (MyActivity) -> Unit) {
-    PullToRefreshBox(isRefreshing = vm.loadingActivities && vm.activities.isEmpty(), onRefresh = { vm.loadActivities(reset = true) }) {
+    val scope = rememberCoroutineScope()
+    var refreshing by remember { mutableStateOf(false) }
+    PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; vm.refreshTopLevel(); refreshing = false } }) {
         LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item { Text("My activity", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(vertical = 4.dp)) }
             if (vm.activities.isEmpty() && !vm.loadingActivities) {

@@ -4,6 +4,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Sync
@@ -61,6 +64,10 @@ fun AppRoot(vm: AppViewModel) {
         route.startsWith("activity/") -> "Activity"
         route.startsWith("user/") -> "Profile"
         route == "editProfile" -> "Edit profile"
+        route == "help" -> "Help"
+        route == "help/new" -> "New ticket"
+        route.startsWith("ticket/") -> "Ticket"
+        route == "support" -> "Support dashboard"
         route == "log" -> "Log activity"
         else -> "Active Together"
     }
@@ -70,6 +77,12 @@ fun AppRoot(vm: AppViewModel) {
             CenterAlignedTopAppBar(
                 title = { Text(title, fontWeight = FontWeight.Bold) },
                 navigationIcon = { if (!isTab) IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                actions = {
+                    // Help is one tap from every main screen; the badge counts new replies (and, for admins, tickets waiting).
+                    if (isTab) IconButton(onClick = { nav.navigate("help") }) {
+                        BadgedBox(badge = { if (vm.helpBadge > 0) Badge { Text("${vm.helpBadge}") } }) { Icon(Icons.AutoMirrored.Filled.HelpOutline, "Help") }
+                    }
+                },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
@@ -109,7 +122,13 @@ fun AppRoot(vm: AppViewModel) {
             }
             composable("log") { LogActivityScreen(vm) { nav.popBackStack() } }
             composable("sync") { SyncScreen(vm) }
-            composable("profile") { MeScreen(vm) { nav.navigate("editProfile") } }
+            composable("profile") { MeScreen(vm, edit = { nav.navigate("editProfile") }, help = { nav.navigate("help") }) }
+            composable("help") {
+                HelpScreen(vm, newTicket = { nav.navigate("help/new") }, openTicket = { id -> nav.navigate("ticket/$id") }, dashboard = { nav.navigate("support") })
+            }
+            composable("help/new") { NewTicketScreen(vm) { id -> nav.navigate("ticket/$id") { popUpTo("help") } } }
+            composable("ticket/{id}", arguments = listOf(navArgument("id") { type = NavType.IntType })) { TicketScreen(vm, it.arguments!!.getInt("id")) }
+            composable("support") { SupportDashboardScreen(vm) { id -> nav.navigate("ticket/$id") } }
             composable("editProfile") { EditProfileScreen(vm) { nav.popBackStack() } }
         }
     }

@@ -28,6 +28,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -164,7 +165,7 @@ fun UserProfileScreen(vm: AppViewModel, userId: Int) {
 /** Me: my profile exactly as challenge-mates see it, then settings. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MeScreen(vm: AppViewModel, edit: () -> Unit) {
+fun MeScreen(vm: AppViewModel, edit: () -> Unit, help: () -> Unit) {
     val me = vm.me
     val scope = rememberCoroutineScope()
     var profile by remember { mutableStateOf<Profile?>(null) }
@@ -189,6 +190,12 @@ fun MeScreen(vm: AppViewModel, edit: () -> Unit) {
                 }
             }
             item { SyncSettingsCard(vm) }
+            item {
+                OutlinedButton(onClick = help, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.AutoMirrored.Filled.HelpOutline, null); Spacer(Modifier.width(8.dp))
+                    Text("Help & feedback" + if (vm.helpBadge > 0) " (${vm.helpBadge} new)" else "")
+                }
+            }
             item {
                 OutlinedButton(onClick = { vm.signOut() }, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.AutoMirrored.Filled.Logout, null); Spacer(Modifier.width(8.dp)); Text("Sign out")

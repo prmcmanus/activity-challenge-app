@@ -109,8 +109,8 @@ initRecaptcha();
 
 async function load(){
   const m=await api('/api/me'); me=m.user;
-  if(!me){$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');renderAuth();return}
-  $('#authSection').classList.add('hidden');$('#app').classList.remove('hidden');$('#logout').classList.remove('hidden');$('#myAccount').classList.remove('hidden');
+  if(!me){$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');$('#helpBtn').classList.add('hidden');renderAuth();return}
+  $('#authSection').classList.add('hidden');$('#app').classList.remove('hidden');$('#logout').classList.remove('hidden');$('#myAccount').classList.remove('hidden');$('#helpBtn').classList.remove('hidden');refreshHelpBadge();
   if(pendingInviteToken){try{await api('/api/invites/accept',{method:'POST',body:JSON.stringify({token:pendingInviteToken})})}catch(e){alert(e.message)}pendingInviteToken=null}
   if(pendingCode){try{await api('/api/join',{method:'POST',body:JSON.stringify({code:pendingCode})})}catch(e){alert(e.message)}pendingCode=null}
   await loadDashboard();
@@ -133,7 +133,7 @@ $all('[data-authtab]').forEach(b=>b.onclick=()=>{authTab=b.dataset.authtab;rende
 
 async function loadDashboard(){dash=await api('/api/dashboard')}
 
-function showHome(){$('#challengeView').classList.add('hidden');$('#homeView').classList.remove('hidden');renderHome()}
+function showHome(){$('#challengeView').classList.add('hidden');$('#helpView').classList.add('hidden');$('#homeView').classList.remove('hidden');renderHome()}
 function renderHome(){
   $('#hello').textContent=`Welcome, ${me.name}`;
   $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${isIndividual(c)?'individuals':`${c.teams.length} of your team(s)`} · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
@@ -144,7 +144,7 @@ function renderHome(){
 async function openChallenge(id){
   curChallenge=await api(`/api/challenges/${id}`);
   curLeaderboard=await api(`/api/challenges/${id}/leaderboard`);
-  $('#homeView').classList.add('hidden');$('#challengeView').classList.remove('hidden');
+  $('#homeView').classList.add('hidden');$('#helpView').classList.add('hidden');$('#challengeView').classList.remove('hidden');
   renderChallenge();
 }
 async function refreshChallenge(){
@@ -437,6 +437,79 @@ function openMyAccount(){
   };
 }
 $('#myAccount').onclick=openMyAccount;
+// --- Help & support ------------------------------------------------------------------------
+const TICKET_TYPE_LABEL={bug:'Bug',feature:'Feature request',question:'Question'};
+const TICKET_STATUS_LABEL={new:'New',in_progress:'In progress',planned:'Planned',done:'Done',declined:'Declined'};
+const statusPill=s=>`<span class="status ${esc(s)}">${esc(TICKET_STATUS_LABEL[s]||s)}</span>`;
+const fmtWhen=s=>{const d=new Date(String(s||'').replace(' ','T')+'Z');return isNaN(d)?'':d.toLocaleString(undefined,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})};
+let dashFilter={status:'open',type:''};
+function showHelp(){
+  $('#homeView').classList.add('hidden');$('#challengeView').classList.add('hidden');$('#helpView').classList.remove('hidden');
+  $('#supportDashboard').classList.toggle('hidden',me.role!=='global_admin');
+  renderHelp();
+}
+async function refreshHelpBadge(){
+  try{
+    const b=await api('/api/tickets/badge'),n=b.mine+(me.role==='global_admin'?b.admin:0);
+    $('#helpBadge').textContent=n;$('#helpBadge').classList.toggle('hidden',!n);
+    $('#helpBadge').title=me.role==='global_admin'?`${b.mine} repl${b.mine===1?'y':'ies'} to you, ${b.admin} ticket(s) needing support`:`${n} new repl${n===1?'y':'ies'}`;
+  }catch(e){}
+}
+function ticketRow(t,showReporter){
+  return `<div class="listrow ticketrow" data-ticket="${t.id}"><div><b>${t.unread?'<span class="unread-dot" title="New"></span>':''}${esc(t.title)}</b><div class="muted">${esc(TICKET_TYPE_LABEL[t.type]||t.type)} · #${t.id}${showReporter?` · ${esc(t.reporter.name)}`:''} · updated ${esc(fmtWhen(t.updated_at))}${t.comment_count?` · ${t.comment_count} repl${t.comment_count===1?'y':'ies'}`:''}</div></div><div>${statusPill(t.status)}</div></div>`;
+}
+async function renderHelp(){
+  try{
+    const mine=await api('/api/tickets');
+    $('#myTickets').innerHTML=mine.tickets.map(t=>ticketRow(t,false)).join('')||'<p class="muted">You haven\'t sent any tickets yet.</p>';
+    if(me.role==='global_admin'){
+      const q=new URLSearchParams({scope:'all'});if(dashFilter.status)q.set('status',dashFilter.status);if(dashFilter.type)q.set('type',dashFilter.type);
+      const all=await api('/api/tickets?'+q);
+      $('#ticketCounts').innerHTML=Object.entries(all.counts).map(([s,n])=>`<button type="button" data-dashstatus="${s}" class="${dashFilter.status===s?'on':''}">${esc(TICKET_STATUS_LABEL[s])} · ${n}</button>`).join('')+
+        `<span class="muted" style="align-self:center">Open: ${all.byType.bug} bug(s), ${all.byType.feature} idea(s), ${all.byType.question} question(s)</span>`;
+      $('#dashTickets').innerHTML=all.tickets.map(t=>ticketRow(t,true)).join('')||'<p class="muted">No tickets match.</p>';
+      $all('[data-dashstatus]').forEach(b=>b.onclick=()=>{dashFilter.status=b.dataset.dashstatus;$('#dashStatus').value=dashFilter.status;renderHelp()});
+    }
+    $all('[data-ticket]').forEach(r=>r.onclick=()=>openTicket(Number(r.dataset.ticket)));
+  }catch(e){$('#myTickets').innerHTML=`<p class="error">${esc(e.message)}</p>`}
+  refreshHelpBadge();
+}
+async function openTicket(id){
+  const t=await api(`/api/tickets/${id}`),admin=me.role==='global_admin';
+  const convo=t.comments.map(c=>`<div class="bubble ${c.internal?'internal':c.from_support?'support':''}"><div class="who">${esc(c.author.name)}${c.from_support?' · Support':''}${c.internal?' · internal note (only admins see this)':''} · ${esc(fmtWhen(c.created_at))}</div>${esc(c.body).replace(/\n/g,'<br>')}</div>`).join('');
+  $('#modalBody').innerHTML=`<h2>${esc(t.title)}</h2>
+    <p>${statusPill(t.status)} <span class="muted">${esc(TICKET_TYPE_LABEL[t.type])} · #${t.id} · ${t.mine?'you':esc(t.reporter.name)+(t.reporter.email?` (${esc(t.reporter.email)})`:'')} · ${esc(fmtWhen(t.created_at))}</span></p>
+    <p style="white-space:pre-wrap">${esc(t.description)}</p>
+    ${t.image_url?`<a href="${esc(t.image_url)}" target="_blank" rel="noopener"><img class="ticket-img" src="${esc(t.image_url)}" alt="Screenshot"></a>`:''}
+    ${t.client_info?`<p class="muted">Device: ${esc(t.client_info)}</p>`:''}
+    ${t.resolution?`<div class="outcome"><b>Outcome:</b> ${esc(t.resolution).replace(/\n/g,'<br>')}</div>`:''}
+    ${admin?`<form id="ticketAdminForm" class="card" style="padding:14px;margin:12px 0"><div class="two"><label>Status<select id="taStatus">${Object.entries(TICKET_STATUS_LABEL).map(([k,v])=>`<option value="${k}"${t.status===k?' selected':''}>${v}</option>`).join('')}</select></label><div></div></div><label>Outcome the reporter sees<textarea id="taResolution" rows="2" maxlength="2000">${esc(t.resolution||'')}</textarea></label><button>Update status</button></form>`:''}
+    <h2 style="margin-top:18px">Conversation</h2><div class="convo">${convo||'<p class="muted">No replies yet.</p>'}</div>
+    <form id="ticketReplyForm"><label>${admin&&!t.mine?'Reply to the reporter':'Add a reply'}<textarea id="trBody" rows="3" maxlength="5000" required></textarea></label>${admin?'<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="trInternal" style="width:auto;margin:0"> Internal note (not shown to the reporter)</label>':''}<button>Send reply</button></form>
+    <p id="ticketModalMsg" class="error"></p>`;
+  $('#modal').showModal();
+  $('#ticketReplyForm').onsubmit=async e=>{e.preventDefault();try{await api(`/api/tickets/${id}/comments`,{method:'POST',body:JSON.stringify({body:$('#trBody').value,internal:!!($('#trInternal')&&$('#trInternal').checked)})});await openTicket(id);renderHelp()}catch(x){$('#ticketModalMsg').textContent=x.message}};
+  if(admin)$('#ticketAdminForm').onsubmit=async e=>{e.preventDefault();try{await api(`/api/tickets/${id}`,{method:'PATCH',body:JSON.stringify({status:$('#taStatus').value,resolution:$('#taResolution').value})});await openTicket(id);renderHelp()}catch(x){$('#ticketModalMsg').textContent=x.message}};
+  refreshHelpBadge();
+}
+$('#helpBtn').onclick=showHelp;
+$('#helpBack').onclick=()=>showHome();
+$('#dashStatus').onchange=()=>{dashFilter.status=$('#dashStatus').value;renderHelp()};
+$('#dashType').onchange=()=>{dashFilter.type=$('#dashType').value;renderHelp()};
+$('#ticketForm').onsubmit=async e=>{
+  e.preventDefault();
+  const file=$('#ticketImage').files[0];
+  try{
+    const payload={type:$('#ticketType').value,title:$('#ticketTitle').value,description:$('#ticketDesc').value,client_info:`Web · ${navigator.userAgent.slice(0,200)}`};
+    if(file)payload.image_url=await uploadImageFile(file,1600,0.85);
+    const r=await api('/api/tickets',{method:'POST',body:JSON.stringify(payload)});
+    e.target.reset();
+    $('#ticketMsg').textContent=`Thanks - ticket #${r.id} sent. Replies will appear under My tickets.`;
+    renderHelp();
+  }catch(x){$('#ticketMsg').textContent=x.message}
+};
+setInterval(()=>{if(me)refreshHelpBadge()},120000);
+
 
 $('#logout').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload()};
 $('#backHome').onclick=()=>showHome();

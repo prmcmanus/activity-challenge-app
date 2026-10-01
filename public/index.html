@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Active Together</title><link rel="icon" href="favicon.ico" sizes="any"><link rel="apple-touch-icon" href="apple-touch-icon.png"><meta property="og:title" content="Active Together"><meta property="og:description" content="Join a challenge with an invite code, or start your own team activity challenge."><meta property="og:image" content="icon-512.png"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="icon-512.png"><link rel="stylesheet" href="style.css"></head><body><header><div><img class="mark" src="mark.png" width="36" height="36" alt=""><b>Active Together</b></div><div class="btnrow"><button id="myAccount" class="ghost hidden">My account</button><button id="logout" class="ghost hidden">Sign out</button></div></header><main>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Active Together</title><link rel="icon" href="favicon.ico" sizes="any"><link rel="apple-touch-icon" href="apple-touch-icon.png"><meta property="og:title" content="Active Together"><meta property="og:description" content="Join a challenge with an invite code, or start your own team activity challenge."><meta property="og:image" content="icon-512.png"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="icon-512.png"><link rel="stylesheet" href="style.css"></head><body><header><div><img class="mark" src="mark.png" width="36" height="36" alt=""><b>Active Together</b></div><div class="btnrow"><button id="helpBtn" class="ghost hidden">Help<span id="helpBadge" class="count-badge hidden"></span></button><button id="myAccount" class="ghost hidden">My account</button><button id="logout" class="ghost hidden">Sign out</button></div></header><main>
 <section id="authSection" class="card narrow"><div class="tabs"><button data-authtab="login">Sign in</button><button data-authtab="register">Create account</button></div><div id="authPanel"></div></section>
 <div id="app" class="hidden">
 <div id="homeView">
@@ -30,6 +30,28 @@
 <section class="card"><div class="row"><h2>Individual leaderboard</h2><a id="exportUsersCsv" class="ghost hidden" href="#">Export CSV</a></div><div id="userLeaderboard"></div></section>
 </div>
 <section class="card"><div class="row"><h2>My recent activity</h2><button id="health" class="secondary">Device sync info</button></div><div id="recent"></div></section>
+</div>
+<div id="helpView" class="hidden">
+<button id="helpBack" class="ghost">&larr; My challenges</button>
+<section class="hero"><div><p class="eyebrow">HELP &amp; SUPPORT</p><h1>How can we help?</h1><p>Quick answers below. Something broken, or an idea? Send a ticket and follow the replies here.</p></div></section>
+<section id="supportDashboard" class="card hidden"><div class="row"><h2>Support dashboard</h2><span class="muted">Admins only</span></div><div id="ticketCounts" class="chips"></div><div class="two"><label>Status<select id="dashStatus"><option value="open">Open (new, in progress, planned)</option><option value="">All</option><option value="new">New</option><option value="in_progress">In progress</option><option value="planned">Planned</option><option value="done">Done</option><option value="declined">Declined</option></select></label><label>Type<select id="dashType"><option value="">All types</option><option value="bug">Bugs</option><option value="feature">Feature requests</option><option value="question">Questions</option></select></label></div><div id="dashTickets"></div></section>
+<div class="grid">
+<section class="card"><h2>Report a bug or request a feature</h2><form id="ticketForm">
+<label>What is it?<select id="ticketType"><option value="bug">Something isn't working (bug)</option><option value="feature">An idea or feature request</option><option value="question">A question</option></select></label>
+<label>Title<input id="ticketTitle" maxlength="120" required placeholder="e.g. Sync misses my evening walks"></label>
+<label>Details<textarea id="ticketDesc" rows="6" maxlength="5000" required placeholder="What happened, what you expected, and the steps to see it. For ideas: what you'd like and why."></textarea></label>
+<label>Screenshot (optional)<input type="file" id="ticketImage" accept="image/*"></label>
+<button>Send</button></form><p id="ticketMsg" class="muted"></p></section>
+<section class="card"><h2>My tickets</h2><div id="myTickets"></div></section>
+</div>
+<section class="card"><h2>Quick answers</h2><div class="faq">
+<details><summary>How do challenges work?</summary><p>A challenge runs between two dates and measures either <b>active minutes</b> or <b>distance</b> (miles or km). It's played in <b>teams</b> or by <b>individuals</b>. Join one with the invite code its owner shares; a team code joins you to that team and its challenge in one go.</p></details>
+<details><summary>How do I log activity?</summary><p>Open a challenge and use <b>Log activity</b>. Enter what the challenge measures (minutes or distance); the other is optional. You can attach a GPX file to save the route and fill in the distance and times. The date must fall within the challenge. Edit or delete your entries under My recent activity.</p></details>
+<details><summary>Can my phone sync workouts automatically?</summary><p>Yes, with the Android app: it reads workouts from Health Connect (Google Fit, Samsung Health, Strava and others write there). Review them before uploading, or switch on <b>Sync automatically</b> under Me. One workout counts in every challenge it fits. An iPhone app is planned.</p></details>
+<details><summary>Why didn't a workout count in my distance challenge?</summary><p>It probably has no recorded distance (yoga or gym sessions, for example). In the app you can type the distance during review; on the web, edit the entry and add it.</p></details>
+<details><summary>Who can see my profile and activity?</summary><p>Only people in a challenge with you, and only for challenges you share. Choose Private, Totals or Full under My account. GPS routes are only ever visible to you. See the <a href="privacy.html">Privacy Policy</a>.</p></details>
+<details><summary>How long is data kept, and can I delete it?</summary><p>A challenge and everything in it is deleted 60 days after it ends, or earlier if its owner deletes it. You can delete any entry you logged. To delete your account, send a ticket and we'll take care of it.</p></details>
+</div></section>
 </div>
 </div>
 </main><footer><a href="privacy.html">Privacy Policy</a></footer><dialog id="modal"><button class="close" onclick="this.closest('dialog').close()">×</button><div id="modalBody"></div></dialog><script src="app.js"></script></body></html>

@@ -2,7 +2,8 @@ import Foundation
 import HealthKit
 
 struct HealthRecord: Encodable {
-    let teamId: Int
+    /// Nil for an individuals-only challenge; encoded by omitting the key.
+    let teamId: Int?
     let challengeId: Int
     let activityType: String
     let minutes: Int
@@ -63,7 +64,7 @@ final class HealthKitSync {
     /// Reads workouts from the last 30 days and converts each to a whole-minute duration plus
     /// distance in metres where one was recorded, matching the server's `/api/health/import`
     /// contract. A distance challenge skips workouts with no distance (the server counts them).
-    func readRecentWorkouts(teamId: Int, challengeId: Int) async throws -> [HealthRecord] {
+    func readRecentWorkouts(teamId: Int?, challengeId: Int) async throws -> [HealthRecord] {
         let end = Date()
         let start = Calendar.current.date(byAdding: .day, value: -30, to: end) ?? end
         let predicate = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)

@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS challenge_members(challenge_id INTEGER,user_id INTEGE
 CREATE TABLE IF NOT EXISTS teams(id INTEGER PRIMARY KEY,challenge_id INTEGER NOT NULL,name TEXT NOT NULL,created_by INTEGER NOT NULL,invite_code TEXT UNIQUE NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(challenge_id) REFERENCES challenges(id) ON DELETE CASCADE,FOREIGN KEY(created_by) REFERENCES users(id));
 CREATE TABLE IF NOT EXISTS team_members(team_id INTEGER,user_id INTEGER,team_role TEXT NOT NULL DEFAULT 'member',PRIMARY KEY(team_id,user_id),FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS invites(id INTEGER PRIMARY KEY,team_id INTEGER NOT NULL,email TEXT NOT NULL,token TEXT UNIQUE NOT NULL,team_role TEXT NOT NULL DEFAULT 'member',expires_at TEXT NOT NULL,accepted_at TEXT,created_by INTEGER NOT NULL,FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE);
-CREATE TABLE IF NOT EXISTS activities(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,team_id INTEGER NOT NULL,challenge_id INTEGER NOT NULL,activity_type TEXT NOT NULL,minutes INTEGER CHECK(minutes>0),activity_date TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'manual',source_ref TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,source,source_ref),FOREIGN KEY(user_id) REFERENCES users(id),FOREIGN KEY(team_id) REFERENCES teams(id),FOREIGN KEY(challenge_id) REFERENCES challenges(id));`);
+CREATE TABLE IF NOT EXISTS activities(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,team_id INTEGER,challenge_id INTEGER NOT NULL,activity_type TEXT NOT NULL,minutes INTEGER CHECK(minutes>0),activity_date TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'manual',source_ref TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,source,source_ref),FOREIGN KEY(user_id) REFERENCES users(id),FOREIGN KEY(team_id) REFERENCES teams(id),FOREIGN KEY(challenge_id) REFERENCES challenges(id));`);
 // Additive, non-destructive migration: adds columns to an existing on-disk database without
 // touching anything already in it. Safe to run on every boot.
 function ensureColumn(table,column,definition){if(!db.prepare(`PRAGMA table_info(${table})`).all().some(c=>c.name===column))db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)}
@@ -27,26 +27,29 @@ ensureColumn('users','avatar_url','TEXT');
 ensureColumn('challenges','metric',"TEXT NOT NULL DEFAULT 'minutes'");
 ensureColumn('challenges','distance_unit',"TEXT NOT NULL DEFAULT 'mi'");
 ensureColumn('activities','distance_m','REAL');
-// activities.minutes was NOT NULL when every challenge measured time; a distance entry may have no
-// duration. SQLite cannot drop NOT NULL in place, so an existing table is rebuilt once, copying
-// every row and column across unchanged. Detected from the live schema, so it runs at most once.
-function relaxActivityMinutes(){
+// Who takes part: teams (the original model) or individuals only, where activity has no team.
+ensureColumn('challenges','participation',"TEXT NOT NULL DEFAULT 'teams'");
+// activities.minutes and team_id were NOT NULL when every challenge measured time in teams; a
+// distance entry may have no duration and an individuals-only entry has no team. SQLite cannot
+// drop NOT NULL in place, so the table is rebuilt, copying every row and column across unchanged.
+// Detected from the live schema, so it runs only while either column is still NOT NULL.
+function relaxActivityColumns(){
   const cols=db.prepare('PRAGMA table_info(activities)').all();
-  if(!cols.find(c=>c.name==='minutes')?.notnull)return;
+  if(!cols.some(c=>(c.name==='minutes'||c.name==='team_id')&&c.notnull))return;
   const names=cols.map(c=>c.name).join(',');
   db.exec('PRAGMA foreign_keys=OFF');
   try{
     db.exec('BEGIN');
-    db.exec(`CREATE TABLE activities_new(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,team_id INTEGER NOT NULL,challenge_id INTEGER NOT NULL,activity_type TEXT NOT NULL,minutes INTEGER CHECK(minutes>0),activity_date TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'manual',source_ref TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,start_time TEXT,end_time TEXT,comment TEXT,distance_m REAL,UNIQUE(user_id,source,source_ref),FOREIGN KEY(user_id) REFERENCES users(id),FOREIGN KEY(team_id) REFERENCES teams(id),FOREIGN KEY(challenge_id) REFERENCES challenges(id))`);
+    db.exec(`CREATE TABLE activities_new(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,team_id INTEGER,challenge_id INTEGER NOT NULL,activity_type TEXT NOT NULL,minutes INTEGER CHECK(minutes>0),activity_date TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'manual',source_ref TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,start_time TEXT,end_time TEXT,comment TEXT,distance_m REAL,UNIQUE(user_id,source,source_ref),FOREIGN KEY(user_id) REFERENCES users(id),FOREIGN KEY(team_id) REFERENCES teams(id),FOREIGN KEY(challenge_id) REFERENCES challenges(id))`);
     db.exec(`INSERT INTO activities_new(${names}) SELECT ${names} FROM activities`);
     db.exec('DROP TABLE activities');
     db.exec('ALTER TABLE activities_new RENAME TO activities');
     db.exec('COMMIT');
-    console.log('Migrated activities: minutes is now optional (distance challenges)');
+    console.log('Migrated activities: minutes and team are now optional (distance and individual challenges)');
   }catch(e){db.exec('ROLLBACK');throw e}
   finally{db.exec('PRAGMA foreign_keys=ON')}
 }
-relaxActivityMinutes();
+relaxActivityColumns();
 
 // --- uploaded images (avatars, team logos, description images) --------------------------
 // Stored under DATA_DIR (the persistent volume), never under the app's own public/ dir, which
@@ -150,11 +153,11 @@ const CODE_ALPHABET='ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const genCode=(len=8)=>{const b=crypto.randomBytes(len);let s='';for(let i=0;i<len;i++)s+=CODE_ALPHABET[b[i]%CODE_ALPHABET.length];return s};
 const isUniqueViolation=e=>/UNIQUE constraint failed/i.test(e.message||'');
 
-function insertChallenge(name,start_date,end_date,uid,description=null,metric='minutes',distance_unit='mi'){
+function insertChallenge(name,start_date,end_date,uid,description=null,metric='minutes',distance_unit='mi',participation='teams'){
   for(let attempt=0;attempt<10;attempt++){
     const code=genCode();
     try{
-      const r=db.prepare('INSERT INTO challenges(name,start_date,end_date,created_by,invite_code,description,metric,distance_unit) VALUES(?,?,?,?,?,?,?,?)').run(name,start_date,end_date,uid,code,description,metric,distance_unit);
+      const r=db.prepare('INSERT INTO challenges(name,start_date,end_date,created_by,invite_code,description,metric,distance_unit,participation) VALUES(?,?,?,?,?,?,?,?,?)').run(name,start_date,end_date,uid,code,description,metric,distance_unit,participation);
       const id=Number(r.lastInsertRowid);
       db.prepare("INSERT INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'owner')").run(id,uid);
       return {id,invite_code:code};
@@ -264,6 +267,21 @@ function validateTimes(start_time,end_time){
 // --- what a challenge measures ------------------------------------------------------------
 const METERS_PER={mi:1609.344,km:1000};
 const challengeMetric=c=>c&&c.metric==='distance'?'distance':'minutes';
+const isIndividual=c=>!!c&&c.participation==='individual';
+// Where an activity may be logged. A team challenge needs a team of that challenge the user is in
+// (as before); an individuals-only challenge needs only membership, and the activity has no team.
+// Returns {teamId} or an {error,status} to send back.
+function activityTarget(u,challenge,rawTeamId){
+  if(!challenge)return {error:'Challenge not found',status:404};
+  if(isIndividual(challenge)){
+    if(!challengeAccess(u.id,challenge.id))return {error:'Join the challenge before logging activity in it',status:403};
+    return {teamId:null};
+  }
+  const teamId=Number(rawTeamId),team=db.prepare('SELECT challenge_id FROM teams WHERE id=?').get(teamId);
+  if(!team||team.challenge_id!==challenge.id)return {error:'That team is not part of this challenge',status:400};
+  if(!teamAccess(u.id,teamId))return {error:'You are not in this team',status:403};
+  return {teamId};
+}
 const challengeUnit=c=>c&&c.distance_unit==='km'?'km':'mi';
 // Display figure in the challenge's own unit, to 2dp - totals are summed in metres first so
 // rounding never accumulates across entries.
@@ -273,6 +291,7 @@ function parseChallengeMeasure(b){
   const out={};
   if(b.metric!==undefined){if(!['minutes','distance'].includes(b.metric))throw new Error('metric must be minutes or distance');out.metric=b.metric}
   if(b.distance_unit!==undefined){if(!METERS_PER[b.distance_unit])throw new Error('distance_unit must be mi or km');out.distance_unit=b.distance_unit}
+  if(b.participation!==undefined){if(!['teams','individual'].includes(b.participation))throw new Error('participation must be teams or individual');out.participation=b.participation}
   return out;
 }
 // Both inputs return undefined when the field was not sent, null when it was sent empty (clear
@@ -311,7 +330,7 @@ function requireMeasure(challenge,minutes,distance_m){
 function updateUserFields(id,{name,email,passwordHash,avatarUrl}){const sets=[],params=[];if(name!==undefined){sets.push('name=?');params.push(name)}if(email!==undefined){sets.push('email=?');params.push(email)}if(passwordHash!==undefined){sets.push('password_hash=?');params.push(passwordHash)}if(avatarUrl!==undefined){sets.push('avatar_url=?');params.push(avatarUrl)}if(!sets.length)return false;params.push(id);db.prepare(`UPDATE users SET ${sets.join(',')} WHERE id=?`).run(...params);return true}
 
 function dashboard(uid){
-  const challenges=db.prepare(`SELECT c.id,c.name,c.description,c.start_date,c.end_date,c.active,c.invite_code,c.metric,c.distance_unit,cm.challenge_role FROM challenges c JOIN challenge_members cm ON cm.challenge_id=c.id WHERE cm.user_id=? ORDER BY c.start_date DESC`).all(uid);
+  const challenges=db.prepare(`SELECT c.id,c.name,c.description,c.start_date,c.end_date,c.active,c.invite_code,c.metric,c.distance_unit,c.participation,cm.challenge_role FROM challenges c JOIN challenge_members cm ON cm.challenge_id=c.id WHERE cm.user_id=? ORDER BY c.start_date DESC`).all(uid);
   for(const c of challenges){
     c.role=c.challenge_role; delete c.challenge_role;
     c.teams=db.prepare(`SELECT t.id,t.name,t.invite_code,tm.team_role,(SELECT COUNT(*) FROM team_members z WHERE z.team_id=t.id) members FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=? AND t.challenge_id=? ORDER BY t.name`).all(uid,c.id);
@@ -319,7 +338,7 @@ function dashboard(uid){
     c.myMinutes=tot.m;
     c.myDistance=metersToUnit(tot.d,c.distance_unit);
   }
-  const mine=db.prepare(`SELECT a.*,t.name team_name,c.name challenge_name,c.distance_unit FROM activities a JOIN teams t ON t.id=a.team_id JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=? ORDER BY activity_date DESC,a.id DESC LIMIT 20`).all(uid);
+  const mine=db.prepare(`SELECT a.*,t.name team_name,c.name challenge_name,c.distance_unit FROM activities a LEFT JOIN teams t ON t.id=a.team_id JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=? ORDER BY activity_date DESC,a.id DESC LIMIT 20`).all(uid);
   for(const a of mine)a.distance=a.distance_m==null?null:metersToUnit(a.distance_m,a.distance_unit);
   return {challenges,mine};
 }
@@ -406,20 +425,37 @@ async function api(req,res,url){
  if(m==='GET'&&url.pathname==='/api/dashboard'){if(!need(res,u))return;return send(res,200,{user:u,...dashboard(u.id)})}
  if(m==='GET'&&url.pathname==='/api/mobile/bootstrap'){if(!need(res,u))return;return send(res,200,{user:u,...dashboard(u.id),health:{healthConnect:{platform:'Android',mode:'native-companion-required'},healthKit:{platform:'iOS',mode:'native-companion-required'},acceptedRecord:'exercise session duration and distance',uploadEndpoint:'/api/health/import'}})}
 
- if(m==='POST'&&url.pathname==='/api/challenges'){if(!need(res,u))return;const b=await body(req);if(!b.name||!b.start_date||!b.end_date)return send(res,400,{error:'name, start_date and end_date are required'});const description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):null;let measure;try{measure=parseChallengeMeasure(b)}catch(e){return send(res,400,{error:e.message})}const {id,invite_code}=insertChallenge(String(b.name).trim(),b.start_date,b.end_date,u.id,description,measure.metric||'minutes',measure.distance_unit||'mi');return send(res,201,{id,invite_code})}
- if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),ca=challengeAccess(u.id,cid);if(!ca)return send(res,403,{error:'You need an invite code to view this challenge'});const c=db.prepare('SELECT id,name,description,start_date,end_date,active,invite_code,created_by,metric,distance_unit FROM challenges WHERE id=?').get(cid);const teams=db.prepare(`SELECT t.id,t.name,t.image_url,t.invite_code,(SELECT COUNT(*) FROM team_members z WHERE z.team_id=t.id) members,tm.team_role FROM teams t LEFT JOIN team_members tm ON tm.team_id=t.id AND tm.user_id=? WHERE t.challenge_id=? ORDER BY t.name`).all(u.id,cid).map(t=>{const mine=t.team_role!=null,canManage=u.role==='global_admin'||t.team_role==='team_admin'||ca.challenge_role==='owner';return {id:t.id,name:t.name,image_url:t.image_url,members:t.members,mine,canManage,invite_code:(mine||canManage)?t.invite_code:undefined}});return send(res,200,{...c,role:ca.challenge_role,canManage:canManageChallenge(u,cid),teams})}
- if(m==='PATCH'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner can edit this challenge'});const b=await body(req),name=b.name!==undefined?String(b.name).trim():challenge.name,start_date=b.start_date!==undefined?b.start_date:challenge.start_date,end_date=b.end_date!==undefined?b.end_date:challenge.end_date,description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):challenge.description;if(!name||!start_date||!end_date)return send(res,400,{error:'name, start_date and end_date are required'});let measure;try{measure=parseChallengeMeasure(b)}catch(e){return send(res,400,{error:e.message})}db.prepare('UPDATE challenges SET name=?,start_date=?,end_date=?,description=?,metric=?,distance_unit=? WHERE id=?').run(name,start_date,end_date,description,measure.metric||challenge.metric,measure.distance_unit||challenge.distance_unit,cid);return send(res,200,{ok:true})}
+ if(m==='POST'&&url.pathname==='/api/challenges'){if(!need(res,u))return;const b=await body(req);if(!b.name||!b.start_date||!b.end_date)return send(res,400,{error:'name, start_date and end_date are required'});const description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):null;let measure;try{measure=parseChallengeMeasure(b)}catch(e){return send(res,400,{error:e.message})}const {id,invite_code}=insertChallenge(String(b.name).trim(),b.start_date,b.end_date,u.id,description,measure.metric||'minutes',measure.distance_unit||'mi',measure.participation||'teams');return send(res,201,{id,invite_code})}
+ if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),ca=challengeAccess(u.id,cid);if(!ca)return send(res,403,{error:'You need an invite code to view this challenge'});const c=db.prepare('SELECT id,name,description,start_date,end_date,active,invite_code,created_by,metric,distance_unit,participation FROM challenges WHERE id=?').get(cid);const teams=db.prepare(`SELECT t.id,t.name,t.image_url,t.invite_code,(SELECT COUNT(*) FROM team_members z WHERE z.team_id=t.id) members,tm.team_role FROM teams t LEFT JOIN team_members tm ON tm.team_id=t.id AND tm.user_id=? WHERE t.challenge_id=? ORDER BY t.name`).all(u.id,cid).map(t=>{const mine=t.team_role!=null,canManage=u.role==='global_admin'||t.team_role==='team_admin'||ca.challenge_role==='owner';return {id:t.id,name:t.name,image_url:t.image_url,members:t.members,mine,canManage,invite_code:(mine||canManage)?t.invite_code:undefined}});return send(res,200,{...c,role:ca.challenge_role,canManage:canManageChallenge(u,cid),teams})}
+ if(m==='PATCH'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner can edit this challenge'});const b=await body(req),name=b.name!==undefined?String(b.name).trim():challenge.name,start_date=b.start_date!==undefined?b.start_date:challenge.start_date,end_date=b.end_date!==undefined?b.end_date:challenge.end_date,description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):challenge.description;if(!name||!start_date||!end_date)return send(res,400,{error:'name, start_date and end_date are required'});let measure;try{measure=parseChallengeMeasure(b)}catch(e){return send(res,400,{error:e.message})}db.prepare('UPDATE challenges SET name=?,start_date=?,end_date=?,description=?,metric=?,distance_unit=?,participation=? WHERE id=?').run(name,start_date,end_date,description,measure.metric||challenge.metric,measure.distance_unit||challenge.distance_unit,measure.participation||challenge.participation,cid);return send(res,200,{ok:true})}
+ // Owners and global admins can delete a challenge outright: its activities first (they reference
+ // teams with no cascade), then the challenge, which cascades to members, teams, team members and
+ // invites. Same order the 60-day retention purge uses.
+ if(m==='DELETE'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){
+   if(!need(res,u))return;
+   const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT id,name FROM challenges WHERE id=?').get(cid);
+   if(!challenge)return send(res,404,{error:'Challenge not found'});
+   if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner can delete this challenge'});
+   try{
+     db.exec('BEGIN');
+     db.prepare('DELETE FROM activities WHERE challenge_id=?').run(cid);
+     db.prepare('DELETE FROM challenges WHERE id=?').run(cid);
+     db.exec('COMMIT');
+   }catch(e){db.exec('ROLLBACK');throw e}
+   console.log(`Challenge ${cid} deleted by user ${u.id}`);
+   return send(res,200,{ok:true});
+ }
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/members$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!db.prepare('SELECT id FROM challenges WHERE id=?').get(cid))return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only a challenge owner can view this'});const members=db.prepare('SELECT us.id,us.name,us.email,cm.challenge_role FROM challenge_members cm JOIN users us ON us.id=cm.user_id WHERE cm.challenge_id=? ORDER BY cm.challenge_role,us.name').all(cid);return send(res,200,{members})}
  if(m==='POST'&&url.pathname.match(/^\/api\/challenges\/\d+\/owners$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!db.prepare('SELECT id FROM challenges WHERE id=?').get(cid))return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only a challenge owner can add another owner'});const b=await body(req),email=String(b.email||'').toLowerCase().trim();if(!email)return send(res,400,{error:'Email is required'});const found=db.prepare('SELECT id,name,email FROM users WHERE email=?').get(email);if(!found)return send(res,404,{error:'No account found for that email. Ask them to register first.'});const existing=db.prepare('SELECT 1 FROM challenge_members WHERE challenge_id=? AND user_id=?').get(cid,found.id);if(existing)db.prepare("UPDATE challenge_members SET challenge_role='owner' WHERE challenge_id=? AND user_id=?").run(cid,found.id);else db.prepare("INSERT INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'owner')").run(cid,found.id);return send(res,201,{ok:true,user:found})}
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard\/export$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner or a global admin can export the leaderboard'});const type=url.searchParams.get('type')==='users'?'users':'teams';const lb=leaderboard(challenge),dist=challengeMetric(challenge)==='distance',unitName=challengeUnit(challenge)==='km'?'Kilometres':'Miles';
    // A minutes challenge exports exactly as before; a distance challenge leads with distance and
    // keeps minutes alongside, since synced entries usually carry both.
    const valueCols=dist?[unitName,'Minutes']:['Minutes'],values=r=>dist?[r.distance,r.minutes]:[r.minutes];let header,rows;if(type==='teams'){header=['Rank','Team',...valueCols];rows=lb.teams.map((r,i)=>[i+1,r.name,...values(r)])}else{header=['Rank','Name','Email',...valueCols];rows=lb.users.map((r,i)=>[i+1,r.name,r.email,...values(r)])}const csv=[header,...rows].map(r=>r.map(csvEscape).join(',')).join('\r\n'),safeName=challenge.name.replace(/[^a-z0-9]+/gi,'-').toLowerCase()||'challenge';res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="${safeName}-${type}.csv"`});return res.end(csv)}
- if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!challengeAccess(u.id,cid))return send(res,403,{error:'You need an invite code to view this challenge'});const challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);const lb=leaderboard(challenge);return send(res,200,{metric:challengeMetric(challenge),distance_unit:challengeUnit(challenge),teams:lb.teams.map(({email,...t})=>t),users:lb.users.map(({email,...x})=>x)})}
+ if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!challengeAccess(u.id,cid))return send(res,403,{error:'You need an invite code to view this challenge'});const challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);const lb=leaderboard(challenge);return send(res,200,{metric:challengeMetric(challenge),distance_unit:challengeUnit(challenge),participation:isIndividual(challenge)?'individual':'teams',teams:lb.teams.map(({email,...t})=>t),users:lb.users.map(({email,...x})=>x)})}
 
  if(m==='POST'&&url.pathname==='/api/join'){if(!need(res,u))return;const b=await body(req),code=String(b.code||'').trim().toUpperCase();if(!code)return send(res,400,{error:'Invite code required'});const challenge=db.prepare('SELECT * FROM challenges WHERE invite_code=?').get(code);if(challenge){db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(challenge.id,u.id);return send(res,200,{ok:true,type:'challenge',challengeId:challenge.id,name:challenge.name})}const team=db.prepare('SELECT * FROM teams WHERE invite_code=?').get(code);if(team){db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(team.challenge_id,u.id);db.prepare("INSERT OR IGNORE INTO team_members(team_id,user_id,team_role) VALUES(?,?,'member')").run(team.id,u.id);return send(res,200,{ok:true,type:'team',challengeId:team.challenge_id,teamId:team.id,name:team.name})}return send(res,400,{error:'That invite code was not recognised'})}
 
- if(m==='POST'&&url.pathname==='/api/teams'){if(!need(res,u))return;const b=await body(req),cid=Number(b.challenge_id);if(!b.name||!cid)return send(res,400,{error:'challenge_id and name are required'});if(!challengeAccess(u.id,cid))return send(res,403,{error:'Join the challenge before creating a team in it'});let imageUrl;try{imageUrl=validateImageUrl(b.image_url)}catch(e){return send(res,400,{error:e.message})}const {id,invite_code}=insertTeam(cid,String(b.name).trim(),u.id,imageUrl||null);return send(res,201,{id,invite_code})}
+ if(m==='POST'&&url.pathname==='/api/teams'){if(!need(res,u))return;const b=await body(req),cid=Number(b.challenge_id);if(!b.name||!cid)return send(res,400,{error:'challenge_id and name are required'});if(!challengeAccess(u.id,cid))return send(res,403,{error:'Join the challenge before creating a team in it'});if(isIndividual(db.prepare('SELECT participation FROM challenges WHERE id=?').get(cid)))return send(res,400,{error:'This challenge is for individuals - it has no teams'});let imageUrl;try{imageUrl=validateImageUrl(b.image_url)}catch(e){return send(res,400,{error:e.message})}const {id,invite_code}=insertTeam(cid,String(b.name).trim(),u.id,imageUrl||null);return send(res,201,{id,invite_code})}
  if(m==='POST'&&url.pathname.match(/^\/api\/teams\/\d+\/join$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!challengeAccess(u.id,team.challenge_id))return send(res,403,{error:'Join the challenge before joining one of its teams'});db.prepare("INSERT OR IGNORE INTO team_members(team_id,user_id,team_role) VALUES(?,?,'member')").run(tid,u.id);return send(res,200,{ok:true})}
  if(m==='PATCH'&&url.pathname.match(/^\/api\/teams\/\d+$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can rename this team'});const b=await body(req),name=String(b.name||'').trim();if(!name)return send(res,400,{error:'Name is required'});let imageUrl;try{imageUrl=validateImageUrl(b.image_url)}catch(e){return send(res,400,{error:e.message})}if(imageUrl!==undefined)db.prepare('UPDATE teams SET name=?,image_url=? WHERE id=?').run(name,imageUrl,tid);else db.prepare('UPDATE teams SET name=? WHERE id=?').run(name,tid);return send(res,200,{ok:true})}
  if(m==='DELETE'&&url.pathname.match(/^\/api\/teams\/\d+$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can delete this team'});try{db.exec('BEGIN');db.prepare('DELETE FROM activities WHERE team_id=?').run(tid);db.prepare('DELETE FROM teams WHERE id=?').run(tid);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}return send(res,200,{ok:true})}
@@ -431,10 +467,10 @@ async function api(req,res,url){
 
  if(m==='POST'&&url.pathname==='/api/activities'){
    if(!need(res,u))return;
-   const b=await body(req),teamId=Number(b.team_id),challengeId=Number(b.challenge_id),team=db.prepare('SELECT challenge_id FROM teams WHERE id=?').get(teamId);
-   if(!team||team.challenge_id!==challengeId)return send(res,400,{error:'That team is not part of this challenge'});
-   if(!teamAccess(u.id,teamId))return send(res,403,{error:'You are not in this team'});
-   const challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(challengeId);
+   const b=await body(req),challengeId=Number(b.challenge_id),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(challengeId);
+   const target=activityTarget(u,challenge,b.team_id);
+   if(target.error)return send(res,target.status,{error:target.error});
+   const teamId=target.teamId;
    let times,minutes,distance_m;
    try{times=validateTimes(b.start_time,b.end_time);minutes=parseMinutes(b.minutes)??null;distance_m=parseDistance(b,challengeUnit(challenge))??null;requireMeasure(challenge,minutes,distance_m)}catch(e){return send(res,400,{error:e.message})}
    const comment=b.comment!==undefined?(String(b.comment).trim().slice(0,500)||null):null;
@@ -501,9 +537,10 @@ async function api(req,res,url){
    if(!['health_connect','health_kit'].includes(b.source))return send(res,400,{error:'source must be health_connect or health_kit'});
    let added=0,skipped=0;
    for(const x of b.records){
-     const teamId=Number(x.team_id),challengeId=Number(x.challenge_id),team=db.prepare('SELECT challenge_id FROM teams WHERE id=?').get(teamId);
-     if(!team||team.challenge_id!==challengeId||!teamAccess(u.id,teamId)||!x.activity_date||!x.source_ref){skipped++;continue}
-     const challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(challengeId);
+     const challengeId=Number(x.challenge_id),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(challengeId);
+     const target=activityTarget(u,challenge,x.team_id);
+     if(target.error||!x.activity_date||!x.source_ref){skipped++;continue}
+     const teamId=target.teamId;
      // Minutes stay whole numbers from a device, as before. Distance comes in metres. A record
      // without the challenge's own measure (a yoga session in a distance challenge) is skipped,
      // and counted as such, rather than stored as a zero.

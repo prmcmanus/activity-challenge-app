@@ -72,6 +72,7 @@ before(async () => {
       // trips it; the rate-limit behaviour itself is exercised against dedicated servers below
       // with tiny explicit limits instead.
       AUTH_RATE_LIMIT_MAX: '200',
+      API_RATE_LIMIT_MAX: '5000',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1444,6 +1445,7 @@ test('an existing database from before distance challenges is migrated without l
     const check = new DatabaseSync(path.join(dir, 'activity.sqlite'));
     const cols = check.prepare('PRAGMA table_info(activities)').all();
     assert.equal(cols.find(c => c.name === 'minutes').notnull, 0, 'minutes should now be optional');
+    assert.equal(cols.find(c => c.name === 'team_id').notnull, 0, 'team should now be optional');
     assert.ok(cols.some(c => c.name === 'distance_m'));
     const row = check.prepare('SELECT * FROM activities').get();
     assert.equal(row.minutes, 42);
@@ -1451,6 +1453,119 @@ test('an existing database from before distance challenges is migrated without l
     assert.equal(check.prepare('SELECT metric FROM challenges WHERE id=1').get().metric, 'minutes');
     // The UNIQUE(user_id,source,source_ref) rule survived the rebuild.
     assert.throws(() => check.prepare("INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,activity_date,source,source_ref) VALUES(1,1,1,'Walking',5,date('now'),'health_connect','old-ref')").run(), /UNIQUE/);
+    check.close();
+  } finally {
+    await srv.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- deleting challenges, and individuals-only challenges ---------------------------------
+
+test('a challenge owner can delete a challenge with everything in it; a member cannot', async () => {
+  const owner = await register('Olive Owner');
+  const member = await register('Max Member');
+  const { challengeId, inviteCode, teamId } = await distanceChallenge(owner);
+  await jsonFetch(`${origin}/api/join`, member.cookie, 'POST', { code: inviteCode });
+  await jsonFetch(`${origin}/api/teams/${teamId}/join`, member.cookie, 'POST');
+  await jsonFetch(`${origin}/api/activities`, member.cookie, 'POST', { team_id: teamId, challenge_id: challengeId, activity_type: 'Run', distance: 2, activity_date: '2027-07-02' });
+  // A second challenge of the same owner must be untouched.
+  const keep = await distanceChallenge(owner);
+  await jsonFetch(`${origin}/api/activities`, owner.cookie, 'POST', { team_id: keep.teamId, challenge_id: keep.challengeId, activity_type: 'Run', distance: 1, activity_date: '2027-07-02' });
+
+  const denied = await jsonFetch(`${origin}/api/challenges/${challengeId}`, member.cookie, 'DELETE');
+  assert.equal(denied.status, 403);
+
+  const done = await jsonFetch(`${origin}/api/challenges/${challengeId}`, owner.cookie, 'DELETE');
+  assert.equal(done.status, 200);
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${challengeId}`, owner.cookie)).status, 403);
+  const memberDash = await jsonFetch(`${origin}/api/dashboard`, member.cookie);
+  assert.ok(!memberDash.body.challenges.some(c => c.id === challengeId));
+  assert.ok(!memberDash.body.mine.some(a => a.challenge_id === challengeId), 'its activity is gone too');
+  const kept = await jsonFetch(`${origin}/api/challenges/${keep.challengeId}/leaderboard`, owner.cookie);
+  assert.equal(kept.body.users[0].distance, 1);
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${challengeId}`, owner.cookie, 'DELETE')).status, 404);
+});
+
+test('an individuals-only challenge has no teams: members log activity straight to it', async () => {
+  const ivy = await register('Ivy Solo');
+  const jon = await register('Jon Solo');
+  const c = await jsonFetch(`${origin}/api/challenges`, ivy.cookie, 'POST', { name: 'Solo Steps', start_date: '2027-08-01', end_date: '2027-08-31', participation: 'individual' });
+  assert.equal(c.status, 201);
+  const cid = c.body.id;
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}`, ivy.cookie)).body.participation, 'individual');
+
+  const team = await jsonFetch(`${origin}/api/teams`, ivy.cookie, 'POST', { challenge_id: cid, name: 'Not allowed' });
+  assert.equal(team.status, 400);
+
+  // Not a member yet: refused.
+  const outsider = await jsonFetch(`${origin}/api/activities`, jon.cookie, 'POST', { challenge_id: cid, activity_type: 'Walk', minutes: 20, activity_date: '2027-08-02' });
+  assert.equal(outsider.status, 403);
+  await jsonFetch(`${origin}/api/join`, jon.cookie, 'POST', { code: c.body.invite_code });
+
+  assert.equal((await jsonFetch(`${origin}/api/activities`, ivy.cookie, 'POST', { challenge_id: cid, activity_type: 'Walk', minutes: 30, activity_date: '2027-08-02' })).status, 201);
+  assert.equal((await jsonFetch(`${origin}/api/activities`, jon.cookie, 'POST', { challenge_id: cid, activity_type: 'Gym', minutes: 45, activity_date: '2027-08-02' })).status, 201);
+
+  const lb = await jsonFetch(`${origin}/api/challenges/${cid}/leaderboard`, ivy.cookie);
+  assert.equal(lb.body.participation, 'individual');
+  assert.deepEqual(lb.body.teams, []);
+  assert.deepEqual(lb.body.users.map(u => [u.name, u.minutes]), [['Jon Solo', 45], ['Ivy Solo', 30]]);
+
+  const dash = await jsonFetch(`${origin}/api/dashboard`, ivy.cookie);
+  const entry = dash.body.mine.find(a => a.challenge_id === cid);
+  assert.equal(entry.team_id, null);
+  assert.equal(entry.team_name, null);
+  assert.equal(dash.body.challenges.find(x => x.id === cid).myMinutes, 30);
+
+  // Device sync into it without a team id.
+  const sync = await fetch(`${origin}/api/health/import`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${jon.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: 'health_connect', records: [{ challenge_id: cid, activity_type: 'Walking', minutes: 15, activity_date: '2027-08-03', source_ref: 'solo-1' }] }),
+  });
+  assert.deepEqual(await sync.json(), { added: 1, skipped: 0 });
+  const boot = await jsonFetch(`${origin}/api/mobile/bootstrap`, jon.cookie);
+  assert.equal(boot.body.challenges.find(x => x.id === cid).participation, 'individual');
+
+  const editable = await jsonFetch(`${origin}/api/activities/${entry.id}`, ivy.cookie, 'PATCH', { minutes: 35 });
+  assert.equal(editable.status, 200);
+  const bad = await jsonFetch(`${origin}/api/challenges/${cid}`, ivy.cookie, 'PATCH', { participation: 'pairs' });
+  assert.equal(bad.status, 400);
+});
+
+test('a team challenge can be switched to individuals only, keeping logged activity on the individual board', async () => {
+  const kim = await register('Kim Switch');
+  const { challengeId, teamId } = await distanceChallenge(kim);
+  await jsonFetch(`${origin}/api/activities`, kim.cookie, 'POST', { team_id: teamId, challenge_id: challengeId, activity_type: 'Run', distance: 3, activity_date: '2027-07-02' });
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${challengeId}`, kim.cookie, 'PATCH', { participation: 'individual' })).status, 200);
+  assert.equal((await jsonFetch(`${origin}/api/activities`, kim.cookie, 'POST', { challenge_id: challengeId, activity_type: 'Run', distance: 1, activity_date: '2027-07-03' })).status, 201);
+  const lb = await jsonFetch(`${origin}/api/challenges/${challengeId}/leaderboard`, kim.cookie);
+  assert.equal(lb.status, 200, JSON.stringify(lb.body));
+  assert.equal(lb.body.users[0].distance, 4);
+});
+
+test('a database already migrated for distance is migrated again so team becomes optional', async () => {
+  const { DatabaseSync } = require('node:sqlite');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-challenge-midway-'));
+  const db = new DatabaseSync(path.join(dir, 'activity.sqlite'));
+  // Exactly what the distance release left behind: minutes optional, team_id still NOT NULL.
+  db.exec(`CREATE TABLE users(id INTEGER PRIMARY KEY,email TEXT UNIQUE NOT NULL,name TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'member',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE challenges(id INTEGER PRIMARY KEY,name TEXT NOT NULL,start_date TEXT NOT NULL,end_date TEXT NOT NULL,created_by INTEGER NOT NULL,invite_code TEXT UNIQUE NOT NULL,active INTEGER NOT NULL DEFAULT 1,created_at TEXT DEFAULT CURRENT_TIMESTAMP,description TEXT,metric TEXT NOT NULL DEFAULT 'minutes',distance_unit TEXT NOT NULL DEFAULT 'mi');
+    CREATE TABLE teams(id INTEGER PRIMARY KEY,challenge_id INTEGER NOT NULL,name TEXT NOT NULL,created_by INTEGER NOT NULL,invite_code TEXT UNIQUE NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,image_url TEXT);
+    CREATE TABLE activities(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,team_id INTEGER NOT NULL,challenge_id INTEGER NOT NULL,activity_type TEXT NOT NULL,minutes INTEGER CHECK(minutes>0),activity_date TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'manual',source_ref TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,start_time TEXT,end_time TEXT,comment TEXT,distance_m REAL,UNIQUE(user_id,source,source_ref),FOREIGN KEY(user_id) REFERENCES users(id),FOREIGN KEY(team_id) REFERENCES teams(id),FOREIGN KEY(challenge_id) REFERENCES challenges(id));
+    INSERT INTO users(id,email,name,password_hash) VALUES(1,'mid@example.com','Mid Way','x:y');
+    INSERT INTO challenges(id,name,start_date,end_date,created_by,invite_code,metric) VALUES(1,'Midway',date('now'),date('now','+30 days'),1,'MIDWAY01','distance');
+    INSERT INTO teams(id,challenge_id,name,created_by,invite_code) VALUES(1,1,'Mid Team',1,'MIDWAYT1');
+    INSERT INTO activities(user_id,team_id,challenge_id,activity_type,distance_m,activity_date,comment) VALUES(1,1,1,'Run',5000,date('now'),'kept');`);
+  db.close();
+  const srv = await spawnServer({ DATA_DIR: dir });
+  try {
+    const check = new DatabaseSync(path.join(dir, 'activity.sqlite'));
+    const cols = check.prepare('PRAGMA table_info(activities)').all();
+    assert.equal(cols.find(c => c.name === 'team_id').notnull, 0);
+    const row = check.prepare('SELECT * FROM activities').get();
+    assert.deepEqual([row.team_id, row.distance_m, row.comment, row.minutes], [1, 5000, 'kept', null]);
+    assert.equal(check.prepare('SELECT participation FROM challenges WHERE id=1').get().participation, 'teams');
     check.close();
   } finally {
     await srv.stop();

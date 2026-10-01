@@ -29,6 +29,10 @@ A dependency-free Node.js MVP for time-based team activity challenges.
   date**, on a daily schedule — see that page for the full retention policy
 - Challenges measure either active minutes or distance (miles or km), chosen when the challenge is
   created and changeable later; manual activity logging asks for whichever the challenge measures
+- A challenge is played in teams or by individuals only (no teams: everyone logs straight to the
+  challenge and there is one leaderboard); switchable later by the owner
+- The challenge owner (or a global admin) can delete a challenge, with all its teams and activity,
+  after typing its name to confirm
 - SQLite persistence, password hashing, HTTP-only sessions and duplicate-safe health imports
 - Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes and distance in
 - Optional reCAPTCHA on registration/sign-in, plus per-IP rate limiting everywhere, against bots

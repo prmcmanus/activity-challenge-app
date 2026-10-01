@@ -6,7 +6,7 @@ struct ContentView: View {
     @AppStorage("sessionToken") private var sessionToken: String = ""
     @State private var password: String = ""
     @State private var teamOptions: [TeamOption] = []
-    @State private var selectedTeamId: Int?
+    @State private var selectedOptionId: String?
     @State private var status: String = "Sign in, then pick the challenge/team to sync into. Join challenges and teams in the web app first — this companion only syncs Apple Health data into a team you already belong to."
     @State private var isBusy = false
 
@@ -31,13 +31,13 @@ struct ContentView: View {
 
                 if !teamOptions.isEmpty {
                     Section("Sync into") {
-                        Picker("Challenge — Team", selection: $selectedTeamId) {
+                        Picker("Challenge — Team", selection: $selectedOptionId) {
                             ForEach(teamOptions) { option in
-                                Text(option.label).tag(Optional(option.teamId))
+                                Text(option.label).tag(Optional(option.id))
                             }
                         }
                         Button("Sync Apple Health") { Task { await sync() } }
-                            .disabled(isBusy || selectedTeamId == nil)
+                            .disabled(isBusy || selectedOptionId == nil)
                     }
                 }
 
@@ -64,7 +64,7 @@ struct ContentView: View {
             sessionToken = token
             let options = try await api.bootstrap(token: token)
             teamOptions = options
-            selectedTeamId = options.first?.teamId
+            selectedOptionId = options.first?.id
             status = options.isEmpty
                 ? "Signed in, but you are not in any team yet. Join a challenge and a team in the web app, then sign in here again."
                 : "Signed in. Found \(options.count) team membership(s)."
@@ -74,8 +74,8 @@ struct ContentView: View {
     }
 
     private func sync() async {
-        guard let api = api(), !sessionToken.isEmpty, let teamId = selectedTeamId,
-              let team = teamOptions.first(where: { $0.teamId == teamId }) else {
+        guard let api = api(), !sessionToken.isEmpty, let optionId = selectedOptionId,
+              let team = teamOptions.first(where: { $0.id == optionId }) else {
             status = "Sign in and select a challenge/team before syncing."
             return
         }

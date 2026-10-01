@@ -1,13 +1,16 @@
 import Foundation
 
+/// One thing to sync into: a team in a team challenge, or (teamId nil) an individuals-only challenge.
 struct TeamOption: Identifiable, Hashable {
-    let teamId: Int
+    let teamId: Int?
     let teamName: String
     let challengeId: Int
     let challengeName: String
     var measuresDistance: Bool = false
-    var id: Int { teamId }
-    var label: String { "\(challengeName) — \(teamName)" + (measuresDistance ? " (distance)" : "") }
+    var id: String { "\(challengeId)-\(teamId.map(String.init) ?? "individual")" }
+    var label: String {
+        (teamId == nil ? "\(challengeName) (individual)" : "\(challengeName) — \(teamName)") + (measuresDistance ? " (distance)" : "")
+    }
 }
 
 struct ImportResult {
@@ -51,12 +54,17 @@ final class ActiveTogetherAPI {
         var options: [TeamOption] = []
         for challenge in challenges {
             guard let challengeId = challenge["id"] as? Int,
-                  let challengeName = challenge["name"] as? String,
-                  let teams = challenge["teams"] as? [[String: Any]] else { continue }
+                  let challengeName = challenge["name"] as? String else { continue }
+            let distance = (challenge["metric"] as? String) == "distance"
+            if (challenge["participation"] as? String) == "individual" {
+                options.append(TeamOption(teamId: nil, teamName: "", challengeId: challengeId, challengeName: challengeName, measuresDistance: distance))
+                continue
+            }
+            guard let teams = challenge["teams"] as? [[String: Any]] else { continue }
             for team in teams {
                 guard let teamId = team["id"] as? Int, let teamName = team["name"] as? String else { continue }
                 options.append(TeamOption(teamId: teamId, teamName: teamName, challengeId: challengeId, challengeName: challengeName,
-                                          measuresDistance: (challenge["metric"] as? String) == "distance"))
+                                          measuresDistance: distance))
             }
         }
         return options

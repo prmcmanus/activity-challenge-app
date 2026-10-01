@@ -6,11 +6,13 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
-data class TeamOption(val teamId: Int, val teamName: String, val challengeId: Int, val challengeName: String, val measuresDistance: Boolean = false) {
-    override fun toString() = "$challengeName — $teamName" + if (measuresDistance) " (distance)" else ""
+/** teamId is null for an individuals-only challenge, where activity is logged with no team. */
+data class TeamOption(val teamId: Int?, val teamName: String, val challengeId: Int, val challengeName: String, val measuresDistance: Boolean = false) {
+    override fun toString() = (if (teamId == null) "$challengeName (individual)" else "$challengeName — $teamName") +
+        if (measuresDistance) " (distance)" else ""
 }
 data class Bootstrap(val teamOptions: List<TeamOption>)
-data class HealthRecord(val teamId: Int, val challengeId: Int, val activityType: String, val minutes: Long, val distanceMeters: Double?, val activityDate: String, val sourceRef: String, val startTime: String, val endTime: String)
+data class HealthRecord(val teamId: Int?, val challengeId: Int, val activityType: String, val minutes: Long, val distanceMeters: Double?, val activityDate: String, val sourceRef: String, val startTime: String, val endTime: String)
 data class ImportResult(val added: Int, val skipped: Int)
 
 class ActiveTogetherApi(private val baseUrl: String) {
@@ -36,10 +38,15 @@ class ActiveTogetherApi(private val baseUrl: String) {
         val options = mutableListOf<TeamOption>()
         for (i in 0 until challenges.length()) {
             val c = challenges.getJSONObject(i)
+            val distance = c.optString("metric", "minutes") == "distance"
+            if (c.optString("participation", "teams") == "individual") {
+                options.add(TeamOption(null, "", c.getInt("id"), c.getString("name"), distance))
+                continue
+            }
             val teams = c.getJSONArray("teams")
             for (j in 0 until teams.length()) {
                 val t = teams.getJSONObject(j)
-                options.add(TeamOption(t.getInt("id"), t.getString("name"), c.getInt("id"), c.getString("name"), c.optString("metric", "minutes") == "distance"))
+                options.add(TeamOption(t.getInt("id"), t.getString("name"), c.getInt("id"), c.getString("name"), distance))
             }
         }
         return Bootstrap(options)
@@ -50,7 +57,7 @@ class ActiveTogetherApi(private val baseUrl: String) {
             .put("source", "health_connect")
             .put("records", JSONArray(records.map {
                 JSONObject()
-                    .put("team_id", it.teamId)
+                    .apply { it.teamId?.let { id -> put("team_id", id) } }
                     .put("challenge_id", it.challengeId)
                     .put("activity_type", it.activityType)
                     .put("minutes", it.minutes)

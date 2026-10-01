@@ -60,6 +60,8 @@ let me=null, dash=null, curChallenge=null, curLeaderboard=null, authTab='login';
 
 // --- what a challenge measures: active minutes (the default) or distance in miles/km ---------
 const isDistance=c=>c&&c.metric==='distance';
+// Individuals-only challenges have no teams: activity is logged straight to the challenge.
+const isIndividual=c=>!!c&&c.participation==='individual';
 const unitShort=c=>c&&c.distance_unit==='km'?'km':'mi';
 const unitLong=c=>c&&c.distance_unit==='km'?'Kilometres':'Miles';
 const fmtNum=n=>Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2});
@@ -134,7 +136,7 @@ async function loadDashboard(){dash=await api('/api/dashboard')}
 function showHome(){$('#challengeView').classList.add('hidden');$('#homeView').classList.remove('hidden');renderHome()}
 function renderHome(){
   $('#hello').textContent=`Welcome, ${me.name}`;
-  $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${c.teams.length} of your team(s) · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
+  $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${isIndividual(c)?'individuals':`${c.teams.length} of your team(s)`} · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
   $all('[data-open]').forEach(b=>b.onclick=()=>openChallenge(Number(b.dataset.open)));
 }
 
@@ -177,6 +179,12 @@ function renderChallenge(){
   $('#distanceLabel').textContent=unitLong(c);
   $('#minutes').required=!isDistance(c);
   $('#minutesLabel').textContent=isDistance(c)?'Minutes (optional)':'Minutes';
+  const solo=isIndividual(c);
+  ['#teamsCard','#teamLeaderCard','#teamWrap'].forEach(s=>$(s).classList.toggle('hidden',solo));
+  if(solo)$('#exportTeamsCsv').classList.add('hidden');
+  $('#logGrid').classList.toggle('single',solo);
+  $('#boardGrid').classList.toggle('single',solo);
+  $('#team').required=!solo;
   const myTeams=c.teams.filter(t=>t.mine);
   $('#team').innerHTML=myTeams.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')||'<option value="">Join a team first</option>';
   $('#teamList').innerHTML=c.teams.map(t=>{
@@ -196,7 +204,7 @@ function renderChallenge(){
   $('#recent').innerHTML=recent.map(x=>{
     const timeBit=x.start_time&&x.end_time?` · ${x.start_time}–${x.end_time}`:'';
     const commentBit=x.comment?`<div class="muted">“${esc(x.comment)}”</div>`:'';
-    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${esc(x.team_name)} · ${x.activity_date}${timeBit} · ${x.source}</div>${commentBit}</div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b><button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></div></div>`;
+    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${x.team_name?`${esc(x.team_name)} · `:''}${x.activity_date}${timeBit} · ${x.source}</div>${commentBit}</div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b><button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></div></div>`;
   }).join('')||'<p class="muted">No activity logged yet in this challenge.</p>';
   $all('[data-editactivity]').forEach(b=>{const x=recent.find(a=>a.id===Number(b.dataset.editactivity));b.onclick=()=>openEditActivity(x)});
   $all('[data-delactivity]').forEach(b=>b.onclick=async()=>{
@@ -215,23 +223,39 @@ async function openEditChallenge(c){
       <div class="two"><label>Start<input id="ecStart" type="date" value="${c.start_date}" required></label><label>End<input id="ecEnd" type="date" value="${c.end_date}" required></label></div>
       <div class="two"><label>Measure<select id="ecMetric" data-metric><option value="minutes"${isDistance(c)?'':' selected'}>Active minutes</option><option value="distance"${isDistance(c)?' selected':''}>Distance</option></select></label><label data-unitwrap>Distance unit<select id="ecUnit"><option value="mi"${unitShort(c)==='mi'?' selected':''}>Miles</option><option value="km"${unitShort(c)==='km'?' selected':''}>Kilometres</option></select></label></div>
       <p class="muted">Changing what the challenge measures re-ranks the leaderboards. Entries logged without that measure count as zero toward it.</p>
+      <label>Who takes part<select id="ecParticipation"><option value="teams"${isIndividual(c)?'':' selected'}>Teams</option><option value="individual"${isIndividual(c)?' selected':''}>Individuals only</option></select></label>
+      <p class="muted">Individuals only hides teams: everyone logs straight to the challenge. Activity already logged with a team still counts on the individual leaderboard.</p>
       <button>Save changes</button>
     </form>
     <p id="ecMsg" class="error"></p>
     <h2 style="margin-top:24px">Challenge owners</h2>
     <div id="ownersList">${membersData.members.filter(m=>m.challenge_role==='owner').map(m=>`<div class="listrow"><div><b>${esc(m.name)}</b><div class="muted">${esc(m.email)}</div></div></div>`).join('')||'<p class="muted">No owners.</p>'}</div>
     <form id="addOwnerForm"><label>Add an owner by email<input id="addOwnerEmail" type="email" required placeholder="name@example.com"></label><button>Add owner</button></form>
-    <p id="ownerMsg" class="error"></p>`;
+    <p id="ownerMsg" class="error"></p>
+    <div class="danger-zone"><h2>Delete challenge</h2><p class="muted">Permanently deletes this challenge with all its teams, members and logged activity, for everyone. This cannot be undone.</p><button type="button" class="danger" id="deleteChallengeBtn">Delete challenge</button><p id="deleteChallengeMsg" class="error"></p></div>`;
   $('#modal').showModal();
   initRichTextEditor($('[data-rte]'));
   wireMeasureFields($('#editChallengeForm'));
   $('#editChallengeForm').onsubmit=async e=>{
     e.preventDefault();
     try{
-      await api(`/api/challenges/${c.id}`,{method:'PATCH',body:JSON.stringify({name:$('#ecName').value.trim(),description:$('#ecDescription').innerHTML,start_date:$('#ecStart').value,end_date:$('#ecEnd').value,metric:$('#ecMetric').value,distance_unit:$('#ecUnit').value})});
+      await api(`/api/challenges/${c.id}`,{method:'PATCH',body:JSON.stringify({name:$('#ecName').value.trim(),description:$('#ecDescription').innerHTML,start_date:$('#ecStart').value,end_date:$('#ecEnd').value,metric:$('#ecMetric').value,distance_unit:$('#ecUnit').value,participation:$('#ecParticipation').value})});
       $('#modal').close();
       await refreshChallenge();
     }catch(x){$('#ecMsg').textContent=x.message}
+  };
+  // Typing the name is the confirmation: deleting removes everyone's activity, not just the owner's.
+  $('#deleteChallengeBtn').onclick=async()=>{
+    const typed=prompt(`This deletes "${c.name}" and everything logged in it, for every member. Type the challenge name to confirm.`);
+    if(typed===null)return;
+    if(typed.trim()!==c.name.trim()){$('#deleteChallengeMsg').textContent='The name did not match, so nothing was deleted.';return}
+    try{
+      await api(`/api/challenges/${c.id}`,{method:'DELETE'});
+      $('#modal').close();
+      curChallenge=null;
+      await loadDashboard();
+      showHome();
+    }catch(x){$('#deleteChallengeMsg').textContent=x.message}
   };
   $('#addOwnerForm').onsubmit=async e=>{
     e.preventDefault();
@@ -428,10 +452,10 @@ $('#startTime').addEventListener('change',()=>{const m=minutesBetween($('#startT
 $('#endTime').addEventListener('change',()=>{const m=minutesBetween($('#startTime').value,$('#endTime').value);if(m)$('#minutes').value=m});
 $('#activityForm').onsubmit=async e=>{
   e.preventDefault();
-  const teamId=$('#team').value;
-  if(!teamId){alert('Join a team first');return}
+  const solo=isIndividual(curChallenge),teamId=solo?null:$('#team').value;
+  if(!solo&&!teamId){alert('Join a team first');return}
   try{
-    await api('/api/activities',{method:'POST',body:JSON.stringify({team_id:teamId,challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,...(isDistance(curChallenge)?{distance:$('#distance').value,distance_unit:unitShort(curChallenge)}:{}),activity_date:$('#activityDate').value,start_time:$('#startTime').value,end_time:$('#endTime').value,comment:$('#activityComment').value})});
+    await api('/api/activities',{method:'POST',body:JSON.stringify({...(solo?{}:{team_id:teamId}),challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,...(isDistance(curChallenge)?{distance:$('#distance').value,distance_unit:unitShort(curChallenge)}:{}),activity_date:$('#activityDate').value,start_time:$('#startTime').value,end_time:$('#endTime').value,comment:$('#activityComment').value})});
     $('#activityMsg').textContent='';
     e.target.reset();
     $('#activityDate').value=new Date().toISOString().slice(0,10);

@@ -26,7 +26,7 @@ class HealthConnectSync(private val context: Context) {
     suspend fun grantedPermissions(): Set<String> =
         HealthConnectClient.getOrCreate(context).permissionController.getGrantedPermissions()
 
-    suspend fun readExerciseSessions(teamId: Int, challengeId: Int): List<HealthRecord> {
+    suspend fun readExerciseSessions(teamId: Int?, challengeId: Int): List<HealthRecord> {
         val client = HealthConnectClient.getOrCreate(context)
         val canReadDistance = grantedPermissions().contains(distancePermission)
         val end = Instant.now()

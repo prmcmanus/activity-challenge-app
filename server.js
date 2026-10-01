@@ -319,6 +319,13 @@ function parseDistance(b,fallbackUnit){
   if(!Number.isFinite(n)||n<=0)throw new Error('Distance must be a positive number');
   return n*METERS_PER[unit];
 }
+// An activity counts only if it happened while the challenge was running - a device sync used to
+// bring in a month of older workouts. Dates are YYYY-MM-DD strings, so they compare as text.
+const DATE_RE=/^\d{4}-\d{2}-\d{2}$/;
+function requireInWindow(challenge,date){
+  if(!DATE_RE.test(String(date||'')))throw new Error('Activity date must be YYYY-MM-DD');
+  if(date<challenge.start_date||date>challenge.end_date)throw new Error(`This challenge runs from ${challenge.start_date} to ${challenge.end_date} - the activity date must fall within it`);
+}
 // The challenge's own measure is required; the other is optional extra detail.
 function requireMeasure(challenge,minutes,distance_m){
   if(challengeMetric(challenge)==='distance'){if(!distance_m)throw new Error('This challenge measures distance - enter how far you went')}
@@ -472,7 +479,7 @@ async function api(req,res,url){
    if(target.error)return send(res,target.status,{error:target.error});
    const teamId=target.teamId;
    let times,minutes,distance_m;
-   try{times=validateTimes(b.start_time,b.end_time);minutes=parseMinutes(b.minutes)??null;distance_m=parseDistance(b,challengeUnit(challenge))??null;requireMeasure(challenge,minutes,distance_m)}catch(e){return send(res,400,{error:e.message})}
+   try{requireInWindow(challenge,b.activity_date);times=validateTimes(b.start_time,b.end_time);minutes=parseMinutes(b.minutes)??null;distance_m=parseDistance(b,challengeUnit(challenge))??null;requireMeasure(challenge,minutes,distance_m)}catch(e){return send(res,400,{error:e.message})}
    const comment=b.comment!==undefined?(String(b.comment).trim().slice(0,500)||null):null;
    try{db.prepare('INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,distance_m,activity_date,source,source_ref,start_time,end_time,comment) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(u.id,teamId,challengeId,b.activity_type,minutes,distance_m,b.activity_date,b.source||'manual',b.source_ref||null,times.start_time,times.end_time,comment);return send(res,201,{ok:true})}catch(e){return send(res,400,{error:'Invalid or duplicate activity'})}
  }
@@ -496,7 +503,7 @@ async function api(req,res,url){
    const comment=b.comment!==undefined?(String(b.comment).trim().slice(0,500)||null):existing.comment;
    if(!activity_type||!activity_date)return send(res,400,{error:'Invalid activity fields'});
    let times;
-   try{times=validateTimes(start_time,end_time);requireMeasure(challenge,minutes,distance_m)}catch(e){return send(res,400,{error:e.message})}
+   try{if(b.activity_date!==undefined)requireInWindow(challenge,activity_date);times=validateTimes(start_time,end_time);requireMeasure(challenge,minutes,distance_m)}catch(e){return send(res,400,{error:e.message})}
    db.prepare('UPDATE activities SET activity_type=?,minutes=?,distance_m=?,activity_date=?,start_time=?,end_time=?,comment=? WHERE id=?').run(activity_type,minutes,distance_m,activity_date,times.start_time,times.end_time,comment,id);
    return send(res,200,{ok:true});
  }
@@ -550,13 +557,24 @@ async function api(req,res,url){
        if(minutes!==null&&!Number.isInteger(minutes))throw new Error('whole minutes only');
        distance_m=x.distance_m===undefined?null:parseDistance({distance_m:x.distance_m})??null;
        requireMeasure(challenge,minutes,distance_m);
+       requireInWindow(challenge,x.activity_date);
      }catch(e){skipped++;continue}
      // Times here are best-effort device data, not direct user input: an inconsistent or
      // midnight-crossing pair just means "no times", not "reject the whole synced session".
      let times={start_time:null,end_time:null};try{times=validateTimes(x.start_time,x.end_time)}catch(e){}
-     try{db.prepare('INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,distance_m,activity_date,source,source_ref,start_time,end_time) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(u.id,teamId,challengeId,x.activity_type||'Synced activity',minutes,distance_m,x.activity_date,b.source,x.source_ref,times.start_time,times.end_time);added++}catch(e){skipped++}
+     try{db.prepare('INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,distance_m,activity_date,source,source_ref,start_time,end_time) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(u.id,teamId,challengeId,String(x.activity_type||'Synced activity').trim().slice(0,60)||'Synced activity',minutes,distance_m,x.activity_date,b.source,x.source_ref,times.start_time,times.end_time);added++}catch(e){skipped++}
    }
    return send(res,200,{added,skipped});
+ }
+ // Which of these device records this user has already synced, so the companion's review dialog
+ // can show them as done rather than offering them again (a re-upload would be skipped anyway).
+ if(m==='POST'&&url.pathname==='/api/health/synced'){
+   if(!need(res,u))return;
+   const b=await body(req);
+   if(!['health_connect','health_kit'].includes(b.source))return send(res,400,{error:'source must be health_connect or health_kit'});
+   const refs=Array.isArray(b.refs)?b.refs.map(String).slice(0,1000):[];
+   const q=db.prepare('SELECT 1 FROM activities WHERE user_id=? AND source=? AND source_ref=?');
+   return send(res,200,{synced:refs.filter(r=>q.get(u.id,b.source,r))});
  }
  return send(res,404,{error:'Not found'});
 }

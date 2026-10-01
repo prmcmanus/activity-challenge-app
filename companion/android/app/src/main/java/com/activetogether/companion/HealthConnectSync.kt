@@ -26,11 +26,21 @@ class HealthConnectSync(private val context: Context) {
     suspend fun grantedPermissions(): Set<String> =
         HealthConnectClient.getOrCreate(context).permissionController.getGrantedPermissions()
 
-    suspend fun readExerciseSessions(teamId: Int?, challengeId: Int): List<HealthRecord> {
+    /**
+     * Sessions that started while the challenge was running (its start date to the end of its end
+     * date, in this phone's time zone), and no further back than 30 days - Health Connect only
+     * gives an app 30 days of history before its permission was granted.
+     */
+    suspend fun readExerciseSessions(option: TeamOption): List<HealthRecord> {
         val client = HealthConnectClient.getOrCreate(context)
         val canReadDistance = grantedPermissions().contains(distancePermission)
-        val end = Instant.now()
-        val start = end.minus(Duration.ofDays(30))
+        val zone = ZoneId.systemDefault()
+        val now = Instant.now()
+        val start = maxOf(option.startDate.atStartOfDay(zone).toInstant(), now.minus(Duration.ofDays(30)))
+        val end = minOf(option.endDate.plusDays(1).atStartOfDay(zone).toInstant(), now)
+        if (!start.isBefore(end)) return emptyList()
+        val teamId = option.teamId
+        val challengeId = option.challengeId
         val response = client.readRecords(
             ReadRecordsRequest(
                 recordType = ExerciseSessionRecord::class,
@@ -42,8 +52,10 @@ class HealthConnectSync(private val context: Context) {
         return response.records.mapNotNull { record ->
             val minutes = Duration.between(record.startTime, record.endTime).toMinutes()
             if (minutes <= 0) return@mapNotNull null
-            val zonedStart = record.startTime.atZone(ZoneId.systemDefault())
-            val zonedEnd = record.endTime.atZone(ZoneId.systemDefault())
+            val zonedStart = record.startTime.atZone(zone)
+            val zonedEnd = record.endTime.atZone(zone)
+            val day = zonedStart.toLocalDate()
+            if (day.isBefore(option.startDate) || day.isAfter(option.endDate)) return@mapNotNull null
             HealthRecord(
                 teamId = teamId,
                 challengeId = challengeId,
@@ -57,7 +69,7 @@ class HealthConnectSync(private val context: Context) {
                 startTime = zonedStart.format(timeFormatter),
                 endTime = zonedEnd.format(timeFormatter),
             )
-        }
+        }.sortedByDescending { it.activityDate + it.startTime }
     }
 
     /**

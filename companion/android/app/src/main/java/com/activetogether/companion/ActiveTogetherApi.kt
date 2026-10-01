@@ -5,15 +5,31 @@ import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.time.LocalDate
 
-/** teamId is null for an individuals-only challenge, where activity is logged with no team. */
-data class TeamOption(val teamId: Int?, val teamName: String, val challengeId: Int, val challengeName: String, val measuresDistance: Boolean = false) {
+/**
+ * One thing to sync into: a team in a team challenge, or (teamId null) an individuals-only
+ * challenge. Carries the challenge's dates, since only workouts inside them count.
+ */
+data class TeamOption(
+    val teamId: Int?,
+    val teamName: String,
+    val challengeId: Int,
+    val challengeName: String,
+    val measuresDistance: Boolean = false,
+    val distanceUnit: String = "mi",
+    val startDate: LocalDate,
+    val endDate: LocalDate,
+) {
     override fun toString() = (if (teamId == null) "$challengeName (individual)" else "$challengeName — $teamName") +
         if (measuresDistance) " (distance)" else ""
 }
-data class Bootstrap(val teamOptions: List<TeamOption>)
+data class Bootstrap(val userName: String, val teamOptions: List<TeamOption>)
 data class HealthRecord(val teamId: Int?, val challengeId: Int, val activityType: String, val minutes: Long, val distanceMeters: Double?, val activityDate: String, val sourceRef: String, val startTime: String, val endTime: String)
 data class ImportResult(val added: Int, val skipped: Int)
+
+/** A failed request, keeping the HTTP status so an expired session (401) can send the user back to sign in. */
+class ApiException(val status: Int, message: String) : IOException(message)
 
 class ActiveTogetherApi(private val baseUrl: String) {
     // Uses the mobile-specific login endpoint, not the web /api/login: that one requires a
@@ -28,6 +44,10 @@ class ActiveTogetherApi(private val baseUrl: String) {
         return response.getString("sessionToken")
     }
 
+    fun logout(token: String) {
+        request("/api/logout", "POST", token, JSONObject())
+    }
+
     /**
      * A team only appears here if this account is already a member of it — joining a
      * challenge or team (by invite code) happens in the web app, not this sync-only companion.
@@ -38,18 +58,31 @@ class ActiveTogetherApi(private val baseUrl: String) {
         val options = mutableListOf<TeamOption>()
         for (i in 0 until challenges.length()) {
             val c = challenges.getJSONObject(i)
+            val start = LocalDate.parse(c.getString("start_date"))
+            val end = LocalDate.parse(c.getString("end_date"))
             val distance = c.optString("metric", "minutes") == "distance"
+            val unit = if (c.optString("distance_unit", "mi") == "km") "km" else "mi"
             if (c.optString("participation", "teams") == "individual") {
-                options.add(TeamOption(null, "", c.getInt("id"), c.getString("name"), distance))
+                options.add(TeamOption(null, "", c.getInt("id"), c.getString("name"), distance, unit, start, end))
                 continue
             }
             val teams = c.getJSONArray("teams")
             for (j in 0 until teams.length()) {
                 val t = teams.getJSONObject(j)
-                options.add(TeamOption(t.getInt("id"), t.getString("name"), c.getInt("id"), c.getString("name"), distance))
+                options.add(TeamOption(t.getInt("id"), t.getString("name"), c.getInt("id"), c.getString("name"), distance, unit, start, end))
             }
         }
-        return Bootstrap(options)
+        val name = response.optJSONObject("user")?.optString("name").orEmpty()
+        return Bootstrap(name, options)
+    }
+
+    /** Which of these records this account has already synced, so the review can show them as done. */
+    fun syncedRefs(token: String, refs: List<String>): Set<String> {
+        if (refs.isEmpty()) return emptySet()
+        val response = request("/api/health/synced", "POST", token,
+            JSONObject().put("source", "health_connect").put("refs", JSONArray(refs)))
+        val arr = response.getJSONArray("synced")
+        return (0 until arr.length()).map { arr.getString(it) }.toSet()
     }
 
     fun importHealth(token: String, records: List<HealthRecord>): ImportResult {
@@ -87,7 +120,7 @@ class ActiveTogetherApi(private val baseUrl: String) {
         val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
         if (status !in 200..299) {
             val message = runCatching { JSONObject(text).optString("error") }.getOrDefault("")
-            throw IOException(message.ifBlank { "Request failed with HTTP $status" })
+            throw ApiException(status, message.ifBlank { "Request failed with HTTP $status" })
         }
         return JSONObject(text)
     }

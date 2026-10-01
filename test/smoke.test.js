@@ -1572,3 +1572,33 @@ test('a database already migrated for distance is migrated again so team becomes
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('activity must fall within the challenge dates - manual, edited and synced', async () => {
+  const lou = await register('Lou Window');
+  const { challengeId, teamId } = await distanceChallenge(lou); // 2027-07-01 .. 2027-07-31
+  const before = await jsonFetch(`${origin}/api/activities`, lou.cookie, 'POST', { team_id: teamId, challenge_id: challengeId, activity_type: 'Run', distance: 2, activity_date: '2027-06-30' });
+  assert.equal(before.status, 400);
+  assert.match(before.body.error, /2027-07-01 to 2027-07-31/);
+  const lastDay = await jsonFetch(`${origin}/api/activities`, lou.cookie, 'POST', { team_id: teamId, challenge_id: challengeId, activity_type: 'Run', distance: 2, activity_date: '2027-07-31' });
+  assert.equal(lastDay.status, 201);
+  const dash = await jsonFetch(`${origin}/api/dashboard`, lou.cookie);
+  const entry = dash.body.mine.find(a => a.challenge_id === challengeId);
+  assert.equal((await jsonFetch(`${origin}/api/activities/${entry.id}`, lou.cookie, 'PATCH', { activity_date: '2027-08-01' })).status, 400);
+
+  const sync = await fetch(`${origin}/api/health/import`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${lou.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: 'health_connect', records: [
+      { team_id: teamId, challenge_id: challengeId, activity_type: 'Run', distance_m: 3000, activity_date: '2027-06-15', source_ref: 'old-run' },
+      { team_id: teamId, challenge_id: challengeId, activity_type: 'Run', distance_m: 3000, activity_date: '2027-07-15', source_ref: 'in-run' },
+    ] }),
+  });
+  assert.deepEqual(await sync.json(), { added: 1, skipped: 1 });
+
+  const known = await fetch(`${origin}/api/health/synced`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${lou.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source: 'health_connect', refs: ['in-run', 'old-run', 'never'] }),
+  });
+  assert.deepEqual(await known.json(), { synced: ['in-run'] });
+});

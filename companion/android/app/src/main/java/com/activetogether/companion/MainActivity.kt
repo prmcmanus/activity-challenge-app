@@ -36,6 +36,10 @@ import java.util.Locale
 /** The one server this app talks to. */
 const val SERVER_URL = "https://activetogether.team"
 
+/** Units offered for a distance; the challenge's own unit is preselected. */
+data class DistanceUnit(val code: String, val label: String, val meters: Double)
+val DISTANCE_UNITS = listOf(DistanceUnit("mi", "miles", 1609.344), DistanceUnit("km", "km", 1000.0))
+
 /** Activity types offered in the review; a session's own label is added if it isn't one of these. */
 val ACTIVITY_TYPES = listOf("Walking", "Running", "Cycling", "Swimming", "Hiking", "Rowing", "Wheelchair",
     "Strength training", "Yoga", "HIIT", "Elliptical", "Exercise")
@@ -297,9 +301,7 @@ class MainActivity : ComponentActivity() {
      * a workout with no distance can't count, so it starts unticked and ticks itself once one is typed.
      */
     private fun showReview(token: String, option: TeamOption, records: List<HealthRecord>, synced: Set<String>, distanceAllowed: Boolean) {
-        data class Row(val record: HealthRecord, val check: CheckBox, val type: Spinner, val distance: EditText)
-        val unitMeters = if (option.distanceUnit == "km") 1000.0 else 1609.344
-        val unitName = if (option.distanceUnit == "km") "km" else "miles"
+        data class Row(val record: HealthRecord, val check: CheckBox, val type: Spinner, val distance: EditText, val unit: Spinner)
         val rows = mutableListOf<Row>()
         lateinit var dialog: AlertDialog
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 16, 48, 0) }
@@ -331,22 +333,52 @@ class MainActivity : ComponentActivity() {
                 setSelection(types.indexOf(r.activityType).coerceAtLeast(0))
                 isEnabled = !already
             }
+            // Distance in either unit, whatever the challenge uses - the server converts. Starts on the
+            // challenge's unit. A distance Health Connect supplied is converted when the unit changes;
+            // one the person typed is left as typed (they chose the unit to match it).
+            var typedByHand = false
+            var settingText = false
             val distance = EditText(this).apply {
-                hint = if (option.measuresDistance) "Distance in $unitName (needed)" else "Distance in $unitName (optional)"
+                hint = if (option.measuresDistance) "Distance (needed)" else "Distance (optional)"
                 inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-                r.distanceMeters?.let { setText(String.format(Locale.US, "%.2f", it / unitMeters)) }
                 isEnabled = !already
-                // Typing a distance into a distance-challenge row that had none means "count this one".
-                addTextChangedListener(object : TextWatcher {
-                    override fun afterTextChanged(e: Editable?) { if (option.measuresDistance && !already && parseDistance(e) != null) check.isChecked = true }
-                    override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
-                    override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
-                })
+            }
+            val unit = Spinner(this).apply {
+                adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, DISTANCE_UNITS.map { it.label })
+                setSelection(DISTANCE_UNITS.indexOfFirst { it.code == option.distanceUnit }.coerceAtLeast(0))
+                isEnabled = !already
+            }
+            fun showMeters(m: Double?) {
+                settingText = true
+                distance.setText(m?.let { String.format(Locale.US, "%.2f", it / DISTANCE_UNITS[unit.selectedItemPosition].meters) } ?: "")
+                settingText = false
+            }
+            showMeters(r.distanceMeters)
+            distance.addTextChangedListener(object : TextWatcher {
+                override fun afterTextChanged(e: Editable?) {
+                    if (settingText) return
+                    typedByHand = true
+                    // Typing a distance into a distance-challenge row that had none means "count this one".
+                    if (option.measuresDistance && !already && parseDistance(e) != null) check.isChecked = true
+                }
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+            })
+            unit.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    if (!typedByHand) showMeters(r.distanceMeters)
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
+            val distanceRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(distance, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(unit, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
             }
             list.addView(check)
             list.addView(type)
-            list.addView(distance)
-            rows.add(Row(r, check, type, distance))
+            list.addView(distanceRow)
+            rows.add(Row(r, check, type, distance, unit))
         }
         dialog = AlertDialog.Builder(this)
             .setTitle("Review ${records.size} workout${if (records.size == 1) "" else "s"}")
@@ -356,7 +388,7 @@ class MainActivity : ComponentActivity() {
                 val chosen = rows.filter { it.check.isEnabled && it.check.isChecked }.map {
                     it.record.copy(
                         activityType = it.type.selectedItem as String,
-                        distanceMeters = parseDistance(it.distance.text)?.let { v -> v * unitMeters },
+                        distanceMeters = parseDistance(it.distance.text)?.let { v -> v * DISTANCE_UNITS[it.unit.selectedItemPosition].meters },
                     )
                 }
                 val missing = if (option.measuresDistance) chosen.count { it.distanceMeters == null } else 0

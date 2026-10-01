@@ -176,7 +176,9 @@ function renderChallenge(){
   // A distance challenge asks for distance and makes minutes optional; a minutes challenge is unchanged.
   $('#distanceWrap').classList.toggle('hidden',!isDistance(c));
   $('#distance').required=isDistance(c);
-  $('#distanceLabel').textContent=unitLong(c);
+  // Either unit can be entered - the server converts. Defaults to the challenge's own unit each
+  // time a different challenge is opened, but keeps the person's choice while they stay on it.
+  if($('#distanceUnit').dataset.cid!==String(c.id)){$('#distanceUnit').value=unitShort(c);$('#distanceUnit').dataset.cid=String(c.id)}
   $('#minutes').required=!isDistance(c);
   $('#minutesLabel').textContent=isDistance(c)?'Minutes (optional)':'Minutes';
   const solo=isIndividual(c);
@@ -275,7 +277,7 @@ function minutesBetween(start,end){
 function openEditActivity(x){
   const c=curChallenge,dist=isDistance(c);
   // Distance is shown whenever the challenge measures it, or the entry already has one.
-  const distField=dist||x.distance!=null?`<label>${unitLong(c)}${dist?'':' (optional)'}<input id="eaDistance" type="number" min="0.01" step="0.01" inputmode="decimal" value="${x.distance??''}"${dist?' required':''}></label>`:'';
+  const distField=dist||x.distance!=null?`<label>Distance${dist?'':' (optional)'}<span class="with-unit"><input id="eaDistance" type="number" min="0.01" step="0.01" inputmode="decimal" value="${x.distance??''}"${dist?' required':''}><select id="eaUnit" aria-label="Distance unit"><option value="mi">miles</option><option value="km">km</option></select></span></label>`:'';
   $('#modalBody').innerHTML=`<h2>Edit activity</h2>
     <form id="editActivityForm">
       <label>Activity<input id="eaType" value="${esc(x.activity_type)}" required></label>
@@ -286,13 +288,25 @@ function openEditActivity(x){
     </form>
     <p id="eaMsg" class="error"></p>`;
   $('#modal').showModal();
+  // The stored distance arrives in the challenge's unit; switching unit converts it until the
+  // number itself is edited, after which the number is taken as meant in the chosen unit.
+  if($('#eaUnit')){
+    $('#eaUnit').value=unitShort(c);
+    let edited=false;
+    $('#eaDistance').addEventListener('input',()=>{edited=true});
+    $('#eaUnit').addEventListener('change',()=>{
+      if(edited||x.distance==null)return;
+      const perMile=1.609344,v=Number(x.distance);
+      $('#eaDistance').value=String(Math.round((unitShort(c)===$('#eaUnit').value?v:$('#eaUnit').value==='km'?v*perMile:v/perMile)*100)/100);
+    });
+  }
   const recalc=()=>{const m=minutesBetween($('#eaStart').value,$('#eaEnd').value);if(m)$('#eaMinutes').value=m};
   $('#eaStart').addEventListener('change',recalc);
   $('#eaEnd').addEventListener('change',recalc);
   $('#editActivityForm').onsubmit=async e=>{
     e.preventDefault();
     try{
-      await api(`/api/activities/${x.id}`,{method:'PATCH',body:JSON.stringify({activity_type:$('#eaType').value,minutes:$('#eaMinutes').value,...($('#eaDistance')?{distance:$('#eaDistance').value,distance_unit:unitShort(c)}:{}),activity_date:$('#eaDate').value,start_time:$('#eaStart').value,end_time:$('#eaEnd').value,comment:$('#eaComment').value})});
+      await api(`/api/activities/${x.id}`,{method:'PATCH',body:JSON.stringify({activity_type:$('#eaType').value,minutes:$('#eaMinutes').value,...($('#eaDistance')?{distance:$('#eaDistance').value,distance_unit:$('#eaUnit').value}:{}),activity_date:$('#eaDate').value,start_time:$('#eaStart').value,end_time:$('#eaEnd').value,comment:$('#eaComment').value})});
       $('#modal').close();
       await refreshChallenge();
     }catch(err){$('#eaMsg').textContent=err.message}
@@ -455,9 +469,11 @@ $('#activityForm').onsubmit=async e=>{
   const solo=isIndividual(curChallenge),teamId=solo?null:$('#team').value;
   if(!solo&&!teamId){alert('Join a team first');return}
   try{
-    await api('/api/activities',{method:'POST',body:JSON.stringify({...(solo?{}:{team_id:teamId}),challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,...(isDistance(curChallenge)?{distance:$('#distance').value,distance_unit:unitShort(curChallenge)}:{}),activity_date:$('#activityDate').value,start_time:$('#startTime').value,end_time:$('#endTime').value,comment:$('#activityComment').value})});
+    await api('/api/activities',{method:'POST',body:JSON.stringify({...(solo?{}:{team_id:teamId}),challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,...(isDistance(curChallenge)?{distance:$('#distance').value,distance_unit:$('#distanceUnit').value}:{}),activity_date:$('#activityDate').value,start_time:$('#startTime').value,end_time:$('#endTime').value,comment:$('#activityComment').value})});
     $('#activityMsg').textContent='';
+    const keepUnit=$('#distanceUnit').value;
     e.target.reset();
+    $('#distanceUnit').value=keepUnit;
     $('#activityDate').value=new Date().toISOString().slice(0,10);
     await refreshChallenge();
   }catch(x){$('#activityMsg').textContent=x.message}

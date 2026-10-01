@@ -39,6 +39,9 @@ A dependency-free Node.js MVP for time-based team activity challenges.
   Android app. Routes are stored once per workout, shown on an OpenStreetMap map under My activity,
   and visible only to their owner
 - My activity on the home page lists everything you've logged across every challenge
+- Profiles: challenge-mates can open each other's profile (name, photo, an "about me" line). Each
+  person chooses what else it shows - Private, Totals (default) or Full (recent activity) - and only
+  for challenges they share; routes never appear
 - SQLite persistence, password hashing, HTTP-only sessions and duplicate-safe health imports
 - Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes and distance in
 - Optional reCAPTCHA on registration/sign-in, plus per-IP rate limiting everywhere, against bots

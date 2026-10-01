@@ -50,6 +50,7 @@ import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.contracts.ExerciseRouteRequestContract
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import com.activetogether.companion.RouteState
 import com.activetogether.companion.toPoints
 import kotlinx.coroutines.launch
@@ -77,7 +78,7 @@ private fun AccessRow(label: String, granted: Boolean, note: String? = null) {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun SyncScreen(vm: AppViewModel) {
     val context = LocalContext.current
@@ -104,6 +105,10 @@ fun SyncScreen(vm: AppViewModel) {
     val historySupported = remember(sdk) { runCatching { health.historyReadSupported() }.getOrDefault(false) }
     val review = vm.review
 
+    var refreshing by remember { mutableStateOf(false) }
+    PullToRefreshBox(isRefreshing = refreshing, onRefresh = {
+        scope.launch { refreshing = true; refreshAccess().join(); if (review != null) vm.startReview().join(); refreshing = false }
+    }) {
     LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Hero("Health Connect", "Sync workouts", below = {
@@ -174,6 +179,7 @@ fun SyncScreen(vm: AppViewModel) {
                 }
             }
         }
+    }
     }
 }
 

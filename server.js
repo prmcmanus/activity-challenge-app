@@ -24,6 +24,12 @@ ensureColumn('challenges','description','TEXT');
 ensureColumn('activities','comment','TEXT');
 ensureColumn('teams','image_url','TEXT');
 ensureColumn('users','avatar_url','TEXT');
+// Profiles: an optional short bio, and how much people who share a challenge with you can see.
+//   private - name and photo only; summary - plus your total and rank in each shared challenge
+//   (the default); full - plus your recent activity in those challenges. Leaderboard totals are
+//   visible to challenge members whatever this says, and routes are never shared at any level.
+ensureColumn('users','bio','TEXT');
+ensureColumn('users','profile_sharing',"TEXT NOT NULL DEFAULT 'summary'");
 // A challenge measures either active minutes (the original behaviour, and the default for every
 // existing challenge) or distance. Distance is stored on activities in metres whatever the
 // challenge's display unit, so changing a challenge between miles and km never rewrites history.
@@ -259,7 +265,7 @@ const body=async(req,maxBytes=1e6)=>{
 const csvEscape=v=>{const s=String(v??'');return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
 const cookies=req=>Object.fromEntries((req.headers.cookie||'').split(';').filter(Boolean).map(x=>x.trim().split('=')));
 function sessionToken(req){const bearer=(req.headers.authorization||'').match(/^Bearer (.+)$/i);return bearer?.[1]||cookies(req).session||null}
-function auth(req){const t=sessionToken(req);if(!t)return null;return db.prepare(`SELECT u.id,u.email,u.name,u.role,u.avatar_url FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>datetime('now')`).get(crypto.createHash('sha256').update(t).digest('hex'))||null}
+function auth(req){const t=sessionToken(req);if(!t)return null;return db.prepare(`SELECT u.id,u.email,u.name,u.role,u.avatar_url,u.bio,u.profile_sharing FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>datetime('now')`).get(crypto.createHash('sha256').update(t).digest('hex'))||null}
 const need=(res,u,roles)=>{if(!u){send(res,401,{error:'Sign in required'});return false}if(roles&&!roles.includes(u.role)){send(res,403,{error:'Not authorised'});return false}return true};
 const setSessionCookie=t=>({'Set-Cookie':`session=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800`});
 function startSession(uid){const t=crypto.randomBytes(32).toString('hex'),th=crypto.createHash('sha256').update(t).digest('hex');db.prepare("INSERT INTO sessions VALUES(?,?,datetime('now','+7 days'))").run(th,uid);return t}
@@ -284,6 +290,7 @@ function validateTimes(start_time,end_time){
 // --- what a challenge measures ------------------------------------------------------------
 const METERS_PER={mi:1609.344,km:1000};
 const challengeMetric=c=>c&&c.metric==='distance'?'distance':'minutes';
+const PROFILE_SHARING=['private','summary','full'];
 const isIndividual=c=>!!c&&c.participation==='individual';
 // Where an activity may be logged. A team challenge needs a team of that challenge the user is in
 // (as before); an individuals-only challenge needs only membership, and the activity has no team.
@@ -463,11 +470,17 @@ async function api(req,res,url){
    if(b.newPassword){if(String(b.newPassword).length<8)return send(res,400,{error:'New password must be at least 8 characters'});passwordHash=hash(b.newPassword)}
    let avatarUrl;
    try{avatarUrl=validateImageUrl(b.avatarUrl)}catch(e){return send(res,400,{error:e.message})}
+   const bio=b.bio!==undefined?(String(b.bio).trim().slice(0,280)||null):undefined;
+   const sharing=b.profileSharing;
+   if(sharing!==undefined&&!PROFILE_SHARING.includes(sharing))return send(res,400,{error:'profileSharing must be private, summary or full'});
    try{
-     if(!updateUserFields(u.id,{name,email,passwordHash,avatarUrl}))return send(res,400,{error:'Nothing to update'});
+     const profileChanged=bio!==undefined||sharing!==undefined;
+     if(bio!==undefined)db.prepare('UPDATE users SET bio=? WHERE id=?').run(bio,u.id);
+     if(sharing!==undefined)db.prepare('UPDATE users SET profile_sharing=? WHERE id=?').run(sharing,u.id);
+     if(!updateUserFields(u.id,{name,email,passwordHash,avatarUrl})&&!profileChanged)return send(res,400,{error:'Nothing to update'});
    }catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
    if(passwordHash){const t=sessionToken(req);db.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash!=?').run(u.id,crypto.createHash('sha256').update(t).digest('hex'))}
-   return send(res,200,{ok:true,user:db.prepare('SELECT id,email,name,role,avatar_url FROM users WHERE id=?').get(u.id)});
+   return send(res,200,{ok:true,user:db.prepare('SELECT id,email,name,role,avatar_url,bio,profile_sharing FROM users WHERE id=?').get(u.id)});
  }
  if(m==='POST'&&url.pathname==='/api/uploads'){
    if(hitRateLimit('upload:'+ip,UPLOAD_RATE_LIMIT_MAX,UPLOAD_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many uploads. Please slow down.'});
@@ -528,6 +541,37 @@ async function api(req,res,url){
  if(m==='POST'&&url.pathname.match(/^\/api\/teams\/\d+\/invite$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),ta=teamAccess(u.id,tid);if(u.role!=='global_admin'&&ta?.team_role!=='team_admin')return send(res,403,{error:'Team admin required'});const b=await body(req),token=crypto.randomBytes(24).toString('hex'),exp=new Date(Date.now()+7*864e5).toISOString();db.prepare('INSERT INTO invites(team_id,email,token,team_role,expires_at,created_by) VALUES(?,?,?,?,?,?)').run(tid,String(b.email).toLowerCase(),token,b.team_role||'member',exp,u.id);return send(res,201,{inviteUrl:`${ORIGIN}/?invite=${token}`,expiresAt:exp})}
  if(m==='POST'&&url.pathname==='/api/invites/accept'){if(!need(res,u))return;const b=await body(req),inv=db.prepare("SELECT * FROM invites WHERE token=? AND accepted_at IS NULL AND expires_at>datetime('now')").get(b.token);if(!inv)return send(res,400,{error:'Invite invalid or expired'});if(inv.email!==u.email)return send(res,403,{error:'This invite was issued to another email address'});const team=db.prepare('SELECT challenge_id FROM teams WHERE id=?').get(inv.team_id);db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(team.challenge_id,u.id);db.prepare('INSERT OR REPLACE INTO team_members(team_id,user_id,team_role) VALUES(?,?,?)').run(inv.team_id,u.id,inv.team_role);db.prepare("UPDATE invites SET accepted_at=datetime('now') WHERE id=?").run(inv.id);return send(res,200,{ok:true,challengeId:team.challenge_id,teamId:inv.team_id})}
 
+ // Someone's profile, as a challenge-mate sees it - also how you preview your own. Only people who
+ // share at least one challenge can see each other (else 404, as if they didn't exist); a global
+ // admin can see anyone. Only shared challenges are listed, never others the person is in; what
+ // appears beyond name and photo follows their profile_sharing. Routes are never included.
+ if(m==='GET'&&url.pathname.match(/^\/api\/users\/\d+\/profile$/)){
+   if(!need(res,u))return;
+   const id=Number(url.pathname.split('/')[3]);
+   const target=db.prepare('SELECT id,name,avatar_url,bio,profile_sharing,created_at FROM users WHERE id=?').get(id);
+   if(!target)return send(res,404,{error:'Not found'});
+   const self=target.id===u.id;
+   const shared=self||u.role==='global_admin'
+     ?db.prepare('SELECT c.* FROM challenges c JOIN challenge_members cm ON cm.challenge_id=c.id WHERE cm.user_id=? ORDER BY c.start_date DESC').all(id)
+     :db.prepare('SELECT c.* FROM challenges c JOIN challenge_members a ON a.challenge_id=c.id AND a.user_id=? JOIN challenge_members b ON b.challenge_id=c.id AND b.user_id=? ORDER BY c.start_date DESC').all(id,u.id);
+   if(!self&&u.role!=='global_admin'&&!shared.length)return send(res,404,{error:'Not found'});
+   const sharing=PROFILE_SHARING.includes(target.profile_sharing)?target.profile_sharing:'summary';
+   const out={id:target.id,name:target.name,avatar_url:target.avatar_url,bio:target.bio||null,member_since:String(target.created_at||'').slice(0,10),sharing,self};
+   if(sharing!=='private'){
+     out.challenges=shared.map(c=>{
+       const lb=leaderboard(c),i=lb.users.findIndex(x=>x.id===id),me=lb.users[i]||{minutes:0,distance:0};
+       const team=db.prepare('SELECT t.name FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=? AND t.challenge_id=? ORDER BY t.name LIMIT 1').get(id,c.id);
+       return {id:c.id,name:c.name,start_date:c.start_date,end_date:c.end_date,metric:challengeMetric(c),distance_unit:challengeUnit(c),participation:isIndividual(c)?'individual':'teams',
+         team:team?team.name:null,minutes:me.minutes,distance:me.distance,rank:i+1,of:lb.users.length};
+     });
+   }
+   if(sharing==='full'&&shared.length){
+     const ids=shared.map(c=>c.id);
+     out.activities=db.prepare(`SELECT a.activity_type,a.minutes,a.distance_m,a.activity_date,a.start_time,a.comment,c.name challenge_name,c.metric,c.distance_unit FROM activities a JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=? AND a.challenge_id IN (${ids.map(()=>'?').join(',')}) ORDER BY a.activity_date DESC,a.start_time DESC,a.id DESC LIMIT 30`)
+       .all(id,...ids).map(({distance_m,...a})=>({...a,distance:distance_m==null?null:metersToUnit(distance_m,a.distance_unit)}));
+   }
+   return send(res,200,out);
+ }
  // One activity into one challenge (challenge_id + team_id, as before) or into several at once
  // (targets: [{challenge_id, team_id?}, ...]) - one entry per challenge, all or none, sharing one
  // stored route if a GPX route came with it.

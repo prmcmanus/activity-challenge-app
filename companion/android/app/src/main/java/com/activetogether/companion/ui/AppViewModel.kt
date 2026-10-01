@@ -158,6 +158,41 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun updateMe(m: Me) { me = m }
 
+    suspend fun refreshMe() { call { it.me() }?.let { me = it } }
+
+    /** Pull-to-refresh on a challenge: its numbers and leaderboard. */
+    suspend fun refreshChallenge(challengeId: Int) {
+        call { it.challenges() }?.let { challenges = it }
+        call { it.leaderboard(challengeId) }?.let { leaderboards.value = leaderboards.value + (challengeId to it) }
+    }
+
+    suspend fun refreshActivities() {
+        call { it.myActivities(0, maxOf(30, activities.size)) }?.let { (list, more) -> activities = list; moreActivities = more }
+    }
+
+    /**
+     * Edit a workout everywhere it's logged: one PATCH per challenge entry. An entry the change
+     * doesn't fit (a date outside that challenge, no distance for a distance challenge) is left as
+     * it was and named in the message; the rest are saved.
+     */
+    suspend fun editWorkout(entries: List<MyActivity>, type: String, date: java.time.LocalDate, minutes: Int?, distance: Double?, unit: String,
+                            start: String?, end: String?, comment: String): Boolean {
+        val failed = mutableListOf<String>()
+        for (e in entries) {
+            try {
+                withContext(Dispatchers.IO) { api().editActivity(e.id, type, date, minutes, distance, unit, start, end, comment) }
+            } catch (ex: ApiException) {
+                if (ex.status == 401) { forceSignOut("Your session has expired. Please sign in again."); return false }
+                failed += "${e.challengeName}: ${ex.message}"
+            } catch (ex: Exception) {
+                failed += "${e.challengeName}: ${ex.message}"
+            }
+        }
+        afterChange()
+        message = if (failed.isEmpty()) "Activity updated" else "Not changed in " + failed.joinToString("; ")
+        return failed.size < entries.size
+    }
+
     // --- sync ------------------------------------------------------------------------------
 
     fun startReview() = viewModelScope.launch {

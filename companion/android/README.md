@@ -6,10 +6,10 @@ app's red and yellow, with a dark theme). It talks to `https://activetogether.te
 ## What it does
 
 - **Challenges:** every challenge you're in, with your total, its dates and what it measures; open
-  one for its description and team / individual leaderboards.
+  one for its description and team / individual leaderboards; tap a person to see their profile.
 - **Activity:** everything you've logged across all challenges, newest first. A workout logged into
   several challenges shows once, listing them; open it to see its route on an OpenStreetMap map
-  (if it has one) and to remove it from any challenge.
+  (if it has one), edit it (saved in every challenge it's logged in) or remove it from a challenge.
 - **Log activity:** type, date, optional start/finish (fills in minutes), distance in miles or km,
   minutes and a comment, counted in every challenge running on that day (tick the ones you want).
 - **Sync:** reads workouts from Health Connect for the span of your challenges and lists them for
@@ -21,7 +21,9 @@ app's red and yellow, with a dark theme). It talks to `https://activetogether.te
 - **Automatic sync** (Me -> Sync settings): new workouts go into every challenge they fit, every
   1-24 hours in the background where Health Connect allows background reading, and each time the
   app opens. A notification says what was synced.
-- **Me:** change your photo, name, email and password; sync settings; sign out.
+- **Me:** your profile exactly as challenge-mates see it, with Edit (photo, name, about me, sharing
+  level - Private / Totals / Full - email, password); sync settings; sign out.
+- Pull down to refresh on every page.
 
 Health Connect permissions: exercise (required), distance, history older than 30 days (for
 challenges that started earlier) and background reading (for automatic sync) - each asked for only

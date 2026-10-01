@@ -57,7 +57,10 @@ fun AppRoot(vm: AppViewModel) {
 
     val title = when {
         route.startsWith("challenge/") -> "Challenge"
+        route.endsWith("/edit") -> "Edit activity"
         route.startsWith("activity/") -> "Activity"
+        route.startsWith("user/") -> "Profile"
+        route == "editProfile" -> "Edit profile"
         route == "log" -> "Log activity"
         else -> "Active Together"
     }
@@ -91,15 +94,23 @@ fun AppRoot(vm: AppViewModel) {
         NavHost(nav, startDestination = "challenges", modifier = Modifier.padding(pad)) {
             composable("challenges") { ChallengesScreen(vm) { c -> nav.navigate("challenge/${c.id}") } }
             composable("challenge/{id}", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
-                ChallengeDetailScreen(vm, it.arguments!!.getInt("id"))
+                ChallengeDetailScreen(vm, it.arguments!!.getInt("id")) { uid -> nav.navigate("user/$uid") }
             }
             composable("activity") { ActivityListScreen(vm) { a -> nav.navigate("activity/${a.id}") } }
             composable("activity/{id}", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
-                ActivityDetailScreen(vm, it.arguments!!.getInt("id")) { nav.popBackStack() }
+                val id = it.arguments!!.getInt("id")
+                ActivityDetailScreen(vm, id, back = { nav.popBackStack() }, edit = { nav.navigate("activity/$id/edit") })
+            }
+            composable("activity/{id}/edit", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
+                EditActivityScreen(vm, it.arguments!!.getInt("id")) { nav.popBackStack() }
+            }
+            composable("user/{id}", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
+                UserProfileScreen(vm, it.arguments!!.getInt("id"))
             }
             composable("log") { LogActivityScreen(vm) { nav.popBackStack() } }
             composable("sync") { SyncScreen(vm) }
-            composable("profile") { ProfileScreen(vm) }
+            composable("profile") { MeScreen(vm) { nav.navigate("editProfile") } }
+            composable("editProfile") { EditProfileScreen(vm) { nav.popBackStack() } }
         }
     }
 }

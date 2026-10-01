@@ -399,6 +399,13 @@ function openMyAccount(){
       <input type="file" id="acctAvatar" accept="image/*">
       <label>Name<input id="acctName" value="${esc(me.name)}" required></label>
       <label>Email<input id="acctEmail" type="email" value="${esc(me.email)}" required></label>
+      <label>About me (optional)<input id="acctBio" maxlength="280" value="${esc(me.bio||'')}" placeholder="A line for your profile"></label>
+      <label>Profile sharing<select id="acctSharing">
+        <option value="private"${me.profile_sharing==='private'?' selected':''}>Private - name and photo only</option>
+        <option value="summary"${!me.profile_sharing||me.profile_sharing==='summary'?' selected':''}>Totals - plus my total and rank in each shared challenge</option>
+        <option value="full"${me.profile_sharing==='full'?' selected':''}>Full - plus my recent activity in shared challenges</option>
+      </select></label>
+      <p class="muted">Only people in a challenge with you can see your profile, and only for challenges you share. Leaderboard totals are always visible to them; GPS routes never are.</p>
       <label>New password (leave blank to keep current)<input id="acctNewPassword" type="password" minlength="8"></label>
       <label>Current password (required to change email or password)<input id="acctCurrentPassword" type="password"></label>
       <button>Save changes</button>
@@ -412,7 +419,9 @@ function openMyAccount(){
   });
   $('#accountForm').onsubmit=async e=>{
     e.preventDefault();
-    const payload={name:$('#acctName').value.trim(),email:$('#acctEmail').value.trim()};
+    const payload={name:$('#acctName').value.trim(),email:$('#acctEmail').value.trim(),bio:$('#acctBio').value,profileSharing:$('#acctSharing').value};
+    // Only send email when it changed - sending it at all asks for the current password.
+    if(payload.email.toLowerCase()===String(me.email).toLowerCase())delete payload.email;
     const newPassword=$('#acctNewPassword').value;
     if(newPassword)payload.newPassword=newPassword;
     const currentPassword=$('#acctCurrentPassword').value;

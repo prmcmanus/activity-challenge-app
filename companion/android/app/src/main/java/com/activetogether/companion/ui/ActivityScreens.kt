@@ -21,6 +21,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.automirrored.filled.DirectionsRun
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Schedule
@@ -75,7 +76,7 @@ fun ActivityListScreen(vm: AppViewModel, open: (MyActivity) -> Unit) {
                 item { SectionCard { EmptyNote("Nothing logged yet. Tap + to log an activity, or sync your workouts from the Sync tab.") } }
             }
             // One card per workout: entries for the same workout in several challenges are listed under it.
-            val groups = vm.activities.groupBy { listOf(it.date, it.type, it.startTime, it.minutes, it.source) }
+            val groups = vm.activities.groupBy { listOf(it.date, it.type, it.startTime, it.minutes, it.source, it.comment) }
             items(groups.values.toList(), key = { it.first().id }) { entries ->
                 val a = entries.first()
                 SectionCard(modifier = Modifier.clickable { open(a) }) {
@@ -101,18 +102,30 @@ fun ActivityListScreen(vm: AppViewModel, open: (MyActivity) -> Unit) {
     }
 }
 
+/** Entries for the same workout in other challenges - matched on what a workout is, since each challenge has its own entry. */
+fun siblingsOf(vm: AppViewModel, a: MyActivity) = vm.activities.filter {
+    it.date == a.date && it.type == a.type && it.startTime == a.startTime && it.minutes == a.minutes && it.source == a.source && it.comment == a.comment
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ActivityDetailScreen(vm: AppViewModel, activityId: Int, back: () -> Unit) {
+fun ActivityDetailScreen(vm: AppViewModel, activityId: Int, back: () -> Unit, edit: () -> Unit) {
     val a = vm.activities.firstOrNull { it.id == activityId } ?: run { Loading(); return }
-    val siblings = vm.activities.filter { it.date == a.date && it.type == a.type && it.startTime == a.startTime && it.minutes == a.minutes && it.source == a.source }
+    val siblings = siblingsOf(vm, a)
     var route by remember { mutableStateOf<List<RoutePoint>?>(null) }
     var confirm by remember { mutableStateOf<MyActivity?>(null) }
+    val scope = rememberCoroutineScope()
+    var refreshing by remember { mutableStateOf(false) }
     LaunchedEffect(activityId) { if (a.hasRoute) route = vm.route(a.id) }
 
+    PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; vm.refreshActivities(); if (a.hasRoute) route = vm.route(a.id); refreshing = false } }) {
     LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Hero(listOfNotNull(fmtDay(a.date), a.startTime?.let { s -> a.endTime?.let { "$s–$it" } ?: s }).joinToString(" · "), a.type,
                 trailing = { HeroStat(fmtEntry(a).substringBefore(" · "), if (a.measuresDistance) "distance" else "active") })
+        }
+        item {
+            Button(onClick = edit, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Edit, null); Spacer(Modifier.width(8.dp)); Text("Edit activity") }
         }
         if (a.hasRoute) {
             item {
@@ -139,6 +152,7 @@ fun ActivityDetailScreen(vm: AppViewModel, activityId: Int, back: () -> Unit) {
         a.comment?.takeIf { it.isNotBlank() }?.let { item { SectionCard("Comment") { Text("“$it”") } } }
         item { Text("Source: ${if (a.source == "manual") "logged by hand" else if (a.source == "health_connect") "Health Connect" else a.source}",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+    }
     }
 
     confirm?.let { e ->
@@ -229,6 +243,64 @@ fun LogActivityScreen(vm: AppViewModel, done: () -> Unit) {
                 }
             },
         ) { Text(if (chosen.size > 1) "Log in ${chosen.size} challenges" else "Log activity") }
+    }
+}
+
+/** Edit a workout: the same fields as logging, saved to every challenge it's logged in. */
+@Composable
+fun EditActivityScreen(vm: AppViewModel, activityId: Int, done: () -> Unit) {
+    val a = vm.activities.firstOrNull { it.id == activityId } ?: run { Loading(); return }
+    val entries = remember(activityId) { siblingsOf(vm, a) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val hhmm = DateTimeFormatter.ofPattern("HH:mm")
+    var type by remember { mutableStateOf(a.type) }
+    var date by remember { mutableStateOf(a.date) }
+    var start by remember { mutableStateOf(a.startTime?.let { runCatching { LocalTime.parse(it) }.getOrNull() }) }
+    var end by remember { mutableStateOf(a.endTime?.let { runCatching { LocalTime.parse(it) }.getOrNull() }) }
+    var minutes by remember { mutableStateOf(a.minutes?.let { fmtNum(it) } ?: "") }
+    var unit by remember { mutableStateOf(a.distanceUnit) }
+    var distance by remember { mutableStateOf(a.distance?.let { fmtNum(it).replace(',', '.') } ?: "") }
+    var comment by remember { mutableStateOf(a.comment.orEmpty()) }
+    var busy by remember { mutableStateOf(false) }
+    fun recalc() { val s = start; val e = end; if (s != null && e != null && e.isAfter(s)) minutes = java.time.Duration.between(s, e).toMinutes().toString() }
+    val types = if (type in ACTIVITY_TYPES_UI) ACTIVITY_TYPES_UI else listOf(type) + ACTIVITY_TYPES_UI
+
+    Column(Modifier.verticalScroll(rememberScrollState()).padding(PagePadding), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SectionCard {
+            Dropdown("Activity", types, type, { it }, { type = it })
+            OutlinedButton(onClick = {
+                DatePickerDialog(context, { _, y, m, d -> date = LocalDate.of(y, m + 1, d) }, date.year, date.monthValue - 1, date.dayOfMonth).show()
+            }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.CalendarMonth, null); Spacer(Modifier.width(8.dp)); Text(fmtDay(date) + " " + date.year) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { val t = start ?: LocalTime.of(7, 0); TimePickerDialog(context, { _, h, mm -> start = LocalTime.of(h, mm); recalc() }, t.hour, t.minute, true).show() },
+                    modifier = Modifier.weight(1f)) { Icon(Icons.Default.Schedule, null); Spacer(Modifier.width(6.dp)); Text(start?.format(hhmm) ?: "Start") }
+                OutlinedButton(onClick = { val t = end ?: (start?.plusMinutes(30) ?: LocalTime.of(7, 30)); TimePickerDialog(context, { _, h, mm -> end = LocalTime.of(h, mm); recalc() }, t.hour, t.minute, true).show() },
+                    modifier = Modifier.weight(1f)) { Icon(Icons.Default.Schedule, null); Spacer(Modifier.width(6.dp)); Text(end?.format(hhmm) ?: "Finish") }
+            }
+            if (start != null || end != null) TextButton(onClick = { start = null; end = null }) { Text("Clear times") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(distance, { distance = it }, label = { Text("Distance") }, singleLine = true, modifier = Modifier.weight(1f),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                Dropdown("Unit", listOf("mi", "km"), unit, { if (it == "km") "km" else "miles" }, { unit = it }, Modifier.width(130.dp))
+            }
+            OutlinedTextField(minutes, { minutes = it.filter { ch -> ch.isDigit() } }, label = { Text("Minutes") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            OutlinedTextField(comment, { comment = it.take(500) }, label = { Text("Comment (optional)") }, modifier = Modifier.fillMaxWidth())
+        }
+        if (entries.size > 1) {
+            Text("Saved in all ${entries.size} challenges this is logged in: ${entries.joinToString { it.challengeName }}.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Button(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
+            busy = true
+            scope.launch {
+                val ok = vm.editWorkout(entries, type, date, minutes.toIntOrNull()?.takeIf { it > 0 },
+                    distance.trim().replace(',', '.').toDoubleOrNull()?.takeIf { it > 0 }, unit, start?.format(hhmm), end?.format(hhmm), comment)
+                busy = false
+                if (ok) done()
+            }
+        }) { Text("Save changes") }
     }
 }
 

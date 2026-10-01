@@ -1684,3 +1684,53 @@ test('a synced workout can go into every challenge it fits, its route stored onc
   const late = (await jsonFetch(`${origin}/api/me/activities`, pat.cookie)).body.activities.find(x => x.challenge_id === cC.body.id);
   assert.equal(late.has_route, true);
 });
+
+// --- profiles and sharing levels ---------------------------------------------------------------
+
+test('profiles: only challenge-mates can see each other, and the sharing level decides what they see', async () => {
+  const una = await register('Una Profile');
+  const vic = await register('Vic Mate');
+  const wes = await register('Wes Stranger');
+  const shared = await jsonFetch(`${origin}/api/challenges`, una.cookie, 'POST', { name: 'Shared Sept', start_date: '2027-09-01', end_date: '2027-09-30', participation: 'individual' });
+  const secret = await jsonFetch(`${origin}/api/challenges`, una.cookie, 'POST', { name: 'Una Only', start_date: '2027-09-01', end_date: '2027-09-30', participation: 'individual' });
+  await jsonFetch(`${origin}/api/join`, vic.cookie, 'POST', { code: shared.body.invite_code });
+  await jsonFetch(`${origin}/api/activities`, una.cookie, 'POST', {
+    targets: [{ challenge_id: shared.body.id }, { challenge_id: secret.body.id }],
+    activity_type: 'Swim', minutes: 40, activity_date: '2027-09-02', comment: 'Felt great', route: ROUTE,
+  });
+  await jsonFetch(`${origin}/api/activities`, vic.cookie, 'POST', { challenge_id: shared.body.id, activity_type: 'Gym', minutes: 60, activity_date: '2027-09-02' });
+
+  // Default is "summary": totals and rank in shared challenges only, no activity list.
+  const p = await jsonFetch(`${origin}/api/users/${una.user.id}/profile`, vic.cookie);
+  assert.equal(p.status, 200);
+  assert.equal(p.body.sharing, 'summary');
+  assert.deepEqual(p.body.challenges.map(c => [c.name, c.minutes, c.rank, c.of]), [['Shared Sept', 40, 2, 2]]);
+  assert.equal(p.body.activities, undefined);
+  assert.equal((await jsonFetch(`${origin}/api/users/${una.user.id}/profile`, wes.cookie)).status, 404, 'a stranger cannot see the profile at all');
+
+  // Full: recent activity too - only from shared challenges, with comments, never routes.
+  const set = await jsonFetch(`${origin}/api/me`, una.cookie, 'PATCH', { bio: 'Morning swimmer', profileSharing: 'full' });
+  assert.equal(set.status, 200);
+  assert.equal(set.body.user.profile_sharing, 'full');
+  const full = await jsonFetch(`${origin}/api/users/${una.user.id}/profile`, vic.cookie);
+  assert.equal(full.body.bio, 'Morning swimmer');
+  assert.deepEqual(full.body.activities.map(a => [a.challenge_name, a.activity_type, a.comment]), [['Shared Sept', 'Swim', 'Felt great']]);
+  assert.ok(!JSON.stringify(full.body).includes('route') && !JSON.stringify(full.body).includes('51.5'), 'no route data in a profile');
+
+  // Private: name and photo only.
+  await jsonFetch(`${origin}/api/me`, una.cookie, 'PATCH', { profileSharing: 'private' });
+  const priv = await jsonFetch(`${origin}/api/users/${una.user.id}/profile`, vic.cookie);
+  assert.equal(priv.body.name, 'Una Profile');
+  assert.equal(priv.body.challenges, undefined);
+  assert.equal(priv.body.activities, undefined);
+
+  // Your own profile is the preview of what others see, but lists every challenge you're in.
+  await jsonFetch(`${origin}/api/me`, una.cookie, 'PATCH', { profileSharing: 'summary' });
+  const mine = await jsonFetch(`${origin}/api/users/${una.user.id}/profile`, una.cookie);
+  assert.equal(mine.body.self, true);
+  assert.deepEqual(mine.body.challenges.map(c => c.name).sort(), ['Shared Sept', 'Una Only']);
+
+  assert.equal((await jsonFetch(`${origin}/api/me`, una.cookie, 'PATCH', { profileSharing: 'everyone' })).status, 400);
+  const me = await jsonFetch(`${origin}/api/me`, una.cookie);
+  assert.equal(me.body.user.bio, 'Morning swimmer');
+});

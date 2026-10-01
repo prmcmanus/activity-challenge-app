@@ -33,6 +33,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -97,13 +100,17 @@ fun ChallengesScreen(vm: AppViewModel, open: (Challenge) -> Unit) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int) {
+fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, openProfile: (Int) -> Unit) {
     val c = vm.challenges.firstOrNull { it.id == challengeId } ?: run { Loading(); return }
     LaunchedEffect(challengeId) { vm.loadLeaderboard(challengeId) }
     val board = vm.leaderboards.value[challengeId]
     var tab by remember { mutableIntStateOf(if (c.individual) 1 else 0) }
+    val scope = rememberCoroutineScope()
+    var refreshing by remember { mutableStateOf(false) }
 
+    PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; vm.refreshChallenge(challengeId); refreshing = false } }) {
     LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Hero("${fmtRange(c.startDate, c.endDate)} · ${stateLabel(c)}", c.name,
@@ -129,14 +136,18 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int) {
                     else -> {
                         val rows = if (tab == 0 && !c.individual) board.teams else board.users
                         if (rows.isEmpty()) EmptyNote("Nobody on the board yet.")
+                        if (rows === board.users) Text("Tap someone to see their profile.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         rows.forEachIndexed { i, s ->
-                            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            val person = s.userId
+                            Row(Modifier.fillMaxWidth().then(if (person != null) Modifier.clickable { openProfile(person) } else Modifier).padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
                                 Text("${i + 1}", fontWeight = FontWeight.Black, color = if (i < 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.width(30.dp))
                                 Avatar(s.imageUrl, s.name)
                                 Spacer(Modifier.width(10.dp))
                                 Text(s.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                                 Text(fmtMeasure(c.measuresDistance, s.minutes, s.distance, c.distanceUnit), style = MaterialTheme.typography.titleMedium)
+                                if (person != null) Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             if (i < rows.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         }
@@ -144,5 +155,6 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int) {
                 }
             }
         }
+    }
     }
 }

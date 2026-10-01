@@ -10,7 +10,16 @@ import java.time.LocalDate
 /** The one server this app talks to. */
 const val SERVER_URL = BuildConfig.SERVER_URL
 
-data class Me(val id: Int, val name: String, val email: String, val avatarUrl: String?)
+/** Who can see what on my profile: "private" (name, photo), "summary" (+ totals, rank), "full" (+ recent activity). */
+data class Me(val id: Int, val name: String, val email: String, val avatarUrl: String?, val bio: String? = null, val sharing: String = "summary")
+
+data class ProfileChallenge(val id: Int, val name: String, val startDate: LocalDate, val endDate: LocalDate, val measuresDistance: Boolean,
+    val distanceUnit: String, val team: String?, val minutes: Double, val distance: Double, val rank: Int, val of: Int)
+data class ProfileActivity(val type: String, val minutes: Double?, val distance: Double?, val distanceUnit: String, val measuresDistance: Boolean,
+    val date: LocalDate, val startTime: String?, val comment: String?, val challengeName: String)
+/** Someone's profile as a challenge-mate sees it. challenges/activities are null when their sharing level hides them. */
+data class Profile(val id: Int, val name: String, val avatarUrl: String?, val bio: String?, val memberSince: String, val sharing: String, val self: Boolean,
+    val challenges: List<ProfileChallenge>?, val activities: List<ProfileActivity>?)
 
 data class MyTeam(val id: Int, val name: String)
 
@@ -37,7 +46,8 @@ data class Challenge(
 
 data class Target(val challengeId: Int, val teamId: Int?)
 
-data class Standing(val name: String, val minutes: Double, val distance: Double, val imageUrl: String?)
+/** A leaderboard row; userId is set for people (tap to see their profile), null for teams. */
+data class Standing(val name: String, val minutes: Double, val distance: Double, val imageUrl: String?, val userId: Int? = null)
 data class Leaderboard(val teams: List<Standing>, val users: List<Standing>)
 
 data class MyActivity(
@@ -118,12 +128,44 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
 
     fun leaderboard(challengeId: Int): Leaderboard {
         val r = request("/api/challenges/$challengeId/leaderboard")
-        fun list(a: JSONArray) = (0 until a.length()).map { i ->
+        fun list(a: JSONArray, people: Boolean) = (0 until a.length()).map { i ->
             val x = a.getJSONObject(i)
             Standing(x.getString("name"), x.optDouble("minutes", 0.0), x.optDouble("distance", 0.0),
-                (x.optString("image_url").ifBlank { x.optString("avatar_url") }).takeIf { it.isNotBlank() && it != "null" })
+                (x.optString("image_url").ifBlank { x.optString("avatar_url") }).takeIf { it.isNotBlank() && it != "null" },
+                if (people) x.optInt("id") else null)
         }
-        return Leaderboard(list(r.getJSONArray("teams")), list(r.getJSONArray("users")))
+        return Leaderboard(list(r.getJSONArray("teams"), false), list(r.getJSONArray("users"), true))
+    }
+
+    fun profile(userId: Int): Profile {
+        val r = request("/api/users/$userId/profile")
+        fun str(o: JSONObject, k: String) = if (o.isNull(k)) null else o.optString(k).takeIf { it.isNotBlank() }
+        val challenges = r.optJSONArray("challenges")?.let { a -> (0 until a.length()).map { i -> a.getJSONObject(i).let { c ->
+            ProfileChallenge(c.getInt("id"), c.getString("name"), LocalDate.parse(c.getString("start_date")), LocalDate.parse(c.getString("end_date")),
+                c.optString("metric") == "distance", if (c.optString("distance_unit") == "km") "km" else "mi", str(c, "team"),
+                c.optDouble("minutes", 0.0), c.optDouble("distance", 0.0), c.optInt("rank"), c.optInt("of"))
+        } } }
+        val activities = r.optJSONArray("activities")?.let { a -> (0 until a.length()).map { i -> a.getJSONObject(i).let { x ->
+            ProfileActivity(x.getString("activity_type"), if (x.isNull("minutes")) null else x.getDouble("minutes"),
+                if (x.isNull("distance")) null else x.getDouble("distance"), if (x.optString("distance_unit") == "km") "km" else "mi",
+                x.optString("metric") == "distance", LocalDate.parse(x.getString("activity_date")), str(x, "start_time"), str(x, "comment"), x.getString("challenge_name"))
+        } } }
+        return Profile(r.getInt("id"), r.getString("name"), str(r, "avatar_url"), str(r, "bio"), r.optString("member_since"),
+            r.optString("sharing", "summary"), r.optBoolean("self"), challenges, activities)
+    }
+
+    /** Edit one activity entry; the server checks it still fits its challenge (dates, measure). */
+    fun editActivity(id: Int, type: String, date: LocalDate, minutes: Int?, distance: Double?, unit: String, startTime: String?, endTime: String?, comment: String) {
+        val body = JSONObject()
+            .put("activity_type", type)
+            .put("activity_date", date.toString())
+            .put("minutes", minutes?.toString() ?: "")
+            .put("distance", distance?.toString() ?: "")
+            .put("distance_unit", unit)
+            .put("start_time", startTime ?: "")
+            .put("end_time", endTime ?: "")
+            .put("comment", comment)
+        request("/api/activities/$id", "PATCH", body)
     }
 
     fun myActivities(offset: Int, limit: Int = 30): Pair<List<MyActivity>, Boolean> {
@@ -214,8 +256,11 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         return ImportResult(response.getInt("added"), response.getInt("skipped"))
     }
 
-    fun updateProfile(name: String?, email: String?, currentPassword: String?, newPassword: String?, avatarUrl: String?): Me {
+    fun updateProfile(name: String?, email: String?, currentPassword: String?, newPassword: String?, avatarUrl: String?,
+                      bio: String? = null, sharing: String? = null): Me {
         val body = JSONObject()
+        bio?.let { body.put("bio", it) }
+        sharing?.let { body.put("profileSharing", it) }
         name?.let { body.put("name", it) }
         email?.let { body.put("email", it) }
         currentPassword?.takeIf { it.isNotEmpty() }?.let { body.put("currentPassword", it) }
@@ -228,7 +273,9 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
     fun uploadImage(dataUrl: String): String = request("/api/uploads", "POST", JSONObject().put("dataUrl", dataUrl)).getString("url")
 
     private fun parseMe(u: JSONObject) = Me(u.getInt("id"), u.getString("name"), u.getString("email"),
-        u.optString("avatar_url").ifBlank { u.optString("avatarUrl") }.takeIf { it.isNotBlank() && it != "null" })
+        u.optString("avatar_url").ifBlank { u.optString("avatarUrl") }.takeIf { it.isNotBlank() && it != "null" },
+        if (u.isNull("bio")) null else u.optString("bio").takeIf { it.isNotBlank() },
+        u.optString("profile_sharing").ifBlank { "summary" })
 
     private fun request(path: String, method: String = "GET", body: JSONObject? = null): JSONObject {
         val connection = URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection

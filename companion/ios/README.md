@@ -9,9 +9,9 @@ HealthKit counterpart to [companion/android](../android)'s Health Connect app.
 - Stores the returned bearer session token in app storage.
 - Loads the member's challenge/team memberships from `/api/mobile/bootstrap` and offers them as one
   combined "Challenge — Team" picker, since a synced record needs a valid team+challenge pairing.
-- Requests HealthKit read access for workouts.
+- Requests HealthKit read access for workouts and workout distance (walking/running, cycling, swimming, wheelchair, snow sports). Declining distance still syncs workouts; a distance challenge then skips them.
 - Reads workouts from the last 30 days.
-- Uploads whole-minute durations to `/api/health/import` (with `source: "health_kit"`) using each
+- Uploads whole-minute durations and distance (`distance_m`) to `/api/health/import` (with `source: "health_kit"`) using each
   workout's stable UUID as `source_ref`, so repeated syncs are idempotent.
 
 This companion is sync-only: it does not create accounts or join challenges/teams. Register, join
@@ -55,8 +55,8 @@ known-good project file.
 6. Add a HealthKit usage description: target → **Info** tab → add key
    `Privacy - Health Share Usage Description`
    (`NSHealthShareUsageDescription`) with a value such as:
-   > Active Together reads your recent workouts to log activity minutes toward your team's
-   > challenge.
+   > Active Together reads your recent workouts, and the distance covered in them, to log activity
+   > toward your team's challenge.
 7. Set the **Minimum Deployments** iOS version to **16.0** or later (the app uses Swift concurrency
    and `NavigationStack`, both available since iOS 16).
 8. Build and run on a **physical iPhone** signed into Health, or the iOS Simulator with sample
@@ -67,12 +67,13 @@ known-good project file.
 
 ## Privacy boundary
 
-The companion reads only workout records and uploads only:
+The companion reads only workout records and their distance, and uploads only:
 
 - team ID
 - challenge ID
 - activity type (a short label such as "Running" or "Cycling")
 - whole minutes
+- distance in metres (when the workout recorded one)
 - activity date
 - clock start/finish time (only when the workout doesn't cross midnight; otherwise omitted)
 - stable source reference (the workout's UUID)

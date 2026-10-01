@@ -6,11 +6,11 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
-data class TeamOption(val teamId: Int, val teamName: String, val challengeId: Int, val challengeName: String) {
-    override fun toString() = "$challengeName — $teamName"
+data class TeamOption(val teamId: Int, val teamName: String, val challengeId: Int, val challengeName: String, val measuresDistance: Boolean = false) {
+    override fun toString() = "$challengeName — $teamName" + if (measuresDistance) " (distance)" else ""
 }
 data class Bootstrap(val teamOptions: List<TeamOption>)
-data class HealthRecord(val teamId: Int, val challengeId: Int, val activityType: String, val minutes: Long, val activityDate: String, val sourceRef: String, val startTime: String, val endTime: String)
+data class HealthRecord(val teamId: Int, val challengeId: Int, val activityType: String, val minutes: Long, val distanceMeters: Double?, val activityDate: String, val sourceRef: String, val startTime: String, val endTime: String)
 data class ImportResult(val added: Int, val skipped: Int)
 
 class ActiveTogetherApi(private val baseUrl: String) {
@@ -39,7 +39,7 @@ class ActiveTogetherApi(private val baseUrl: String) {
             val teams = c.getJSONArray("teams")
             for (j in 0 until teams.length()) {
                 val t = teams.getJSONObject(j)
-                options.add(TeamOption(t.getInt("id"), t.getString("name"), c.getInt("id"), c.getString("name")))
+                options.add(TeamOption(t.getInt("id"), t.getString("name"), c.getInt("id"), c.getString("name"), c.optString("metric", "minutes") == "distance"))
             }
         }
         return Bootstrap(options)
@@ -58,6 +58,7 @@ class ActiveTogetherApi(private val baseUrl: String) {
                     .put("source_ref", it.sourceRef)
                     .put("start_time", it.startTime)
                     .put("end_time", it.endTime)
+                    .apply { it.distanceMeters?.let { m -> put("distance_m", m) } }
             }))
         val response = request("/api/health/import", "POST", token, payload)
         return ImportResult(response.getInt("added"), response.getInt("skipped"))

@@ -27,9 +27,10 @@ A dependency-free Node.js MVP for time-based team activity challenges.
 - A [privacy policy](public/privacy.html) is linked from the registration page and every page's
   footer. **A challenge and everything scoped to it is automatically deleted 60 days after its end
   date**, on a daily schedule — see that page for the full retention policy
-- Time-based challenges and manual activity logging
+- Challenges measure either active minutes or distance (miles or km), chosen when the challenge is
+  created and changeable later; manual activity logging asks for whichever the challenge measures
 - SQLite persistence, password hashing, HTTP-only sessions and duplicate-safe health imports
-- Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes in
+- Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes and distance in
 - Optional reCAPTCHA on registration/sign-in, plus per-IP rate limiting everywhere, against bots
 
 ## How the data model fits together
@@ -80,18 +81,22 @@ GitHub-hosted runners are disabled for this repository, so the included GitHub A
 
 ## Health integration boundary
 Health Connect and HealthKit are device-local native APIs. A normal website cannot read them directly. Build a small Android/iOS companion app that:
-1. Requests explicit permission for exercise/workout records only.
-2. Reads completed sessions and converts duration to whole minutes.
+1. Requests explicit permission for exercise/workout records, and optionally the distance recorded during them.
+2. Reads completed sessions and converts duration to whole minutes and distance to metres (`distance_m`, omitted when none was recorded).
 3. POSTs records to `/api/health/import` while the user is authenticated.
 4. Supplies a stable `source_ref` so repeated synchronisation remains idempotent.
 
+A record must carry the challenge's own measure: in a distance challenge a session with no
+`distance_m` (yoga, say) is skipped and counted in `skipped`; in a minutes challenge `minutes` is
+required and `distance_m` is optional extra detail.
+
 Example body:
 ```json
-{"source":"health_connect","records":[{"team_id":1,"challenge_id":1,"activity_type":"Walking","minutes":42,"activity_date":"2026-09-01","source_ref":"device-record-id","start_time":"07:00","end_time":"07:42"}]}
+{"source":"health_connect","records":[{"team_id":1,"challenge_id":1,"activity_type":"Walking","minutes":42,"distance_m":3540,"activity_date":"2026-09-01","source_ref":"device-record-id","start_time":"07:00","end_time":"07:42"}]}
 ```
 
 ## Android companion app
-An Android Health Connect companion MVP is included in [companion/android](companion/android). It signs in to this server, requests exercise-session permission from Health Connect, reads the last 30 days of exercise sessions, converts durations to whole minutes, and uploads them to `/api/health/import`. It only syncs into a challenge/team you already belong to — join and create those in the web app first.
+An Android Health Connect companion MVP is included in [companion/android](companion/android). It signs in to this server, requests exercise-session permission from Health Connect, reads the last 30 days of exercise sessions, converts durations to whole minutes and adds the distance recorded during each one, and uploads them to `/api/health/import`. It only syncs into a challenge/team you already belong to — join and create those in the web app first.
 
 For emulator testing with the local server, use `http://10.0.2.2:3000` as the server URL in the companion app.
 

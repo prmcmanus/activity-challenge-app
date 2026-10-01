@@ -87,6 +87,7 @@ struct ContentView: View {
             let records = try await health.readRecentWorkouts(teamId: team.teamId, challengeId: team.challengeId)
             let result = try await api.importHealth(token: sessionToken, records: records)
             status = "Sync complete. Added \(result.added), skipped \(result.skipped)."
+                + (team.measuresDistance && result.skipped > 0 ? " Workouts with no recorded distance are skipped in a distance challenge." : "")
         } catch {
             status = "Sync failed: \(error.localizedDescription)"
         }

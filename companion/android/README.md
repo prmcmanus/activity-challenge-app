@@ -1,15 +1,15 @@
 # Active Together Android Companion
 
-Native Android companion MVP for syncing exercise session durations from Health Connect into Active Together.
+Native Android companion MVP for syncing exercise session durations and distances from Health Connect into Active Together.
 
 ## What it does
 
 - Signs in to the Active Together server with the same email/password as the web app.
 - Stores the returned bearer session token in app preferences.
 - Loads the member's challenge/team memberships from `/api/mobile/bootstrap` and offers them as one combined "Challenge — Team" picker, since a synced record needs a valid team+challenge pairing.
-- Requests Health Connect read access for exercise sessions.
+- Requests Health Connect read access for exercise sessions (required) and distance (optional - asked once; declining it still syncs sessions, but a distance challenge then skips them).
 - Reads exercise sessions from the last 30 days.
-- Uploads whole-minute durations to `/api/health/import` with stable `source_ref` values so repeated syncs are idempotent.
+- Uploads whole-minute durations, plus the distance recorded during each session (`distance_m`, from an aggregate that de-duplicates watch and phone), to `/api/health/import` with stable `source_ref` values so repeated syncs are idempotent.
 
 This companion is sync-only: it does not create accounts or join challenges/teams. Register, join with an invite code, and create/join a team in the web app first, then sign in here with the same credentials.
 
@@ -196,12 +196,13 @@ independent and doesn't touch it.
 
 ## Privacy boundary
 
-The companion reads only exercise session records and uploads only:
+The companion reads only exercise session records and the distance recorded during them, and uploads only:
 
 - team ID
 - challenge ID
 - activity type
 - whole minutes
+- distance in metres (when recorded and permitted)
 - activity date
 - clock start/finish time (only when the session doesn't cross midnight; otherwise omitted)
 - stable source reference

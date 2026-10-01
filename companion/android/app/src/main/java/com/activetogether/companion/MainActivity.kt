@@ -27,7 +27,8 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher = registerForActivityResult(
         PermissionController.createRequestPermissionResultContract(),
     ) { granted ->
-        if (granted.containsAll(health.permissions)) {
+        // Distance is optional - declining it still syncs sessions, just without distance.
+        if (granted.containsAll(health.requiredPermissions)) {
             sync()
         } else {
             status.text = "Health Connect permission was not granted."
@@ -87,9 +88,14 @@ class MainActivity : ComponentActivity() {
             return
         }
         lifecycleScope.launch {
-            if (health.hasPermissions()) {
+            val granted = health.grantedPermissions()
+            // Ask for distance once (existing installs only ever granted exercise); after that,
+            // a decline is respected rather than prompting on every sync.
+            val askedDistance = prefs.getBoolean("askedDistance", false)
+            if (granted.containsAll(health.permissions) || (granted.containsAll(health.requiredPermissions) && askedDistance)) {
                 sync()
             } else {
+                prefs.edit().putBoolean("askedDistance", true).apply()
                 permissionLauncher.launch(health.permissions)
             }
         }
@@ -111,7 +117,8 @@ class MainActivity : ComponentActivity() {
                     api().importHealth(token, records)
                 }
             }.onSuccess {
-                status.text = "Sync complete. Added ${it.added}, skipped ${it.skipped}."
+                status.text = "Sync complete. Added ${it.added}, skipped ${it.skipped}." +
+                    if (team.measuresDistance && it.skipped > 0) " Sessions with no recorded distance are skipped in a distance challenge." else ""
             }.onFailure {
                 status.text = "Sync failed: ${it.message}"
             }

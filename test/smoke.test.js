@@ -1293,3 +1293,167 @@ test('leaderboard CSV export is restricted to the challenge owner/global admin a
   const missing = await fetch(`${origin}/api/challenges/999999/leaderboard/export?type=teams`, { headers: { cookie: alice.cookie } });
   assert.equal(missing.status, 404);
 });
+
+// --- distance challenges ------------------------------------------------------------------
+
+async function jsonFetch(url, cookie, method = 'GET', payload) {
+  const r = await fetch(url, {
+    method,
+    headers: { cookie, ...(payload ? { 'Content-Type': 'application/json' } : {}) },
+    body: payload ? JSON.stringify(payload) : undefined,
+  });
+  return { status: r.status, body: await r.json().catch(() => ({})) };
+}
+
+async function distanceChallenge(owner, extra = {}) {
+  const c = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Mileage Month', start_date: '2027-07-01', end_date: '2027-07-31', metric: 'distance', distance_unit: 'mi', ...extra });
+  assert.equal(c.status, 201, JSON.stringify(c.body));
+  const t = await jsonFetch(`${origin}/api/teams`, owner.cookie, 'POST', { challenge_id: c.body.id, name: 'Milers' });
+  return { challengeId: c.body.id, inviteCode: c.body.invite_code, teamId: t.body.id };
+}
+
+test('a challenge can measure distance instead of minutes; minutes stays the default', async () => {
+  const ann = await register('Ann Distance');
+  const plain = await jsonFetch(`${origin}/api/challenges`, ann.cookie, 'POST', { name: 'Time Month', start_date: '2027-07-01', end_date: '2027-07-31' });
+  const plainDetail = await jsonFetch(`${origin}/api/challenges/${plain.body.id}`, ann.cookie);
+  assert.equal(plainDetail.body.metric, 'minutes');
+
+  const { challengeId } = await distanceChallenge(ann);
+  const detail = await jsonFetch(`${origin}/api/challenges/${challengeId}`, ann.cookie);
+  assert.equal(detail.body.metric, 'distance');
+  assert.equal(detail.body.distance_unit, 'mi');
+
+  const bad = await jsonFetch(`${origin}/api/challenges`, ann.cookie, 'POST', { name: 'Bad', start_date: '2027-07-01', end_date: '2027-07-31', metric: 'steps' });
+  assert.equal(bad.status, 400);
+  const badUnit = await jsonFetch(`${origin}/api/challenges/${challengeId}`, ann.cookie, 'PATCH', { distance_unit: 'furlongs' });
+  assert.equal(badUnit.status, 400);
+});
+
+test('in a distance challenge, distance is required, minutes optional, and leaderboards rank by distance', async () => {
+  const ann = await register('Ann Runner');
+  const ben = await register('Ben Walker');
+  const { challengeId, inviteCode, teamId } = await distanceChallenge(ann);
+  await jsonFetch(`${origin}/api/join`, ben.cookie, 'POST', { code: inviteCode });
+  const second = await jsonFetch(`${origin}/api/teams`, ben.cookie, 'POST', { challenge_id: challengeId, name: 'Strollers' });
+
+  const noDistance = await jsonFetch(`${origin}/api/activities`, ann.cookie, 'POST', { team_id: teamId, challenge_id: challengeId, activity_type: 'Running', minutes: 30, activity_date: '2027-07-02' });
+  assert.equal(noDistance.status, 400);
+  assert.match(noDistance.body.error, /distance/i);
+
+  // Distance only, no minutes at all.
+  const run = await jsonFetch(`${origin}/api/activities`, ann.cookie, 'POST', { team_id: teamId, challenge_id: challengeId, activity_type: 'Running', distance: 3.1, distance_unit: 'mi', activity_date: '2027-07-02' });
+  assert.equal(run.status, 201, JSON.stringify(run.body));
+  // Kilometres are converted, whatever the challenge's own unit.
+  const km = await jsonFetch(`${origin}/api/activities`, ann.cookie, 'POST', { team_id: teamId, challenge_id: challengeId, activity_type: 'Running', distance: 5, distance_unit: 'km', minutes: 28, activity_date: '2027-07-03' });
+  assert.equal(km.status, 201);
+  // Lots of minutes but little distance must not win a distance challenge.
+  await jsonFetch(`${origin}/api/activities`, ben.cookie, 'POST', { team_id: second.body.id, challenge_id: challengeId, activity_type: 'Walking', distance: 2, minutes: 300, activity_date: '2027-07-02' });
+
+  const lb = await jsonFetch(`${origin}/api/challenges/${challengeId}/leaderboard`, ann.cookie);
+  assert.equal(lb.body.metric, 'distance');
+  assert.equal(lb.body.teams[0].name, 'Milers');
+  assert.equal(lb.body.teams[0].distance, 6.21); // 3.1 mi + 5 km (3.107 mi)
+  assert.equal(lb.body.teams[0].minutes, 28);
+  assert.equal(lb.body.users[0].name, 'Ann Runner');
+  assert.equal(lb.body.users[1].distance, 2);
+  assert.equal(lb.body.users[0].email, undefined, 'the member leaderboard must not expose emails');
+
+  const dash = await jsonFetch(`${origin}/api/dashboard`, ann.cookie);
+  const mine = dash.body.challenges.find(c => c.id === challengeId);
+  assert.equal(mine.myDistance, 6.21);
+  const entry = dash.body.mine.find(a => a.challenge_id === challengeId && a.minutes === null);
+  assert.equal(entry.distance, 3.1);
+
+  // Edit: distance can change, but cannot be cleared in a distance challenge.
+  const edited = await jsonFetch(`${origin}/api/activities/${entry.id}`, ann.cookie, 'PATCH', { distance: 4, distance_unit: 'mi' });
+  assert.equal(edited.status, 200);
+  const cleared = await jsonFetch(`${origin}/api/activities/${entry.id}`, ann.cookie, 'PATCH', { distance: '' });
+  assert.equal(cleared.status, 400);
+
+  // Switching the display unit converts the totals without touching stored entries.
+  await jsonFetch(`${origin}/api/challenges/${challengeId}`, ann.cookie, 'PATCH', { distance_unit: 'km' });
+  const lbKm = await jsonFetch(`${origin}/api/challenges/${challengeId}/leaderboard`, ann.cookie);
+  assert.equal(lbKm.body.distance_unit, 'km');
+  assert.equal(lbKm.body.teams[0].distance, 11.44); // 4 mi + 5 km
+});
+
+test('a minutes challenge still requires minutes and accepts distance as optional extra', async () => {
+  const cat = await register('Cat Minutes');
+  const c = await jsonFetch(`${origin}/api/challenges`, cat.cookie, 'POST', { name: 'Classic', start_date: '2027-07-01', end_date: '2027-07-31' });
+  const t = await jsonFetch(`${origin}/api/teams`, cat.cookie, 'POST', { challenge_id: c.body.id, name: 'Clock Watchers' });
+  const distOnly = await jsonFetch(`${origin}/api/activities`, cat.cookie, 'POST', { team_id: t.body.id, challenge_id: c.body.id, activity_type: 'Cycling', distance: 10, activity_date: '2027-07-02' });
+  assert.equal(distOnly.status, 400);
+  assert.match(distOnly.body.error, /minutes/i);
+  const both = await jsonFetch(`${origin}/api/activities`, cat.cookie, 'POST', { team_id: t.body.id, challenge_id: c.body.id, activity_type: 'Cycling', minutes: 40, distance: 10, activity_date: '2027-07-02' });
+  assert.equal(both.status, 201);
+  const lb = await jsonFetch(`${origin}/api/challenges/${c.body.id}/leaderboard`, cat.cookie);
+  assert.equal(lb.body.metric, 'minutes');
+  assert.equal(lb.body.teams[0].minutes, 40);
+});
+
+test('health import carries distance in metres and skips sessions without the challenge measure', async () => {
+  const dee = await register('Dee Sync');
+  const { challengeId, teamId } = await distanceChallenge(dee);
+  const r = await fetch(`${origin}/api/health/import`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${dee.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source: 'health_kit',
+      records: [
+        { team_id: teamId, challenge_id: challengeId, activity_type: 'Running', minutes: 31, distance_m: 5000, activity_date: '2027-07-04', source_ref: 'run-1' },
+        { team_id: teamId, challenge_id: challengeId, activity_type: 'Yoga', minutes: 45, activity_date: '2027-07-04', source_ref: 'yoga-1' },
+        { team_id: teamId, challenge_id: challengeId, activity_type: 'Walking', distance_m: 1609.344, activity_date: '2027-07-05', source_ref: 'walk-1' },
+        { team_id: teamId, challenge_id: challengeId, activity_type: 'Walking', distance_m: -3, activity_date: '2027-07-05', source_ref: 'bad-1' },
+      ],
+    }),
+  });
+  assert.deepEqual(await r.json(), { added: 2, skipped: 2 });
+  const lb = await jsonFetch(`${origin}/api/challenges/${challengeId}/leaderboard`, dee.cookie);
+  assert.equal(lb.body.users[0].distance, 4.11); // 5 km + 1 mi
+  assert.equal(lb.body.users[0].minutes, 31);
+});
+
+test('CSV export of a distance challenge leads with the distance column', async () => {
+  const eve = await register('Eve Export');
+  const { challengeId, teamId } = await distanceChallenge(eve, { distance_unit: 'km' });
+  await jsonFetch(`${origin}/api/activities`, eve.cookie, 'POST', { team_id: teamId, challenge_id: challengeId, activity_type: 'Running', distance: 10, minutes: 55, activity_date: '2027-07-02' });
+  const teamsCsv = await (await fetch(`${origin}/api/challenges/${challengeId}/leaderboard/export?type=teams`, { headers: { cookie: eve.cookie } })).text();
+  assert.match(teamsCsv, /^Rank,Team,Kilometres,Minutes\r\n1,Milers,10,55/);
+  const usersCsv = await (await fetch(`${origin}/api/challenges/${challengeId}/leaderboard/export?type=users`, { headers: { cookie: eve.cookie } })).text();
+  assert.match(usersCsv, new RegExp(`^Rank,Name,Email,Kilometres,Minutes\\r\\n1,Eve Export,${eve.email.replace(/\./g, '\\.')},10,55`));
+});
+
+test('an existing database from before distance challenges is migrated without losing activity', async () => {
+  const { DatabaseSync } = require('node:sqlite');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-challenge-legacy-'));
+  const legacy = new DatabaseSync(path.join(dir, 'activity.sqlite'));
+  // The original schema: minutes NOT NULL, no metric or distance columns anywhere.
+  legacy.exec(`PRAGMA foreign_keys=ON;
+    CREATE TABLE users(id INTEGER PRIMARY KEY,email TEXT UNIQUE NOT NULL,name TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'member',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE challenges(id INTEGER PRIMARY KEY,name TEXT NOT NULL,start_date TEXT NOT NULL,end_date TEXT NOT NULL,created_by INTEGER NOT NULL,invite_code TEXT UNIQUE NOT NULL,active INTEGER NOT NULL DEFAULT 1,created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(created_by) REFERENCES users(id));
+    CREATE TABLE teams(id INTEGER PRIMARY KEY,challenge_id INTEGER NOT NULL,name TEXT NOT NULL,created_by INTEGER NOT NULL,invite_code TEXT UNIQUE NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(challenge_id) REFERENCES challenges(id) ON DELETE CASCADE,FOREIGN KEY(created_by) REFERENCES users(id));
+    CREATE TABLE activities(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,team_id INTEGER NOT NULL,challenge_id INTEGER NOT NULL,activity_type TEXT NOT NULL,minutes INTEGER NOT NULL CHECK(minutes>0),activity_date TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'manual',source_ref TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,source,source_ref),FOREIGN KEY(user_id) REFERENCES users(id),FOREIGN KEY(team_id) REFERENCES teams(id),FOREIGN KEY(challenge_id) REFERENCES challenges(id));
+    INSERT INTO users(id,email,name,password_hash) VALUES(1,'old@example.com','Old Timer','x:y');
+    INSERT INTO challenges(id,name,start_date,end_date,created_by,invite_code) VALUES(1,'Legacy',date('now'),date('now','+30 days'),1,'LEGACY01');
+    INSERT INTO teams(id,challenge_id,name,created_by,invite_code) VALUES(1,1,'Old Team',1,'LEGACYT1');
+    INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,activity_date,source,source_ref) VALUES(1,1,1,'Walking',42,date('now'),'health_connect','old-ref');`);
+  legacy.close();
+
+  const srv = await spawnServer({ DATA_DIR: dir });
+  try {
+    const check = new DatabaseSync(path.join(dir, 'activity.sqlite'));
+    const cols = check.prepare('PRAGMA table_info(activities)').all();
+    assert.equal(cols.find(c => c.name === 'minutes').notnull, 0, 'minutes should now be optional');
+    assert.ok(cols.some(c => c.name === 'distance_m'));
+    const row = check.prepare('SELECT * FROM activities').get();
+    assert.equal(row.minutes, 42);
+    assert.equal(row.source_ref, 'old-ref');
+    assert.equal(check.prepare('SELECT metric FROM challenges WHERE id=1').get().metric, 'minutes');
+    // The UNIQUE(user_id,source,source_ref) rule survived the rebuild.
+    assert.throws(() => check.prepare("INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,activity_date,source,source_ref) VALUES(1,1,1,'Walking',5,date('now'),'health_connect','old-ref')").run(), /UNIQUE/);
+    check.close();
+  } finally {
+    await srv.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

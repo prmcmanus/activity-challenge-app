@@ -5,8 +5,9 @@ struct TeamOption: Identifiable, Hashable {
     let teamName: String
     let challengeId: Int
     let challengeName: String
+    var measuresDistance: Bool = false
     var id: Int { teamId }
-    var label: String { "\(challengeName) — \(teamName)" }
+    var label: String { "\(challengeName) — \(teamName)" + (measuresDistance ? " (distance)" : "") }
 }
 
 struct ImportResult {
@@ -54,7 +55,8 @@ final class ActiveTogetherAPI {
                   let teams = challenge["teams"] as? [[String: Any]] else { continue }
             for team in teams {
                 guard let teamId = team["id"] as? Int, let teamName = team["name"] as? String else { continue }
-                options.append(TeamOption(teamId: teamId, teamName: teamName, challengeId: challengeId, challengeName: challengeName))
+                options.append(TeamOption(teamId: teamId, teamName: teamName, challengeId: challengeId, challengeName: challengeName,
+                                          measuresDistance: (challenge["metric"] as? String) == "distance"))
             }
         }
         return options

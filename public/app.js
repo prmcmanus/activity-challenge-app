@@ -57,6 +57,26 @@ function initRichTextEditor(root){
 }
 
 let me=null, dash=null, curChallenge=null, curLeaderboard=null, authTab='login';
+
+// --- what a challenge measures: active minutes (the default) or distance in miles/km ---------
+const isDistance=c=>c&&c.metric==='distance';
+const unitShort=c=>c&&c.distance_unit==='km'?'km':'mi';
+const unitLong=c=>c&&c.distance_unit==='km'?'Kilometres':'Miles';
+const fmtNum=n=>Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2});
+// The challenge's own measure, e.g. "12.4 mi" or "340 min".
+function fmtTotal(c,minutes,distance){return isDistance(c)?`${fmtNum(distance)} ${unitShort(c)}`:`${fmtNum(minutes)} min`}
+// One activity: both figures when it has both, the challenge's measure first.
+function fmtEntry(c,x){
+  const d=x.distance!=null?`${fmtNum(x.distance)} ${unitShort(c)}`:'',m=x.minutes!=null?`${fmtNum(x.minutes)} min`:'';
+  return (isDistance(c)?[d,m]:[m,d]).filter(Boolean).join(' · ');
+}
+// Show the unit picker only while Distance is chosen.
+function wireMeasureFields(form){
+  const sel=form.querySelector('[data-metric]'),wrap=form.querySelector('[data-unitwrap]');
+  const sync=()=>wrap.classList.toggle('hidden',sel.value!=='distance');
+  sel.addEventListener('change',sync);sync();
+  return sync;
+}
 const params=new URLSearchParams(location.search);
 let pendingInviteToken=params.get('invite');
 let pendingCode=(params.get('code')||'').toUpperCase();
@@ -114,7 +134,7 @@ async function loadDashboard(){dash=await api('/api/dashboard')}
 function showHome(){$('#challengeView').classList.add('hidden');$('#homeView').classList.remove('hidden');renderHome()}
 function renderHome(){
   $('#hello').textContent=`Welcome, ${me.name}`;
-  $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${c.teams.length} of your team(s) · ${esc(c.role)} · ${c.myMinutes} min logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
+  $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${c.teams.length} of your team(s) · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
   $all('[data-open]').forEach(b=>b.onclick=()=>openChallenge(Number(b.dataset.open)));
 }
 
@@ -149,7 +169,14 @@ function renderChallenge(){
   $('#exportUsersCsv').classList.toggle('hidden',!c.canManage);
   if(c.canManage){$('#exportTeamsCsv').href=`/api/challenges/${c.id}/leaderboard/export?type=teams`;$('#exportUsersCsv').href=`/api/challenges/${c.id}/leaderboard/export?type=users`}
   const mine=dash.challenges.find(x=>x.id===c.id);
-  $('#myChMinutes').textContent=mine?mine.myMinutes:0;
+  $('#myChMinutes').textContent=fmtNum(mine?(isDistance(c)?mine.myDistance:mine.myMinutes):0);
+  $('#myChMetricLabel').textContent=isDistance(c)?`my ${unitLong(c).toLowerCase()}`:'my minutes';
+  // A distance challenge asks for distance and makes minutes optional; a minutes challenge is unchanged.
+  $('#distanceWrap').classList.toggle('hidden',!isDistance(c));
+  $('#distance').required=isDistance(c);
+  $('#distanceLabel').textContent=unitLong(c);
+  $('#minutes').required=!isDistance(c);
+  $('#minutesLabel').textContent=isDistance(c)?'Minutes (optional)':'Minutes';
   const myTeams=c.teams.filter(t=>t.mine);
   $('#team').innerHTML=myTeams.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')||'<option value="">Join a team first</option>';
   $('#teamList').innerHTML=c.teams.map(t=>{
@@ -163,13 +190,13 @@ function renderChallenge(){
   }).join('')||'<p class="muted">No teams yet — create the first one.</p>';
   $all('[data-jointeam]').forEach(b=>b.onclick=async()=>{await api(`/api/teams/${b.dataset.jointeam}/join`,{method:'POST'});await refreshChallenge()});
   $all('[data-manageteam]').forEach(b=>b.onclick=()=>openTeamManage(Number(b.dataset.manageteam),b.dataset.name));
-  $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${t.minutes} min</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
-  $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b></span><span>${x.minutes} min</span></div>`).join('')||'<p class="muted">No members yet.</p>';
+  $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${esc(fmtTotal(c,t.minutes,t.distance))}</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
+  $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b></span><span>${esc(fmtTotal(c,x.minutes,x.distance))}</span></div>`).join('')||'<p class="muted">No members yet.</p>';
   const recent=dash.mine.filter(a=>a.challenge_id===c.id);
   $('#recent').innerHTML=recent.map(x=>{
     const timeBit=x.start_time&&x.end_time?` · ${x.start_time}–${x.end_time}`:'';
     const commentBit=x.comment?`<div class="muted">“${esc(x.comment)}”</div>`:'';
-    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${esc(x.team_name)} · ${x.activity_date}${timeBit} · ${x.source}</div>${commentBit}</div><div class="btnrow"><b>${x.minutes} min</b><button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></div></div>`;
+    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${esc(x.team_name)} · ${x.activity_date}${timeBit} · ${x.source}</div>${commentBit}</div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b><button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></div></div>`;
   }).join('')||'<p class="muted">No activity logged yet in this challenge.</p>';
   $all('[data-editactivity]').forEach(b=>{const x=recent.find(a=>a.id===Number(b.dataset.editactivity));b.onclick=()=>openEditActivity(x)});
   $all('[data-delactivity]').forEach(b=>b.onclick=async()=>{
@@ -186,6 +213,8 @@ async function openEditChallenge(c){
       <label>Description (optional)</label>
       <div class="rte" data-rte><div class="rte-toolbar"><button type="button" data-cmd="bold" title="Bold"><b>B</b></button><button type="button" data-cmd="italic" title="Italic"><i>I</i></button><button type="button" data-cmd="insertUnorderedList" title="Bullet list">&bull; List</button><button type="button" data-cmd="insertOrderedList" title="Numbered list">1. List</button><button type="button" data-cmd="createLink" title="Link">Link</button><button type="button" data-cmd="insertImage" title="Insert image">Image</button></div><div id="ecDescription" class="rte-editor" contenteditable="true" data-placeholder="What's this challenge about?">${c.description||''}</div></div>
       <div class="two"><label>Start<input id="ecStart" type="date" value="${c.start_date}" required></label><label>End<input id="ecEnd" type="date" value="${c.end_date}" required></label></div>
+      <div class="two"><label>Measure<select id="ecMetric" data-metric><option value="minutes"${isDistance(c)?'':' selected'}>Active minutes</option><option value="distance"${isDistance(c)?' selected':''}>Distance</option></select></label><label data-unitwrap>Distance unit<select id="ecUnit"><option value="mi"${unitShort(c)==='mi'?' selected':''}>Miles</option><option value="km"${unitShort(c)==='km'?' selected':''}>Kilometres</option></select></label></div>
+      <p class="muted">Changing what the challenge measures re-ranks the leaderboards. Entries logged without that measure count as zero toward it.</p>
       <button>Save changes</button>
     </form>
     <p id="ecMsg" class="error"></p>
@@ -195,10 +224,11 @@ async function openEditChallenge(c){
     <p id="ownerMsg" class="error"></p>`;
   $('#modal').showModal();
   initRichTextEditor($('[data-rte]'));
+  wireMeasureFields($('#editChallengeForm'));
   $('#editChallengeForm').onsubmit=async e=>{
     e.preventDefault();
     try{
-      await api(`/api/challenges/${c.id}`,{method:'PATCH',body:JSON.stringify({name:$('#ecName').value.trim(),description:$('#ecDescription').innerHTML,start_date:$('#ecStart').value,end_date:$('#ecEnd').value})});
+      await api(`/api/challenges/${c.id}`,{method:'PATCH',body:JSON.stringify({name:$('#ecName').value.trim(),description:$('#ecDescription').innerHTML,start_date:$('#ecStart').value,end_date:$('#ecEnd').value,metric:$('#ecMetric').value,distance_unit:$('#ecUnit').value})});
       $('#modal').close();
       await refreshChallenge();
     }catch(x){$('#ecMsg').textContent=x.message}
@@ -219,10 +249,13 @@ function minutesBetween(start,end){
 }
 
 function openEditActivity(x){
+  const c=curChallenge,dist=isDistance(c);
+  // Distance is shown whenever the challenge measures it, or the entry already has one.
+  const distField=dist||x.distance!=null?`<label>${unitLong(c)}${dist?'':' (optional)'}<input id="eaDistance" type="number" min="0.01" step="0.01" inputmode="decimal" value="${x.distance??''}"${dist?' required':''}></label>`:'';
   $('#modalBody').innerHTML=`<h2>Edit activity</h2>
     <form id="editActivityForm">
       <label>Activity<input id="eaType" value="${esc(x.activity_type)}" required></label>
-      <div class="two"><label>Minutes<input id="eaMinutes" type="number" min="1" value="${x.minutes}" required></label><label>Date<input id="eaDate" type="date" value="${x.activity_date}" required></label></div>
+      <div class="two">${distField}<label>Minutes${dist?' (optional)':''}<input id="eaMinutes" type="number" min="1" value="${x.minutes??''}"${dist?'':' required'}></label><label>Date<input id="eaDate" type="date" value="${x.activity_date}" required></label></div>
       <div class="two"><label>Start time (optional)<input id="eaStart" type="time" value="${x.start_time||''}"></label><label>Finish time (optional)<input id="eaEnd" type="time" value="${x.end_time||''}"></label></div>
       <label>Comment (optional)<input id="eaComment" maxlength="500" value="${esc(x.comment||'')}" placeholder="How did it go?"></label>
       <button>Save changes</button>
@@ -235,7 +268,7 @@ function openEditActivity(x){
   $('#editActivityForm').onsubmit=async e=>{
     e.preventDefault();
     try{
-      await api(`/api/activities/${x.id}`,{method:'PATCH',body:JSON.stringify({activity_type:$('#eaType').value,minutes:$('#eaMinutes').value,activity_date:$('#eaDate').value,start_time:$('#eaStart').value,end_time:$('#eaEnd').value,comment:$('#eaComment').value})});
+      await api(`/api/activities/${x.id}`,{method:'PATCH',body:JSON.stringify({activity_type:$('#eaType').value,minutes:$('#eaMinutes').value,...($('#eaDistance')?{distance:$('#eaDistance').value,distance_unit:unitShort(c)}:{}),activity_date:$('#eaDate').value,start_time:$('#eaStart').value,end_time:$('#eaEnd').value,comment:$('#eaComment').value})});
       $('#modal').close();
       await refreshChallenge();
     }catch(err){$('#eaMsg').textContent=err.message}
@@ -361,12 +394,14 @@ $('#backHome').onclick=()=>showHome();
 $('#joinForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/join',{method:'POST',body:JSON.stringify({code:$('#joinCode').value})});$('#joinMsg').textContent='';e.target.reset();await loadDashboard();renderHome()}catch(x){$('#joinMsg').textContent=x.message}};
 const newChallengeRte=document.querySelector('#newChallengeForm [data-rte]');
 initRichTextEditor(newChallengeRte);
+const syncNewChallengeMeasure=wireMeasureFields($('#newChallengeForm'));
 $('#newChallengeForm').onsubmit=async e=>{
   e.preventDefault();
   const fields=Object.fromEntries(new FormData(e.target));
   fields.description=newChallengeRte.querySelector('.rte-editor').innerHTML;
   await api('/api/challenges',{method:'POST',body:JSON.stringify(fields)});
   e.target.reset();
+  syncNewChallengeMeasure();
   newChallengeRte.querySelector('.rte-editor').innerHTML='';
   await loadDashboard();renderHome();
 };
@@ -396,7 +431,7 @@ $('#activityForm').onsubmit=async e=>{
   const teamId=$('#team').value;
   if(!teamId){alert('Join a team first');return}
   try{
-    await api('/api/activities',{method:'POST',body:JSON.stringify({team_id:teamId,challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,activity_date:$('#activityDate').value,start_time:$('#startTime').value,end_time:$('#endTime').value,comment:$('#activityComment').value})});
+    await api('/api/activities',{method:'POST',body:JSON.stringify({team_id:teamId,challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,...(isDistance(curChallenge)?{distance:$('#distance').value,distance_unit:unitShort(curChallenge)}:{}),activity_date:$('#activityDate').value,start_time:$('#startTime').value,end_time:$('#endTime').value,comment:$('#activityComment').value})});
     $('#activityMsg').textContent='';
     e.target.reset();
     $('#activityDate').value=new Date().toISOString().slice(0,10);

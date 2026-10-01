@@ -24,7 +24,7 @@ This companion is sync-only: it does not create accounts or join challenges/team
 2. In the web app (`http://localhost:3000`), register an account (or sign in as the seeded admin, `admin@example.com` / `ChangeMe123!`), create or join a challenge, and create or join a team in it.
 3. In Android Studio, open `companion/android`.
 4. Run the app on a physical Android device or emulator with Health Connect available.
-5. Use server URL `http://10.0.2.2:3000` for the Android emulator, or your computer's LAN URL for a physical device.
+5. The server address is fixed to `https://activetogether.team` (`SERVER_URL` in `MainActivity.kt`). To test against a local server, change that constant temporarily (e.g. `http://10.0.2.2:3000` for the emulator) and set `android:usesCleartextTraffic="true"` in the manifest for plain http.
 6. Sign in with the same credentials used in step 2, then pick the "Challenge — Team" entry to sync into.
 
 ## Build prerequisites

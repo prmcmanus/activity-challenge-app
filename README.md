@@ -102,7 +102,7 @@ Example body:
 ## Android companion app
 An Android Health Connect companion MVP is included in [companion/android](companion/android). It signs in to this server, requests exercise-session permission from Health Connect, reads the last 30 days of exercise sessions, converts durations to whole minutes and adds the distance recorded during each one, and uploads them to `/api/health/import`. It only syncs into a challenge/team you already belong to — join and create those in the web app first.
 
-For emulator testing with the local server, use `http://10.0.2.2:3000` as the server URL in the companion app.
+The companion talks to `https://activetogether.team` only (`SERVER_URL` in `MainActivity.kt`); see its README for pointing it at a local server while testing.
 
 ## iOS companion app
 An iOS HealthKit companion MVP with the same behaviour is included in [companion/ios](companion/ios), as Swift source plus setup instructions (it ships without an `.xcodeproj` — see that folder's README for why, and the two-minute Xcode setup).

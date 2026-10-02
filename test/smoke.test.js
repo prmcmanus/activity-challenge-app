@@ -1792,3 +1792,31 @@ test('tickets: users report and follow their own; admins see all, reply, add int
   const adminView = await jsonFetch(`${origin}/api/tickets/${id}`, admin);
   assert.deepEqual(adminView.body.comments.map(c => c.internal), [true, false, false]);
 });
+
+test('global admins can list every user and challenge, and open any challenge they are not in', async () => {
+  const zed = await register('Zed Owner');
+  const c = await jsonFetch(`${origin}/api/challenges`, zed.cookie, 'POST', { name: 'Admin Visible', start_date: '2027-10-01', end_date: '2027-10-31', participation: 'individual' });
+  await jsonFetch(`${origin}/api/activities`, zed.cookie, 'POST', { challenge_id: c.body.id, activity_type: 'Run', minutes: 20, activity_date: '2027-10-02' });
+  const admin = await adminCookie();
+  const outsider = await register('Out Sider');
+
+  assert.equal((await jsonFetch(`${origin}/api/admin/challenges`, outsider.cookie)).status, 403);
+  const list = await jsonFetch(`${origin}/api/admin/challenges`, admin);
+  const row = list.body.challenges.find(x => x.id === c.body.id);
+  assert.deepEqual([row.owners, row.members, row.activities, row.purge_date], ['Zed Owner', 1, 1, '2027-12-31']);
+
+  const users = await jsonFetch(`${origin}/api/admin/users`, admin);
+  const zrow = users.body.users.find(x => x.email === zed.email);
+  assert.deepEqual([zrow.challenges, zrow.activities, zrow.last_activity], [1, 1, '2027-10-02']);
+
+  const view = await jsonFetch(`${origin}/api/challenges/${c.body.id}`, admin);
+  assert.equal(view.status, 200);
+  assert.equal(view.body.role, 'admin');
+  assert.equal(view.body.canManage, true);
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${c.body.id}/leaderboard`, admin)).status, 200);
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${c.body.id}`, outsider.cookie)).status, 403);
+  assert.equal((await jsonFetch(`${origin}/api/challenges/999999`, admin)).status, 404);
+
+  const r = await fetch(`${origin}/api/dashboard`, { headers: { cookie: zed.cookie } });
+  assert.equal(r.headers.get('cache-control'), 'no-store');
+});

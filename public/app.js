@@ -109,12 +109,12 @@ initRecaptcha();
 
 async function load(){
   const m=await api('/api/me'); me=m.user;
-  if(!me){$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');$('#helpBtn').classList.add('hidden');renderAuth();return}
+  if(!me){$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');$('#helpBtn').classList.add('hidden');$('#adminBtn').classList.add('hidden');renderAuth();return}
   $('#authSection').classList.add('hidden');$('#app').classList.remove('hidden');$('#logout').classList.remove('hidden');$('#myAccount').classList.remove('hidden');$('#helpBtn').classList.remove('hidden');refreshHelpBadge();
   if(pendingInviteToken){try{await api('/api/invites/accept',{method:'POST',body:JSON.stringify({token:pendingInviteToken})})}catch(e){alert(e.message)}pendingInviteToken=null}
   if(pendingCode){try{await api('/api/join',{method:'POST',body:JSON.stringify({code:pendingCode})})}catch(e){alert(e.message)}pendingCode=null}
   await loadDashboard();
-  if(me.role==='global_admin'){$('#admin').classList.remove('hidden');renderAdmin()}else{$('#admin').classList.add('hidden')}
+  $('#adminBtn').classList.toggle('hidden',me.role!=='global_admin');
   showHome();
 }
 
@@ -133,7 +133,9 @@ $all('[data-authtab]').forEach(b=>b.onclick=()=>{authTab=b.dataset.authtab;rende
 
 async function loadDashboard(){dash=await api('/api/dashboard')}
 
-function showHome(){$('#challengeView').classList.add('hidden');$('#helpView').classList.add('hidden');$('#homeView').classList.remove('hidden');renderHome()}
+// One view at a time: home, a challenge, help, or (global admins) the admin page.
+function showView(id){['#homeView','#challengeView','#helpView','#adminView'].forEach(v=>$(v).classList.toggle('hidden',v!==id));window.scrollTo(0,0)}
+function showHome(){challengeBack='home';showView('#homeView');renderHome()}
 function renderHome(){
   $('#hello').textContent=`Welcome, ${me.name}`;
   $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${isIndividual(c)?'individuals':`${c.teams.length} of your team(s)`} · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
@@ -144,7 +146,8 @@ function renderHome(){
 async function openChallenge(id){
   curChallenge=await api(`/api/challenges/${id}`);
   curLeaderboard=await api(`/api/challenges/${id}/leaderboard`);
-  $('#homeView').classList.add('hidden');$('#helpView').classList.add('hidden');$('#challengeView').classList.remove('hidden');
+  showView('#challengeView');
+  $('#backHome').innerHTML=challengeBack==='admin'?'&larr; Admin':'&larr; My challenges';
   renderChallenge();
 }
 async function refreshChallenge(){
@@ -182,10 +185,13 @@ function renderChallenge(){
   if($('#distanceUnit').dataset.cid!==String(c.id)){$('#distanceUnit').value=unitShort(c);$('#distanceUnit').dataset.cid=String(c.id)}
   $('#minutes').required=!isDistance(c);
   $('#minutesLabel').textContent=isDistance(c)?'Minutes (optional)':'Minutes';
-  const solo=isIndividual(c);
+  const solo=isIndividual(c),visiting=c.role==='admin';
+  // A global admin looking at a challenge they have not joined manages it but has nothing to log.
+  $('#logCard').classList.toggle('hidden',visiting);$('#recentCard').classList.toggle('hidden',visiting);
   ['#teamsCard','#teamLeaderCard','#teamWrap'].forEach(s=>$(s).classList.toggle('hidden',solo));
   if(solo)$('#exportTeamsCsv').classList.add('hidden');
-  $('#logGrid').classList.toggle('single',solo);
+  $('#logGrid').classList.toggle('single',solo||visiting);
+  $('#logGrid').classList.toggle('hidden',solo&&visiting);
   $('#boardGrid').classList.toggle('single',solo);
   $('#team').required=!solo;
   const myTeams=c.teams.filter(t=>t.mine);
@@ -217,7 +223,7 @@ function renderChallenge(){
   });
 }
 
-async function openEditChallenge(c){
+async function openEditChallenge(c,after=refreshChallenge){
   const membersData=await api(`/api/challenges/${c.id}/members`);
   $('#modalBody').innerHTML=`<h2>Edit challenge</h2>
     <form id="editChallengeForm">
@@ -245,7 +251,7 @@ async function openEditChallenge(c){
     try{
       await api(`/api/challenges/${c.id}`,{method:'PATCH',body:JSON.stringify({name:$('#ecName').value.trim(),description:$('#ecDescription').innerHTML,start_date:$('#ecStart').value,end_date:$('#ecEnd').value,metric:$('#ecMetric').value,distance_unit:$('#ecUnit').value,participation:$('#ecParticipation').value})});
       $('#modal').close();
-      await refreshChallenge();
+      await after();
     }catch(x){$('#ecMsg').textContent=x.message}
   };
   // Typing the name is the confirmation: deleting removes everyone's activity, not just the owner's.
@@ -258,12 +264,12 @@ async function openEditChallenge(c){
       $('#modal').close();
       curChallenge=null;
       await loadDashboard();
-      showHome();
+      if(after===refreshChallenge&&challengeBack!=='admin')showHome();else showAdmin();
     }catch(x){$('#deleteChallengeMsg').textContent=x.message}
   };
   $('#addOwnerForm').onsubmit=async e=>{
     e.preventDefault();
-    try{await api(`/api/challenges/${c.id}/owners`,{method:'POST',body:JSON.stringify({email:$('#addOwnerEmail').value})});await openEditChallenge(c)}catch(x){$('#ownerMsg').textContent=x.message}
+    try{await api(`/api/challenges/${c.id}/owners`,{method:'POST',body:JSON.stringify({email:$('#addOwnerEmail').value})});await openEditChallenge(c,after)}catch(x){$('#ownerMsg').textContent=x.message}
   };
 }
 
@@ -364,12 +370,65 @@ async function openTeamManage(tid,tname){
   };
 }
 
-async function renderAdmin(){
-  const data=await api('/api/admin/users');
-  $('#adminPanel').innerHTML=`<form id="newUser" class="adminform"><label>Name<input name="name" required></label><label>Email<input name="email" type="email" required></label><label>Temporary password<input name="password" required></label><label>Role<select name="role"><option value="member">Member</option><option value="global_admin">Global admin</option></select></label><button>Create user</button></form>`+data.users.map(x=>`<div class="listrow"><span><b>${esc(x.name)}</b><small class="muted"> · ${esc(x.email)}</small></span><span class="btnrow"><span class="muted">${esc(x.role)}</span><button class="ghost" data-edituser="${x.id}">Edit</button></span></div>`).join('');
-  $('#newUser').onsubmit=async e=>{e.preventDefault();await api('/api/admin/users',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});renderAdmin()};
-  $all('[data-edituser]').forEach(b=>{const x=data.users.find(x2=>x2.id===Number(b.dataset.edituser));b.onclick=()=>openEditUser(x)});
+// --- Administration (global admins) ---------------------------------------------------------
+let challengeBack='home',adminTab='users',adminUsers=[],adminChallenges=[];
+const MEASURE_LABEL=c=>c.metric==='distance'?`Distance (${c.distance_unit==='km'?'km':'miles'})`:'Active minutes';
+const STATE_LABEL={running:'Running',upcoming:'Not started',finished:'Finished'};
+const plural=(n,one,many)=>`${n} ${n===1?one:many}`;
+async function showAdmin(){
+  if(me.role!=='global_admin')return showHome();
+  showView('#adminView');
+  await renderAdmin();
 }
+function setAdminTab(t){
+  adminTab=t;
+  $all('[data-admintab]').forEach(b=>b.classList.toggle('active',b.dataset.admintab===t));
+  $('#adminUsers').classList.toggle('hidden',t!=='users');
+  $('#adminChallenges').classList.toggle('hidden',t!=='challenges');
+}
+async function renderAdmin(){
+  setAdminTab(adminTab);
+  try{
+    const [u,c]=await Promise.all([api('/api/admin/users'),api('/api/admin/challenges')]);
+    adminUsers=u.users;adminChallenges=c.challenges;
+  }catch(e){$('#adminUserList').innerHTML=$('#adminChallengeList').innerHTML=`<p class="error">${esc(e.message)}</p>`;return}
+  renderAdminUsers();renderAdminChallenges();
+}
+function renderAdminUsers(){
+  const q=$('#adminUserSearch').value.trim().toLowerCase();
+  const rows=adminUsers.filter(x=>!q||`${x.name} ${x.email}`.toLowerCase().includes(q));
+  $('#adminUserCount').textContent=q?`${rows.length} of ${adminUsers.length}`:String(adminUsers.length);
+  $('#adminUserList').innerHTML=rows.map(x=>`<div class="adminrow"><div><div class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</div>
+    <div class="facts"><span>${esc(x.email)}</span><span>${plural(x.challenges,'challenge','challenges')}</span><span>${plural(x.activities,'activity','activities')}</span><span>${x.last_activity?`last active ${esc(x.last_activity)}`:'no activity yet'}</span>${x.tickets?`<span>${plural(x.tickets,'ticket','tickets')}</span>`:''}<span>joined ${esc(String(x.created_at||'').slice(0,10))}</span></div></div>
+    <div class="btnrow">${statusPillFor(x.role,x.role==='global_admin'?'Global admin':'Member')}<button class="ghost" data-edituser="${x.id}">Edit</button></div></div>`).join('')||'<p class="muted">No users match.</p>';
+  $all('[data-edituser]').forEach(b=>{const x=adminUsers.find(x2=>x2.id===Number(b.dataset.edituser));b.onclick=()=>openEditUser(x)});
+}
+function renderAdminChallenges(){
+  const q=$('#adminChallengeSearch').value.trim().toLowerCase(),st=$('#adminChallengeState').value;
+  const rows=adminChallenges.filter(c=>(!st||c.state===st)&&(!q||`${c.name} ${c.owners||''} ${c.creator_name||''} ${c.invite_code}`.toLowerCase().includes(q)));
+  $('#adminChallengeCount').textContent=rows.length===adminChallenges.length?String(rows.length):`${rows.length} of ${adminChallenges.length}`;
+  $('#adminChallengeList').innerHTML=rows.map(c=>`<div class="adminrow"><div><b>${esc(c.name)}</b>
+    <div class="facts"><span>${esc(c.start_date)} → ${esc(c.end_date)}</span><span>${esc(MEASURE_LABEL(c))}</span><span>${c.participation==='individual'?'Individuals':plural(c.teams,'team','teams')}</span><span>${plural(c.members,'member','members')}</span><span>${plural(c.activities,'activity','activities')}</span><span>owner: ${esc(c.owners||c.creator_name||'none')}</span><span>code ${esc(c.invite_code)}</span>${c.state==='finished'?`<span title="Finished challenges and their activity are deleted 60 days after they end">deleted on ${esc(c.purge_date)}</span>`:''}</div></div>
+    <div class="btnrow">${statusPillFor(c.state,STATE_LABEL[c.state])}<button data-adminopen="${c.id}">Open</button><button class="ghost" data-adminedit="${c.id}">Edit</button></div></div>`).join('')||'<p class="muted">No challenges match.</p>';
+  $all('[data-adminopen]').forEach(b=>b.onclick=()=>{challengeBack='admin';openChallenge(Number(b.dataset.adminopen)).catch(e=>alert(e.message))});
+  $all('[data-adminedit]').forEach(b=>b.onclick=async()=>{
+    try{const c=await api(`/api/challenges/${b.dataset.adminedit}`);challengeBack='admin';await openEditChallenge(c,async()=>{await loadDashboard();await renderAdmin()})}catch(e){alert(e.message)}
+  });
+}
+const statusPillFor=(cls,label)=>`<span class="status ${esc(cls)}">${esc(label)}</span>`;
+$('#adminBtn').onclick=()=>showAdmin();
+$('#adminBack').onclick=()=>showHome();
+$('#adminSupport').onclick=()=>showHelp();
+$all('[data-admintab]').forEach(b=>b.onclick=()=>setAdminTab(b.dataset.admintab));
+$('#adminUserSearch').oninput=renderAdminUsers;
+$('#adminChallengeSearch').oninput=renderAdminChallenges;
+$('#adminChallengeState').onchange=renderAdminChallenges;
+$('#adminNewUserBtn').onclick=()=>{$('#newUser').classList.toggle('hidden');if(!$('#newUser').classList.contains('hidden'))$('#newUser [name=name]').focus()};
+$('#newUser').onsubmit=async e=>{
+  e.preventDefault();
+  try{await api('/api/admin/users',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});e.target.reset();e.target.classList.add('hidden');$('#newUserMsg').textContent='';await renderAdmin()}
+  catch(x){$('#newUserMsg').textContent=x.message}
+};
 
 function openEditUser(x){
   $('#modalBody').innerHTML=`<h2>Edit ${esc(x.name)}</h2>
@@ -444,7 +503,7 @@ const statusPill=s=>`<span class="status ${esc(s)}">${esc(TICKET_STATUS_LABEL[s]
 const fmtWhen=s=>{const d=new Date(String(s||'').replace(' ','T')+'Z');return isNaN(d)?'':d.toLocaleString(undefined,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})};
 let dashFilter={status:'open',type:''};
 function showHelp(){
-  $('#homeView').classList.add('hidden');$('#challengeView').classList.add('hidden');$('#helpView').classList.remove('hidden');
+  showView('#helpView');
   $('#supportDashboard').classList.toggle('hidden',me.role!=='global_admin');
   renderHelp();
 }
@@ -512,7 +571,7 @@ setInterval(()=>{if(me)refreshHelpBadge()},120000);
 
 
 $('#logout').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload()};
-$('#backHome').onclick=()=>showHome();
+$('#backHome').onclick=()=>challengeBack==='admin'?showAdmin():showHome();
 $('#joinForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/join',{method:'POST',body:JSON.stringify({code:$('#joinCode').value})});$('#joinMsg').textContent='';e.target.reset();await loadDashboard();renderHome()}catch(x){$('#joinMsg').textContent=x.message}};
 const newChallengeRte=document.querySelector('#newChallengeForm [data-rte]');
 initRichTextEditor(newChallengeRte);

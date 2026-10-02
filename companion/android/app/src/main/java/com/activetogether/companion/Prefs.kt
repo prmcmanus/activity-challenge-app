@@ -35,5 +35,10 @@ class Prefs(context: Context) {
         get() = p.getString("lastSyncSummary", "").orEmpty()
         set(v) = p.edit().putString("lastSyncSummary", v).apply()
 
+    /** An invite link opened before signing in, kept until the person has signed in and decided. */
+    var pendingInvite: String?
+        get() = p.getString("pendingInvite", null)?.takeIf { it.isNotBlank() }
+        set(v) = p.edit().putString("pendingInvite", v).apply()
+
     fun signOut() = p.edit().remove("token").apply()
 }

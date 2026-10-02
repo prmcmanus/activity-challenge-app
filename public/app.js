@@ -81,8 +81,10 @@ function wireMeasureFields(form){
 }
 const params=new URLSearchParams(location.search);
 let pendingInviteToken=params.get('invite');
-let pendingCode=(params.get('code')||'').toUpperCase();
-if(pendingInviteToken||pendingCode)history.replaceState({},'',location.pathname);
+const legacyCode=(params.get('code')||'').trim().toUpperCase();
+// Older shared links used ?code=; they become /join/CODE like the new ones.
+if(legacyCode)history.replaceState({},'',`/join/${encodeURIComponent(legacyCode)}`);
+else if(pendingInviteToken)history.replaceState({},'',location.pathname);
 
 // reCAPTCHA is optional: /api/config only returns a site key once the server has one
 // configured, so a deployment with no Google keys set just skips rendering the widget and the
@@ -109,13 +111,13 @@ initRecaptcha();
 
 async function load(){
   const m=await api('/api/me'); me=m.user;
-  if(!me){$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');$('#helpBtn').classList.add('hidden');$('#adminBtn').classList.add('hidden');renderAuth();return}
+  if(!me){showInviteBanner();$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');$('#helpBtn').classList.add('hidden');$('#adminBtn').classList.add('hidden');renderAuth();return}
   $('#authSection').classList.add('hidden');$('#app').classList.remove('hidden');$('#logout').classList.remove('hidden');$('#myAccount').classList.remove('hidden');$('#helpBtn').classList.remove('hidden');refreshHelpBadge();
   if(pendingInviteToken){try{await api('/api/invites/accept',{method:'POST',body:JSON.stringify({token:pendingInviteToken})})}catch(e){alert(e.message)}pendingInviteToken=null}
-  if(pendingCode){try{await api('/api/join',{method:'POST',body:JSON.stringify({code:pendingCode})})}catch(e){alert(e.message)}pendingCode=null}
   await loadDashboard();
   $('#adminBtn').classList.toggle('hidden',me.role!=='global_admin');
-  showHome();
+  $('#inviteBanner').classList.add('hidden');
+  await route();
 }
 
 function renderAuth(){
@@ -135,7 +137,7 @@ async function loadDashboard(){dash=await api('/api/dashboard')}
 
 // One view at a time: home, a challenge, help, or (global admins) the admin page.
 function showView(id){['#homeView','#challengeView','#helpView','#adminView'].forEach(v=>$(v).classList.toggle('hidden',v!==id));window.scrollTo(0,0)}
-function showHome(){challengeBack='home';showView('#homeView');renderHome()}
+function showHome(){challengeBack='home';setUrl('/');showView('#homeView');renderHome()}
 function renderHome(){
   $('#hello').textContent=`Welcome, ${me.name}`;
   $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${isIndividual(c)?'individuals':`${c.teams.length} of your team(s)`} · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
@@ -155,6 +157,7 @@ async function loadAndroidCard(){
 async function openChallenge(id){
   curChallenge=await api(`/api/challenges/${id}`);
   curLeaderboard=await api(`/api/challenges/${id}/leaderboard`);
+  setUrl(`/challenges/${id}`);
   showView('#challengeView');
   $('#backHome').innerHTML=challengeBack==='admin'?'&larr; Admin':'&larr; My challenges';
   renderChallenge();
@@ -177,7 +180,7 @@ function renderChallenge(){
   // The server already sanitized this on write (POST/PATCH /api/challenges) - safe to render as-is.
   $('#challengeDescription').innerHTML=c.description||'';
   $('#challengeDescription').classList.toggle('hidden',!c.description);
-  $('#challengeCode').innerHTML=`Invite code: <b>${esc(c.invite_code)}</b> — share it so others can join this challenge.`;
+  $('#challengeCode').innerHTML=`<span class="linkrow">Invite link: <code>${esc(inviteUrl(c.invite_code))}</code><button type="button" class="ghost" data-copylink="${esc(c.invite_code)}">Copy link</button></span><span class="muted" style="color:#fff">Or share the code <b>${esc(c.invite_code)}</b>. Anyone with it can join this challenge.</span>`;
   $('#challengeActions').innerHTML=c.canManage?'<button class="ghost" data-editchallenge="1">Edit challenge</button>':'';
   if(c.canManage)$('[data-editchallenge]').onclick=()=>openEditChallenge(c);
   $('#exportTeamsCsv').classList.toggle('hidden',!c.canManage);
@@ -211,9 +214,10 @@ function renderChallenge(){
     if(t.canManage)actions.push(`<button class="ghost" data-manageteam="${t.id}" data-name="${esc(t.name)}">Manage</button>`);
     const bits=[`${t.members} member(s)`];
     if(t.mine)bits.push('you are in this team');
-    if(t.invite_code)bits.push(`code: <b>${esc(t.invite_code)}</b>`);
+    if(t.invite_code)bits.push(`code: <b>${esc(t.invite_code)}</b> <button type="button" class="ghost" data-copylink="${esc(t.invite_code)}" title="Copy a link that joins this team">Copy invite link</button>`);
     return `<div class="listrow"><div class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<div><b>${esc(t.name)}</b><div class="muted">${bits.join(' · ')}</div></div></div><div class="btnrow">${actions.join('')}</div></div>`;
   }).join('')||'<p class="muted">No teams yet — create the first one.</p>';
+  $all('[data-copylink]').forEach(b=>b.onclick=()=>copyInviteLink(b.dataset.copylink,b));
   $all('[data-jointeam]').forEach(b=>b.onclick=async()=>{await api(`/api/teams/${b.dataset.jointeam}/join`,{method:'POST'});await refreshChallenge()});
   $all('[data-manageteam]').forEach(b=>b.onclick=()=>openTeamManage(Number(b.dataset.manageteam),b.dataset.name));
   $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${esc(fmtTotal(c,t.minutes,t.distance))}</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
@@ -391,6 +395,7 @@ async function showAdmin(){
 }
 function setAdminTab(t){
   adminTab=t;
+  setUrl(t==='challenges'?'/admin/challenges':'/admin',true);
   $all('[data-admintab]').forEach(b=>b.classList.toggle('active',b.dataset.admintab===t));
   $('#adminUsers').classList.toggle('hidden',t!=='users');
   $('#adminChallenges').classList.toggle('hidden',t!=='challenges');
@@ -526,6 +531,7 @@ const statusPill=s=>`<span class="status ${esc(s)}">${esc(TICKET_STATUS_LABEL[s]
 const fmtWhen=s=>{const d=new Date(String(s||'').replace(' ','T')+'Z');return isNaN(d)?'':d.toLocaleString(undefined,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})};
 let dashFilter={status:'open',type:''};
 function showHelp(){
+  setUrl('/help');
   showView('#helpView');
   $('#supportDashboard').classList.toggle('hidden',me.role!=='global_admin');
   renderHelp();
@@ -558,6 +564,7 @@ async function renderHelp(){
 }
 async function openTicket(id){
   const t=await api(`/api/tickets/${id}`),admin=me.role==='global_admin';
+  if(location.pathname.startsWith('/help'))setUrl(`/help/tickets/${id}`);
   const convo=t.comments.map(c=>`<div class="bubble ${c.internal?'internal':c.from_support?'support':''}"><div class="who">${esc(c.author.name)}${c.from_support?' · Support':''}${c.internal?' · internal note (only admins see this)':''} · ${esc(fmtWhen(c.created_at))}</div>${esc(c.body).replace(/\n/g,'<br>')}</div>`).join('');
   $('#modalBody').innerHTML=`<h2>${esc(t.title)}</h2>
     <p>${statusPill(t.status)} <span class="muted">${esc(TICKET_TYPE_LABEL[t.type])} · #${t.id} · ${t.mine?'you':esc(t.reporter.name)+(t.reporter.email?` (${esc(t.reporter.email)})`:'')} · ${esc(fmtWhen(t.created_at))}</span></p>
@@ -731,3 +738,74 @@ async function openRouteMap(x,cc=curChallenge){
 $('#health').onclick=()=>{$('#modalBody').innerHTML='<h2>Phone activity sync</h2><p><b>Android:</b> use the native companion app to read exercise sessions from Health Connect after the user grants permission.</p><p><b>iPhone:</b> use the native iOS companion app to read workouts from Apple Health through HealthKit.</p><p>This web app already includes the authenticated <code>/api/health/import</code> endpoint and duplicate protection. Native projects, store declarations and explicit user consent are still required.</p>';$('#modal').showModal()};
 
 load();
+
+// --- page addresses ----------------------------------------------------------------------------
+// /                         home              /help, /help/tickets/5   help, a ticket over it
+// /challenges/12            a challenge       /admin, /admin/challenges  global admins
+// /join/CODE                an invite link: sign in or register, then confirm joining
+// While route() is acting on an address it only replaces it, so following a link adds one history entry, not several.
+let routing=false;
+function setUrl(path,replace){if(location.pathname!==path)history[replace||routing?'replaceState':'pushState']({},'',path)}
+const inviteUrl=code=>`${location.origin}/join/${encodeURIComponent(code)}`;
+const inviteCodeFromPath=()=>{const m=location.pathname.match(/^\/join\/([A-Za-z0-9]+)\/?$/);return m?m[1].toUpperCase():null};
+async function route(){
+  const p=location.pathname;let m;
+  routing=true;
+  try{
+    if((m=p.match(/^\/challenges\/(\d+)\/?$/)))return await openChallenge(Number(m[1]));
+    if((m=p.match(/^\/help\/tickets\/(\d+)\/?$/))){showHelp();setUrl(p,true);return await openTicket(Number(m[1]))}
+    if(/^\/help\/?$/.test(p))return showHelp();
+    if((m=p.match(/^\/admin(\/challenges)?\/?$/))&&me.role==='global_admin'){adminTab=m[1]?'challenges':'users';return await showAdmin()}
+    const code=inviteCodeFromPath();
+    if(code)return await openJoinPrompt(code);
+    showHome();
+  }catch(e){alert(e.message);showHome()}
+  finally{routing=false}
+}
+window.addEventListener('popstate',()=>{if(me){if($('#modal').open)$('#modal').close();route()}});
+$('#modal').addEventListener('close',()=>{const m=location.pathname.match(/^\/help\/tickets\//);if(m)setUrl('/help',true)});
+
+async function copyInviteLink(code,btn){
+  const url=inviteUrl(code);
+  try{await navigator.clipboard.writeText(url);const was=btn.textContent;btn.textContent='Link copied';setTimeout(()=>btn.textContent=was,1800)}
+  catch(e){prompt('Copy this invite link:',url)}
+}
+// On an Android phone without the app's link handling (or before installing it), offer to open the invite in the app.
+const isAndroid=/Android/i.test(navigator.userAgent);
+const appInviteLink=code=>`intent://join/${encodeURIComponent(code)}#Intent;scheme=activetogether;package=com.activetogether.companion;end`;
+function inviteSummary(pv){
+  const c=pv.challenge,what=c.metric==='distance'?`distance (${c.distance_unit==='km'?'km':'miles'})`:'active minutes';
+  const name=pv.team?`the team <b>${esc(pv.team.name)}</b> in <b>${esc(c.name)}</b>`:`<b>${esc(c.name)}</b>`;
+  return {name,detail:`${esc(c.start_date)} → ${esc(c.end_date)} · measures ${what} · ${c.participation==='individual'?'individuals':'teams'} · ${c.members} member${c.members===1?'':'s'}`};
+}
+// Signed out on an invite link: say what it's for above the sign-in / register form.
+async function showInviteBanner(){
+  const code=inviteCodeFromPath(),el=$('#inviteBanner');
+  if(!code){el.classList.add('hidden');return}
+  try{
+    const pv=await api(`/api/join/preview?code=${encodeURIComponent(code)}`),s=inviteSummary(pv);
+    el.innerHTML=`<h2>You're invited</h2><p>Join ${s.name}.</p><p class="muted">${s.detail}</p><p>Sign in, or create an account if you're new, and we'll ask you to confirm joining.</p>${isAndroid?`<p><a class="ghost" href="${appInviteLink(code)}">Have the Android app? Open this invite in the app</a></p>`:''}`;
+  }catch(e){el.innerHTML=`<h2>Invite link</h2><p class="error">${esc(e.message)}</p><p class="muted">Ask whoever sent it for a new link or code.</p>`}
+  el.classList.remove('hidden');
+}
+// Signed in on an invite link: confirm before joining.
+async function openJoinPrompt(code){
+  let pv;
+  try{pv=await api(`/api/join/preview?code=${encodeURIComponent(code)}`)}catch(e){showHome();alert(e.message);return}
+  showHome();setUrl(`/join/${code}`,true);
+  const s=inviteSummary(pv),done=pv.member&&(pv.type==='challenge'||pv.inTeam);
+  s.name=s.name.replace(/^the team/,'Team');
+  $('#modalBody').innerHTML=done
+    ?`<h2>You're already in</h2><div class="invite-card"><p>${s.name}</p><p class="muted">${s.detail}</p></div><div class="btnrow"><button id="jpOpen">Open the challenge</button></div>`
+    :`<h2>Join ${pv.team?'this team':'this challenge'}?</h2><div class="invite-card"><p>${s.name}</p><p class="muted">${s.detail}</p></div>
+      ${pv.member&&pv.team?'<p class="muted">You\'re already in the challenge; this adds you to the team.</p>':''}
+      <div class="btnrow"><button id="jpJoin">Join</button><button type="button" class="ghost" id="jpCancel">Not now</button></div><p id="jpMsg" class="error"></p>`;
+  $('#modal').showModal();
+  const leave=()=>{$('#modal').close();if(location.pathname.startsWith('/join/'))setUrl('/',true)};
+  if(done){$('#jpOpen').onclick=()=>{$('#modal').close();openChallenge(pv.challenge.id)};return}
+  $('#jpCancel').onclick=leave;
+  $('#jpJoin').onclick=async()=>{
+    try{const r=await api('/api/join',{method:'POST',body:JSON.stringify({code})});$('#modal').close();await loadDashboard();await openChallenge(r.challengeId)}
+    catch(e){$('#jpMsg').textContent=e.message}
+  };
+}

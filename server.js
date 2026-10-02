@@ -572,6 +572,18 @@ async function api(req,res,url){
    const valueCols=dist?[unitName,'Minutes']:['Minutes'],values=r=>dist?[r.distance,r.minutes]:[r.minutes];let header,rows;if(type==='teams'){header=['Rank','Team',...valueCols];rows=lb.teams.map((r,i)=>[i+1,r.name,...values(r)])}else{header=['Rank','Name','Email',...valueCols];rows=lb.users.map((r,i)=>[i+1,r.name,r.email,...values(r)])}const csv=[header,...rows].map(r=>r.map(csvEscape).join(',')).join('\r\n'),safeName=challenge.name.replace(/[^a-z0-9]+/gi,'-').toLowerCase()||'challenge';res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="${safeName}-${type}.csv"`});return res.end(csv)}
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!challengeAccess(u.id,cid)&&!isAdmin(u))return send(res,403,{error:'You need an invite code to view this challenge'});const challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});const lb=leaderboard(challenge);return send(res,200,{metric:challengeMetric(challenge),distance_unit:challengeUnit(challenge),participation:isIndividual(challenge)?'individual':'teams',teams:lb.teams.map(({email,...t})=>t),users:lb.users.map(({email,...x})=>x)})}
 
+ // What an invite link is for, so the page (or app) can ask "join X?" first. Works signed out too:
+ // anyone holding the code could join anyway, so naming the challenge reveals nothing more.
+ if(m==='GET'&&url.pathname==='/api/join/preview'){
+   const code=String(url.searchParams.get('code')||'').trim().toUpperCase();
+   const team=code&&db.prepare('SELECT id,name,challenge_id,image_url,(SELECT COUNT(*) FROM team_members z WHERE z.team_id=teams.id) members FROM teams WHERE invite_code=?').get(code);
+   const c=code&&db.prepare(`SELECT id,name,start_date,end_date,metric,distance_unit,participation,(SELECT COUNT(*) FROM challenge_members m WHERE m.challenge_id=challenges.id) members
+     FROM challenges WHERE ${team?'id=?':'invite_code=?'}`).get(team?team.challenge_id:code);
+   if(!c)return send(res,404,{error:'That invite link has expired or the code was not recognised'});
+   const out={code,type:team?'team':'challenge',challenge:c,team:team?{id:team.id,name:team.name,image_url:team.image_url,members:team.members}:null};
+   if(u){out.member=!!challengeAccess(u.id,c.id);out.inTeam=team?!!db.prepare('SELECT 1 FROM team_members WHERE team_id=? AND user_id=?').get(team.id,u.id):null}
+   return send(res,200,out);
+ }
  if(m==='POST'&&url.pathname==='/api/join'){if(!need(res,u))return;const b=await body(req),code=String(b.code||'').trim().toUpperCase();if(!code)return send(res,400,{error:'Invite code required'});const challenge=db.prepare('SELECT * FROM challenges WHERE invite_code=?').get(code);if(challenge){db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(challenge.id,u.id);return send(res,200,{ok:true,type:'challenge',challengeId:challenge.id,name:challenge.name})}const team=db.prepare('SELECT * FROM teams WHERE invite_code=?').get(code);if(team){db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(team.challenge_id,u.id);db.prepare("INSERT OR IGNORE INTO team_members(team_id,user_id,team_role) VALUES(?,?,'member')").run(team.id,u.id);return send(res,200,{ok:true,type:'team',challengeId:team.challenge_id,teamId:team.id,name:team.name})}return send(res,400,{error:'That invite code was not recognised'})}
 
  if(m==='POST'&&url.pathname==='/api/teams'){if(!need(res,u))return;const b=await body(req),cid=Number(b.challenge_id);if(!b.name||!cid)return send(res,400,{error:'challenge_id and name are required'});if(!challengeAccess(u.id,cid))return send(res,403,{error:'Join the challenge before creating a team in it'});if(isIndividual(db.prepare('SELECT participation FROM challenges WHERE id=?').get(cid)))return send(res,400,{error:'This challenge is for individuals - it has no teams'});let imageUrl;try{imageUrl=validateImageUrl(b.image_url)}catch(e){return send(res,400,{error:e.message})}const {id,invite_code}=insertTeam(cid,String(b.name).trim(),u.id,imageUrl||null);return send(res,201,{id,invite_code})}
@@ -903,8 +915,10 @@ async function api(req,res,url){
    return send(res,200,{synced:Object.keys(syncedIn),syncedIn});
  }
  if(m==='GET'&&url.pathname==='/api/app/android'){if(!need(res,u))return;const r=androidRelease();return send(res,200,r?{available:true,version:r.version,versionCode:r.versionCode,size:r.size,published:r.published,sha256:r.sha256}:{available:false})}
+ // The app can't hand its sign-in to the phone's browser, so it asks for a link that works on its own for 15 minutes.
+ if(m==='GET'&&url.pathname==='/api/app/android/link'){if(!need(res,u))return;const dl=`/api/app/android/download?t=${downloadToken(Date.now()+15*60e3)}`;return send(res,200,{url:ORIGIN+dl,path:dl})}
  if(m==='GET'&&url.pathname==='/api/app/android/download'){
-   if(!need(res,u))return;
+   if(!validDownloadToken(url.searchParams.get('t'))&&!need(res,u))return;
    const r=androidRelease();if(!r)return send(res,404,{error:'The Android app has not been published yet'});
    res.writeHead(200,{'Content-Type':'application/vnd.android.package-archive','Content-Length':r.size,'Cache-Control':'no-store',
      'Content-Disposition':`attachment; filename="ActiveTogether-${String(r.version).replace(/[^0-9A-Za-z.\-]/g,'')}.apk"`,'X-Content-Type-Options':'nosniff'});
@@ -915,6 +929,15 @@ async function api(req,res,url){
 // The Android app, published by tools/publish-android.sh onto the data volume (not baked into the
 // image, so a new build needs no redeploy). Signed-in users only.
 const DOWNLOADS_DIR=path.join(DATA,'downloads'),ANDROID_APK=path.join(DOWNLOADS_DIR,'ActiveTogether.apk'),ANDROID_INFO=path.join(DOWNLOADS_DIR,'android.json');
+// Download links: expiry plus an HMAC under a per-process key (a restart just expires them early).
+const DOWNLOAD_KEY=crypto.randomBytes(32);
+const downloadSig=exp=>crypto.createHmac('sha256',DOWNLOAD_KEY).update('android:'+exp).digest('hex').slice(0,32);
+const downloadToken=exp=>`${exp}.${downloadSig(exp)}`;
+function validDownloadToken(t){
+  const [exp,sig]=String(t||'').split('.');
+  if(!exp||!sig||!(Number(exp)>Date.now())||sig.length!==32)return false;
+  return crypto.timingSafeEqual(Buffer.from(sig),Buffer.from(downloadSig(exp)));
+}
 function androidRelease(){
   try{if(!fs.existsSync(ANDROID_APK))return null;const info=JSON.parse(fs.readFileSync(ANDROID_INFO,'utf8'));return {...info,size:fs.statSync(ANDROID_APK).size}}
   catch(e){return null}
@@ -929,7 +952,10 @@ const server=http.createServer(async(req,res)=>{try{const url=new URL(req.url,OR
    res.writeHead(200,{'Content-Type':UPLOAD_MIME[ext]||'application/octet-stream','Cache-Control':'public, max-age=31536000, immutable','X-Content-Type-Options':'nosniff'});
    return fs.createReadStream(f).pipe(res);
  }
- let p=url.pathname==='/'?'index.html':url.pathname.slice(1);p=path.normalize(p).replace(/^\.\.(\/|\\|$)/,'');const f=path.join(__dirname,'public',p);if(!f.startsWith(path.join(__dirname,'public'))||!fs.existsSync(f))return send(res,404,{error:'Not found'});const ext=path.extname(f),types={'.html':'text/html; charset=utf-8','.css':'text/css','.js':'application/javascript','.svg':'image/svg+xml','.ico':'image/x-icon','.png':'image/png'};res.writeHead(200,{'Content-Type':types[ext]||'application/octet-stream','Cache-Control':'no-store'});fs.createReadStream(f).pipe(res)}catch(e){console.error(e);send(res,500,{error:'Server error'})}});// Node's default keepAliveTimeout is 5s, which races a client that reuses a pooled keep-alive
+ let p=url.pathname==='/'?'index.html':url.pathname.slice(1);p=path.normalize(p).replace(/^\.\.(\/|\\|$)/,'');let f=path.join(__dirname,'public',p);if(!f.startsWith(path.join(__dirname,'public')))return send(res,404,{error:'Not found'});
+ // Page addresses (/challenges/12, /join/ABC123, /help...) all load the app, which reads the path itself.
+ if(!fs.existsSync(f)||!fs.statSync(f).isFile()){if(req.method==='GET'&&!path.extname(p))f=path.join(__dirname,'public','index.html');else return send(res,404,{error:'Not found'})}
+ const ext=path.extname(f),types={'.json':'application/json','.html':'text/html; charset=utf-8','.css':'text/css','.js':'application/javascript','.svg':'image/svg+xml','.ico':'image/x-icon','.png':'image/png'};res.writeHead(200,{'Content-Type':types[ext]||'application/octet-stream','Cache-Control':'no-store'});fs.createReadStream(f).pipe(res)}catch(e){console.error(e);send(res,500,{error:'Server error'})}});// Node's default keepAliveTimeout is 5s, which races a client that reuses a pooled keep-alive
 // connection right as the server decides to close it - the client's write lands on a socket the
 // server is already tearing down, seen as a bare ECONNRESET with no HTTP response at all.
 // headersTimeout must exceed keepAliveTimeout or Node logs a warning and clamps it back down.

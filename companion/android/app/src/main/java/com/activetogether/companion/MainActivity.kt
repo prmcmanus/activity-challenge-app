@@ -1,5 +1,6 @@
 package com.activetogether.companion
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,6 +19,14 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         // Keep the background schedule in step with the setting (e.g. after an app update).
         if (vm.prefs.autoSync && vm.prefs.token != null) SyncWorker.schedule(this, vm.prefs.autoSyncHours)
+        if (savedInstanceState == null) vm.openLink(intent?.data)
         setContent { ActiveTogetherTheme { AppRoot(vm) } }
+    }
+
+    /** An invite link tapped while the app is already open. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        vm.openLink(intent.data)
     }
 }

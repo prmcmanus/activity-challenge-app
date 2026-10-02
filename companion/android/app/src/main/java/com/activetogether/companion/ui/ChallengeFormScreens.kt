@@ -48,7 +48,7 @@ private fun textToHtml(text: String): String = text.trim().lines().filter { it.i
 
 /** Share a challenge's invite code through any app (messages, email, chat). */
 fun shareInvite(context: Context, name: String, code: String) {
-    val text = "Join my challenge \"$name\" on Active Together: $SERVER_URL/?code=$code (invite code $code)"
+    val text = "Join my challenge \"$name\" on Active Together: $SERVER_URL/join/$code (or use invite code $code)"
     context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "Share invite"))
 }
 

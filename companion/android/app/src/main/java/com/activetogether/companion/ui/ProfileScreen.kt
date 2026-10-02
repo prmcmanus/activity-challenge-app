@@ -191,6 +191,7 @@ fun MeScreen(vm: AppViewModel, edit: () -> Unit, help: () -> Unit, admin: () -> 
                     Button(onClick = edit) { Icon(Icons.Default.Edit, null); Spacer(Modifier.width(6.dp)); Text("Edit") }
                 }
             }
+            if (vm.update != null) item { UpdateBanner(vm) }
             item { SyncSettingsCard(vm) }
             if (vm.me?.isAdmin == true) item {
                 Button(onClick = admin, modifier = Modifier.fillMaxWidth()) {

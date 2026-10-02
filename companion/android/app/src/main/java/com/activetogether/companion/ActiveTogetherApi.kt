@@ -70,6 +70,29 @@ data class ChallengeDetail(
 fun ChallengeDetail.asChallenge() = Challenge(id, name, descriptionHtml, startDate, endDate, measuresDistance, distanceUnit, individual, role,
     teams.filter { it.mine }.map { MyTeam(it.id, it.name) }, 0.0, 0.0)
 
+/** What an invite link is for. member/inTeam are only known when signed in. */
+data class InvitePreview(val code: String, val isTeam: Boolean, val challengeId: Int, val challengeName: String, val startDate: LocalDate, val endDate: LocalDate,
+    val measuresDistance: Boolean, val distanceUnit: String, val individual: Boolean, val members: Int, val teamName: String?, val teamMembers: Int?,
+    val member: Boolean?, val inTeam: Boolean?) {
+    /** Nothing left to join: in the challenge, and in the team if the link was for one. */
+    val alreadyIn: Boolean get() = member == true && (!isTeam || inTeam == true)
+}
+
+/** The newest Android build published on the website. */
+data class AppRelease(val version: String, val versionCode: Int, val size: Long)
+
+/** The invite code in an invite link: https://.../join/CODE, or activetogether://join/CODE. */
+fun inviteCodeFrom(uri: android.net.Uri?): String? {
+    if (uri == null) return null
+    val segs = uri.pathSegments
+    val code = when (uri.scheme) {
+        "https", "http" -> if (segs.size >= 2 && segs[0] == "join") segs[1] else null
+        "activetogether" -> if (uri.host == "join") segs.firstOrNull() else null
+        else -> null
+    }
+    return code?.uppercase()?.filter { it.isLetterOrDigit() }?.takeIf { it.length in 4..32 }
+}
+
 /** Global admins: every account, and how involved it is. */
 data class AdminUser(val id: Int, val name: String, val email: String, val role: String, val avatarUrl: String?, val createdAt: String,
     val challenges: Int, val activities: Int, val lastActivity: String?, val tickets: Int, val deactivatedAt: String? = null) {
@@ -206,6 +229,24 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         request("/api/teams", "POST", JSONObject().put("challenge_id", challengeId).put("name", name)).getInt("id")
 
     fun joinTeam(teamId: Int) { request("/api/teams/$teamId/join", "POST", JSONObject()) }
+
+    /** Works signed out too, for the sign-in screen's "you're invited" card. */
+    fun invitePreview(code: String): InvitePreview {
+        val r = request("/api/join/preview?code=" + java.net.URLEncoder.encode(code, "UTF-8"))
+        val c = r.getJSONObject("challenge"); val t = r.optJSONObject("team")
+        return InvitePreview(r.getString("code"), r.optString("type") == "team", c.getInt("id"), c.getString("name"),
+            LocalDate.parse(c.getString("start_date")), LocalDate.parse(c.getString("end_date")), c.optString("metric") == "distance",
+            if (c.optString("distance_unit") == "km") "km" else "mi", c.optString("participation") == "individual", c.optInt("members"),
+            t?.optString("name"), t?.optInt("members"),
+            if (r.has("member")) r.optBoolean("member") else null, if (r.has("inTeam") && !r.isNull("inTeam")) r.optBoolean("inTeam") else null)
+    }
+
+    fun androidRelease(): AppRelease? {
+        val r = request("/api/app/android")
+        return if (r.optBoolean("available")) AppRelease(r.getString("version"), r.getInt("versionCode"), r.optLong("size")) else null
+    }
+    /** A download link the phone's browser can open without being signed in (valid for 15 minutes). */
+    fun androidDownloadLink(): String = baseUrl.trimEnd('/') + request("/api/app/android/link").getString("path")
 
     // --- Global admins ---
     fun adminUsers(): List<AdminUser> {

@@ -60,6 +60,7 @@ fun LoginScreen(vm: AppViewModel) {
             Text("Active Together", style = MaterialTheme.typography.headlineMedium, color = Color.White)
             Text("Sign in with your Active Together account to see your challenges, log activity and sync your workouts.",
                 color = Color.White.copy(alpha = 0.9f), textAlign = TextAlign.Center)
+            vm.pendingInvite?.let { InviteSignInCard(it) }
             Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, elevation = CardDefaults.cardElevation(6.dp)) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(email, { email = it }, label = { Text("Email") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -79,8 +80,10 @@ fun LoginScreen(vm: AppViewModel) {
                         if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
                         else Text("Sign in", fontWeight = FontWeight.Bold)
                     }
-                    Text("New here? Create an account and join a challenge at ${SERVER_URL.removePrefix("https://")}, then sign in.",
+                    Text("New here? Create an account at ${SERVER_URL.removePrefix("https://")}, then sign in.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    androidx.compose.material3.TextButton(onClick = { openInBrowser(context, SERVER_URL) }) { Text("Create an account") }
                 }
             }
         }

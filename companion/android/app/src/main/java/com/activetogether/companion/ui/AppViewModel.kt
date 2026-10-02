@@ -9,6 +9,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.activetogether.companion.ActiveTogetherApi
 import com.activetogether.companion.ApiException
+import com.activetogether.companion.AppRelease
+import com.activetogether.companion.BuildConfig
+import com.activetogether.companion.inviteCodeFrom
 import com.activetogether.companion.Candidate
 import com.activetogether.companion.Challenge
 import com.activetogether.companion.ChallengeDetail
@@ -74,6 +77,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val leaderboards = mutableStateOf<Map<Int, Leaderboard>>(emptyMap())
     /** Full challenge records (invite code, teams, whether I can edit), loaded when a challenge is opened. */
     var details by mutableStateOf<Map<Int, ChallengeDetail>>(emptyMap()); private set
+    /** An invite link waiting to be confirmed (kept through signing in). */
+    var pendingInvite by mutableStateOf(prefs.pendingInvite); private set
+    /** A newer build on the website than this one, if there is. */
+    var update by mutableStateOf<AppRelease?>(null); private set
+
+    fun openLink(uri: android.net.Uri?) {
+        val code = inviteCodeFrom(uri) ?: return
+        pendingInvite = code; prefs.pendingInvite = code
+    }
+    fun clearInvite() { pendingInvite = null; prefs.pendingInvite = null }
+
+    suspend fun checkForUpdate() {
+        // Quietly: a failed check shouldn't put up an error.
+        update = runCatching { withContext(Dispatchers.IO) { api().androidRelease() } }.getOrNull()?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }
+    }
+    suspend fun updateLink(): String? = call { it.androidDownloadLink() }
+
     /** The tab screens' pull-to-refresh (and the top-bar refresh button) share this. */
     var topRefreshing by mutableStateOf(false); private set
 
@@ -103,6 +123,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         loadingChallenges = false
         loadActivities(reset = true)
         refreshHelpBadge()
+        checkForUpdate()
         // "Sync when the app opens" half of automatic sync, for phones without background access.
         if (prefs.autoSync && challenges.isNotEmpty()) autoSyncNow(quiet = true)
     }
@@ -179,6 +200,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         call { it.challenges() }?.let { challenges = it }
         refreshActivities()
         refreshHelpBadge()
+        checkForUpdate()
     }
 
     /** Pull-to-refresh / refresh button on the tab screens. Says when it's done, so a refresh that changed nothing still visibly happened. */

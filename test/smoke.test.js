@@ -1893,3 +1893,48 @@ test('the Android app downloads for signed-in users once published', async () =>
   assert.equal(await r.text(), 'PK fake apk bytes');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('invite links: page addresses load the app, the preview says what a code joins, app links verify', async () => {
+  for (const p of ['/join/ABCD2345', '/challenges/1', '/help/tickets/3', '/admin/challenges']) {
+    const r = await fetch(`${origin}${p}`);
+    assert.equal(r.status, 200, p);
+    assert.match(await r.text(), /<script src="\/app\.js">/);
+  }
+  assert.equal((await fetch(`${origin}/nope.png`)).status, 404);
+  const links = await fetch(`${origin}/.well-known/assetlinks.json`);
+  assert.equal(links.headers.get('content-type'), 'application/json');
+  assert.equal((await links.json())[0].target.package_name, 'com.activetogether.companion');
+
+  const ola = await register('Ola Owner');
+  const c = await jsonFetch(`${origin}/api/challenges`, ola.cookie, 'POST', { name: 'Link Challenge', start_date: '2027-10-01', end_date: '2027-10-31' });
+  const t = await jsonFetch(`${origin}/api/teams`, ola.cookie, 'POST', { challenge_id: c.body.id, name: 'Link Team' });
+  const teamCode = (await jsonFetch(`${origin}/api/challenges/${c.body.id}`, ola.cookie)).body.teams[0].invite_code;
+
+  const anon = await (await fetch(`${origin}/api/join/preview?code=${c.body.invite_code.toLowerCase()}`)).json();
+  assert.deepEqual([anon.type, anon.challenge.name, anon.team, anon.member], ['challenge', 'Link Challenge', null, undefined]);
+  const pat = await register('Pat Joiner');
+  const teamPv = (await jsonFetch(`${origin}/api/join/preview?code=${teamCode}`, pat.cookie)).body;
+  assert.deepEqual([teamPv.type, teamPv.team.name, teamPv.challenge.id, teamPv.member, teamPv.inTeam], ['team', 'Link Team', c.body.id, false, false]);
+  await jsonFetch(`${origin}/api/join`, pat.cookie, 'POST', { code: teamCode });
+  const after = (await jsonFetch(`${origin}/api/join/preview?code=${teamCode}`, pat.cookie)).body;
+  assert.deepEqual([after.member, after.inTeam], [true, true]);
+  assert.equal((await fetch(`${origin}/api/join/preview?code=ZZZZZZZZ`)).status, 404);
+  assert.ok(t.body.id);
+});
+
+test('app update links download without a session, briefly', async () => {
+  const dir = path.join(dataDir, 'downloads');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'ActiveTogether.apk'), Buffer.from('PK apk'));
+  fs.writeFileSync(path.join(dir, 'android.json'), JSON.stringify({ version: '9.9.9', versionCode: 99 }));
+  const quinn = await register('Quinn Update');
+  const link = (await jsonFetch(`${origin}/api/app/android/link`, quinn.cookie)).body;
+  assert.match(link.path, /^\/api\/app\/android\/download\?t=\d+\.[0-9a-f]{32}$/);
+  const r = await fetch(`${origin}${link.path}`);
+  assert.equal(r.status, 200);
+  assert.equal(await r.text(), 'PK apk');
+  assert.equal((await fetch(`${origin}${link.path.replace(/.$/, c => c === '0' ? '1' : '0')}`)).status, 401);
+  assert.equal((await fetch(`${origin}/api/app/android/download?t=1.${'0'.repeat(32)}`)).status, 401);
+  assert.equal((await fetch(`${origin}/api/app/android/link`)).status, 401);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

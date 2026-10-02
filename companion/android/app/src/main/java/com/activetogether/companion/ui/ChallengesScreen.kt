@@ -83,6 +83,7 @@ fun ChallengesScreen(vm: AppViewModel, newChallenge: () -> Unit, join: () -> Uni
                         color = Color.White.copy(alpha = 0.9f), modifier = Modifier.padding(top = 4.dp))
                 })
             }
+            if (vm.update != null) item { UpdateBanner(vm) }
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = newChallenge, modifier = Modifier.weight(1f)) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("New challenge") }

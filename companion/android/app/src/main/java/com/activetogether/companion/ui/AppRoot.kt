@@ -57,6 +57,8 @@ fun AppRoot(vm: AppViewModel) {
     val route = entry?.destination?.route ?: "challenges"
     val isTab = TABS.any { it.route == route }
     val snackbar = remember { SnackbarHostState() }
+    // An invite link (opened now, or before signing in) goes to its confirm screen.
+    LaunchedEffect(vm.pendingInvite) { vm.pendingInvite?.let { nav.navigate("invite/$it") { launchSingleTop = true } } }
     LaunchedEffect(vm.message) { vm.message?.let { snackbar.showSnackbar(it); vm.message = null } }
 
     val title = when {
@@ -73,6 +75,7 @@ fun AppRoot(vm: AppViewModel) {
         route.startsWith("ticket/") -> "Ticket"
         route == "support" -> "Support dashboard"
         route == "admin" -> "Admin"
+        route.startsWith("invite/") -> "Invitation"
         route == "log" -> "Log activity"
         else -> "Active Together"
     }
@@ -143,6 +146,11 @@ fun AppRoot(vm: AppViewModel) {
             composable("log") { LogActivityScreen(vm) { nav.popBackStack() } }
             composable("sync") { SyncScreen(vm) }
             composable("profile") { MeScreen(vm, edit = { nav.navigate("editProfile") }, help = { nav.navigate("help") }, admin = { nav.navigate("admin") }) }
+            composable("invite/{code}") {
+                InviteScreen(vm, it.arguments!!.getString("code")!!,
+                    opened = { id -> nav.navigate("challenge/$id") { popUpTo("challenges") } },
+                    dismiss = { if (!nav.popBackStack()) nav.navigate("challenges") })
+            }
             composable("admin") { AdminScreen(vm) { id -> nav.navigate("challenge/$id") } }
             composable("help") {
                 HelpScreen(vm, newTicket = { nav.navigate("help/new") }, openTicket = { id -> nav.navigate("ticket/$id") }, dashboard = { nav.navigate("support") })

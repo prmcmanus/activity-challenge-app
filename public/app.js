@@ -180,7 +180,7 @@ function renderChallenge(){
   // The server already sanitized this on write (POST/PATCH /api/challenges) - safe to render as-is.
   $('#challengeDescription').innerHTML=c.description||'';
   $('#challengeDescription').classList.toggle('hidden',!c.description);
-  $('#challengeCode').innerHTML=`<span class="linkrow">Invite link: <code>${esc(inviteUrl(c.invite_code))}</code><button type="button" class="ghost" data-copylink="${esc(c.invite_code)}">Copy link</button></span><span class="muted" style="color:#fff">Or share the code <b>${esc(c.invite_code)}</b>. Anyone with it can join this challenge.</span>`;
+  $('#challengeCode').innerHTML=`<span class="invite-box"><span class="invite-label">Invite people</span><span class="linkrow"><code>${esc(inviteUrl(c.invite_code))}</code><button type="button" data-copylink="${esc(c.invite_code)}">Copy link</button></span><span class="invite-note">Or share the code <b>${esc(c.invite_code)}</b>. Anyone with the link or code can join this challenge.</span></span>`;
   $('#challengeActions').innerHTML=c.canManage?'<button class="ghost" data-editchallenge="1">Edit challenge</button>':'';
   if(c.canManage)$('[data-editchallenge]').onclick=()=>openEditChallenge(c);
   $('#exportTeamsCsv').classList.toggle('hidden',!c.canManage);

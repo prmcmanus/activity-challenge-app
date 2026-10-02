@@ -12,8 +12,8 @@ android {
         applicationId = "com.activetogether.companion"
         minSdk = 28
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.3.0"
+        versionCode = 10
+        versionName = "1.4.0"
         buildConfigField("String", "SERVER_URL", "\"https://activetogether.team\"")
         manifestPlaceholders["cleartext"] = "false"
     }

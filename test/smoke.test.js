@@ -1820,3 +1820,55 @@ test('global admins can list every user and challenge, and open any challenge th
   const r = await fetch(`${origin}/api/dashboard`, { headers: { cookie: zed.cookie } });
   assert.equal(r.headers.get('cache-control'), 'no-store');
 });
+
+test('global admins can deactivate, reactivate and delete accounts, with guards', async () => {
+  const admin = await adminCookie();
+  const login = (email) => fetch(`${origin}/api/mobile/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password: 'SuperSecret123!' }) });
+  const dee = await register('Dee Activate');
+  const owner = await register('Own Er');
+  const c = await jsonFetch(`${origin}/api/challenges`, dee.cookie, 'POST', { name: 'Dee Made This', start_date: '2027-10-01', end_date: '2027-10-31' });
+  await jsonFetch(`${origin}/api/join`, owner.cookie, 'POST', { code: c.body.invite_code });
+  const t = await jsonFetch(`${origin}/api/teams`, dee.cookie, 'POST', { challenge_id: c.body.id, name: 'Dee Team' });
+  await jsonFetch(`${origin}/api/activities`, dee.cookie, 'POST', { challenge_id: c.body.id, team_id: t.body.id, activity_type: 'Run', minutes: 30, activity_date: '2027-10-02' });
+  await jsonFetch(`${origin}/api/tickets`, dee.cookie, 'POST', { type: 'bug', title: 'It broke', description: 'details' });
+  const users = async () => (await jsonFetch(`${origin}/api/admin/users`, admin)).body.users;
+  const deeId = (await users()).find(x => x.email === dee.email).id;
+
+  // members can't
+  assert.equal((await jsonFetch(`${origin}/api/admin/users/${deeId}`, owner.cookie, 'DELETE')).status, 403);
+
+  // deactivate: signed out everywhere, can't sign in, activity still counts
+  assert.equal((await jsonFetch(`${origin}/api/admin/users/${deeId}`, admin, 'PATCH', { active: false })).status, 200);
+  assert.deepEqual((await jsonFetch(`${origin}/api/me`, dee.cookie)).body, { user: null });
+  const blocked = await login(dee.email);
+  assert.equal(blocked.status, 403);
+  assert.match((await blocked.json()).error, /deactivated/);
+  assert.ok((await users()).find(x => x.id === deeId).deactivated_at);
+  const board = await jsonFetch(`${origin}/api/challenges/${c.body.id}/leaderboard`, owner.cookie);
+  assert.equal(board.body.users.find(x => x.name === 'Dee Activate').minutes, 30);
+
+  // reactivate
+  await jsonFetch(`${origin}/api/admin/users/${deeId}`, admin, 'PATCH', { active: true });
+  assert.equal((await login(dee.email)).status, 200);
+
+  // guards: not yourself, not the built-in admin (being another admin means one always remains)
+  const me = (await jsonFetch(`${origin}/api/me`, admin)).body.user;
+  assert.match((await jsonFetch(`${origin}/api/admin/users/${me.id}`, admin, 'PATCH', { active: false })).body.error, /your own account/);
+  assert.match((await jsonFetch(`${origin}/api/admin/users/${me.id}`, admin, 'DELETE')).body.error, /your own account/);
+  const ada = await register('Ada Admin');
+  const adaId = (await users()).find(x => x.email === ada.email).id;
+  await jsonFetch(`${origin}/api/admin/users/${adaId}`, admin, 'PATCH', { role: 'global_admin' });
+  const adaLogin = await (await login(ada.email)).json();
+  const asAda = (path, method, body) => fetch(`${origin}${path}`, { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adaLogin.sessionToken}` }, body: body && JSON.stringify(body) }).then(async r => ({ status: r.status, body: await r.json() }));
+  assert.match((await asAda(`/api/admin/users/${me.id}`, 'DELETE')).body.error, /built-in admin/);
+  const admin2 = await adminCookie();
+
+  // delete: the account, its activity and tickets go; the challenge and team it made stay
+  assert.equal((await jsonFetch(`${origin}/api/admin/users/${deeId}`, admin2, 'DELETE')).status, 200);
+  assert.ok(!(await jsonFetch(`${origin}/api/admin/users`, admin2)).body.users.some(x => x.id === deeId));
+  assert.equal((await login(dee.email)).status, 401);
+  const ch = (await jsonFetch(`${origin}/api/admin/challenges`, admin2)).body.challenges.find(x => x.id === c.body.id);
+  assert.deepEqual([ch.activities, ch.teams, ch.members], [0, 1, 1]);
+  const tickets = (await jsonFetch(`${origin}/api/tickets?scope=all&status=`, admin2)).body.tickets;
+  assert.ok(!tickets.some(x => x.title === 'It broke'));
+});

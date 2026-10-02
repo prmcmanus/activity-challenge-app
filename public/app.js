@@ -400,7 +400,7 @@ function renderAdminUsers(){
   $('#adminUserCount').textContent=q?`${rows.length} of ${adminUsers.length}`:String(adminUsers.length);
   $('#adminUserList').innerHTML=rows.map(x=>`<div class="adminrow"><div><div class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</div>
     <div class="facts"><span>${esc(x.email)}</span><span>${plural(x.challenges,'challenge','challenges')}</span><span>${plural(x.activities,'activity','activities')}</span><span>${x.last_activity?`last active ${esc(x.last_activity)}`:'no activity yet'}</span>${x.tickets?`<span>${plural(x.tickets,'ticket','tickets')}</span>`:''}<span>joined ${esc(String(x.created_at||'').slice(0,10))}</span></div></div>
-    <div class="btnrow">${statusPillFor(x.role,x.role==='global_admin'?'Global admin':'Member')}<button class="ghost" data-edituser="${x.id}">Edit</button></div></div>`).join('')||'<p class="muted">No users match.</p>';
+    <div class="btnrow">${x.deactivated_at?statusPillFor('deactivated','Deactivated'):''}${statusPillFor(x.role,x.role==='global_admin'?'Global admin':'Member')}<button class="ghost" data-edituser="${x.id}">Edit</button></div></div>`).join('')||'<p class="muted">No users match.</p>';
   $all('[data-edituser]').forEach(b=>{const x=adminUsers.find(x2=>x2.id===Number(b.dataset.edituser));b.onclick=()=>openEditUser(x)});
 }
 function renderAdminChallenges(){
@@ -439,8 +439,22 @@ function openEditUser(x){
       <label>Reset password (leave blank to keep current)<input id="euPassword" type="password" minlength="8"></label>
       <button>Save changes</button>
     </form>
-    <p id="euMsg" class="error"></p>`;
+    <p id="euMsg" class="error"></p>
+    ${x.id===me.id?'':`<div class="danger-zone"><h2>${x.deactivated_at?'Deactivated':'Deactivate or delete'}</h2>
+      <p class="muted">${x.deactivated_at?`Deactivated ${esc(String(x.deactivated_at).slice(0,10))}. They can't sign in; their activity still counts.`:'Deactivating signs them out everywhere and stops them signing in. Their activity stays on the leaderboards, and you can reactivate them at any time.'}</p>
+      <div class="btnrow"><button type="button" class="${x.deactivated_at?'secondary':'danger'}" id="euActive">${x.deactivated_at?'Reactivate account':'Deactivate account'}</button><button type="button" class="danger" id="euDelete">Delete account</button></div>
+      <p class="muted">Deleting removes the account with all their activity, routes, team memberships and tickets, for good. Challenges and teams they created stay, credited to you.</p></div>`}`;
   $('#modal').showModal();
+  if($('#euActive'))$('#euActive').onclick=async()=>{
+    if(!x.deactivated_at&&!confirm(`Deactivate ${x.name}? They'll be signed out and can't sign in until reactivated.`))return;
+    try{await api(`/api/admin/users/${x.id}`,{method:'PATCH',body:JSON.stringify({active:!!x.deactivated_at})});$('#modal').close();renderAdmin()}catch(err){$('#euMsg').textContent=err.message}
+  };
+  if($('#euDelete'))$('#euDelete').onclick=async()=>{
+    const typed=prompt(`This permanently deletes ${x.name} (${x.email}) and everything they logged. Type their email to confirm.`);
+    if(typed===null)return;
+    if(typed.trim().toLowerCase()!==x.email.toLowerCase()){$('#euMsg').textContent='The email did not match, so nothing was deleted.';return}
+    try{await api(`/api/admin/users/${x.id}`,{method:'DELETE'});$('#modal').close();renderAdmin()}catch(err){$('#euMsg').textContent=err.message}
+  };
   $('#editUserForm').onsubmit=async e=>{
     e.preventDefault();
     const payload={name:$('#euName').value.trim(),email:$('#euEmail').value.trim(),role:$('#euRole').value};

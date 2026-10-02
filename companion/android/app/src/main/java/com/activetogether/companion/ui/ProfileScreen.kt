@@ -30,6 +30,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -166,7 +167,7 @@ fun UserProfileScreen(vm: AppViewModel, userId: Int) {
 /** Me: my profile exactly as challenge-mates see it, then settings. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MeScreen(vm: AppViewModel, edit: () -> Unit, help: () -> Unit) {
+fun MeScreen(vm: AppViewModel, edit: () -> Unit, help: () -> Unit, admin: () -> Unit) {
     val me = vm.me
     val scope = rememberCoroutineScope()
     var profile by remember { mutableStateOf<Profile?>(null) }
@@ -191,6 +192,11 @@ fun MeScreen(vm: AppViewModel, edit: () -> Unit, help: () -> Unit) {
                 }
             }
             item { SyncSettingsCard(vm) }
+            if (vm.me?.isAdmin == true) item {
+                Button(onClick = admin, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.AdminPanelSettings, null); Spacer(Modifier.width(8.dp)); Text("Admin: users and challenges")
+                }
+            }
             item {
                 OutlinedButton(onClick = help, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.AutoMirrored.Filled.HelpOutline, null); Spacer(Modifier.width(8.dp))

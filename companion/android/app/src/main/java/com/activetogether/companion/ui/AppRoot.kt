@@ -72,6 +72,7 @@ fun AppRoot(vm: AppViewModel) {
         route == "help/new" -> "New ticket"
         route.startsWith("ticket/") -> "Ticket"
         route == "support" -> "Support dashboard"
+        route == "admin" -> "Admin"
         route == "log" -> "Log activity"
         else -> "Active Together"
     }
@@ -123,8 +124,10 @@ fun AppRoot(vm: AppViewModel) {
                 ChallengeDetailScreen(vm, id, edit = { nav.navigate("challenge/$id/edit") }) { uid -> nav.navigate("user/$uid") }
             }
             composable("challenge/{id}/edit", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
-                // Saved: back to the challenge. Deleted: all the way back to the list.
-                ChallengeFormScreen(vm, it.arguments!!.getInt("id")) { id -> if (id != null) nav.popBackStack() else nav.popBackStack("challenges", inclusive = false) }
+                // Saved: back to the challenge. Deleted: back to the admin list if that's where it was opened from, else the challenge list.
+                ChallengeFormScreen(vm, it.arguments!!.getInt("id")) { id ->
+                    if (id != null) nav.popBackStack() else if (!nav.popBackStack("admin", inclusive = false)) nav.popBackStack("challenges", inclusive = false)
+                }
             }
             composable("activity") { ActivityListScreen(vm) { a -> nav.navigate("activity/${a.id}") } }
             composable("activity/{id}", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
@@ -139,7 +142,8 @@ fun AppRoot(vm: AppViewModel) {
             }
             composable("log") { LogActivityScreen(vm) { nav.popBackStack() } }
             composable("sync") { SyncScreen(vm) }
-            composable("profile") { MeScreen(vm, edit = { nav.navigate("editProfile") }, help = { nav.navigate("help") }) }
+            composable("profile") { MeScreen(vm, edit = { nav.navigate("editProfile") }, help = { nav.navigate("help") }, admin = { nav.navigate("admin") }) }
+            composable("admin") { AdminScreen(vm) { id -> nav.navigate("challenge/$id") } }
             composable("help") {
                 HelpScreen(vm, newTicket = { nav.navigate("help/new") }, openTicket = { id -> nav.navigate("ticket/$id") }, dashboard = { nav.navigate("support") })
             }

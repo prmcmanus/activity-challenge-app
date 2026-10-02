@@ -66,6 +66,20 @@ data class ChallengeDetail(
     val canManage: Boolean, val inviteCode: String, val teams: List<TeamInfo>,
 )
 
+/** A challenge record as a [Challenge], for opening one I'm not in (a global admin): no team of mine, nothing logged by me. */
+fun ChallengeDetail.asChallenge() = Challenge(id, name, descriptionHtml, startDate, endDate, measuresDistance, distanceUnit, individual, role,
+    teams.filter { it.mine }.map { MyTeam(it.id, it.name) }, 0.0, 0.0)
+
+/** Global admins: every account, and how involved it is. */
+data class AdminUser(val id: Int, val name: String, val email: String, val role: String, val avatarUrl: String?, val createdAt: String,
+    val challenges: Int, val activities: Int, val lastActivity: String?, val tickets: Int, val deactivatedAt: String? = null) {
+    val isAdmin: Boolean get() = role == "global_admin"
+}
+/** Global admins: every challenge on the site. state is running | upcoming | finished. */
+data class AdminChallenge(val id: Int, val name: String, val startDate: LocalDate, val endDate: LocalDate, val measuresDistance: Boolean,
+    val distanceUnit: String, val individual: Boolean, val inviteCode: String, val owners: String?, val members: Int, val teams: Int,
+    val activities: Int, val state: String, val purgeDate: String)
+
 /** What a new or edited challenge is set to. description is null to leave it unchanged. */
 data class ChallengeFields(val name: String, val description: String?, val startDate: LocalDate, val endDate: LocalDate,
     val measuresDistance: Boolean, val distanceUnit: String, val individual: Boolean)
@@ -192,6 +206,37 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         request("/api/teams", "POST", JSONObject().put("challenge_id", challengeId).put("name", name)).getInt("id")
 
     fun joinTeam(teamId: Int) { request("/api/teams/$teamId/join", "POST", JSONObject()) }
+
+    // --- Global admins ---
+    fun adminUsers(): List<AdminUser> {
+        val a = request("/api/admin/users").getJSONArray("users")
+        return (0 until a.length()).map { i -> a.getJSONObject(i).let { u ->
+            fun str(k: String) = if (u.isNull(k)) null else u.optString(k).takeIf { it.isNotBlank() }
+            AdminUser(u.getInt("id"), u.getString("name"), u.getString("email"), u.optString("role", "member"), str("avatar_url"),
+                u.optString("created_at").take(10), u.optInt("challenges"), u.optInt("activities"), str("last_activity"), u.optInt("tickets"), str("deactivated_at")?.take(10))
+        } }
+    }
+    fun adminChallenges(): List<AdminChallenge> {
+        val a = request("/api/admin/challenges").getJSONArray("challenges")
+        return (0 until a.length()).map { i -> a.getJSONObject(i).let { c ->
+            AdminChallenge(c.getInt("id"), c.getString("name"), LocalDate.parse(c.getString("start_date")), LocalDate.parse(c.getString("end_date")),
+                c.optString("metric") == "distance", if (c.optString("distance_unit") == "km") "km" else "mi", c.optString("participation") == "individual",
+                c.optString("invite_code"), if (c.isNull("owners")) (if (c.isNull("creator_name")) null else c.optString("creator_name")) else c.optString("owners"),
+                c.optInt("members"), c.optInt("teams"), c.optInt("activities"), c.optString("state"), c.optString("purge_date"))
+        } }
+    }
+    /** password: blank keeps the current one (setting one signs that person out everywhere). */
+    fun adminUpdateUser(id: Int, name: String, email: String, role: String, password: String) {
+        request("/api/admin/users/$id", "PATCH", JSONObject().put("name", name).put("email", email).put("role", role)
+            .apply { if (password.isNotEmpty()) put("password", password) })
+    }
+    /** Deactivated accounts can't sign in (and are signed out now); their activity still counts. */
+    fun adminSetActive(id: Int, active: Boolean) { request("/api/admin/users/$id", "PATCH", JSONObject().put("active", active)) }
+    /** Deletes the account with its activity, routes, memberships and tickets. */
+    fun adminDeleteUser(id: Int) { request("/api/admin/users/$id", "DELETE") }
+    fun adminCreateUser(name: String, email: String, role: String, password: String) {
+        request("/api/admin/users", "POST", JSONObject().put("name", name).put("email", email).put("role", role).put("password", password))
+    }
 
     fun leaderboard(challengeId: Int): Leaderboard {
         val r = request("/api/challenges/$challengeId/leaderboard")

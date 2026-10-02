@@ -30,6 +30,8 @@ ensureColumn('users','avatar_url','TEXT');
 //   visible to challenge members whatever this says, and routes are never shared at any level.
 ensureColumn('users','bio','TEXT');
 ensureColumn('users','profile_sharing',"TEXT NOT NULL DEFAULT 'summary'");
+// Set when an admin deactivates the account: it can't sign in, but its activity still counts.
+ensureColumn('users','deactivated_at','TEXT');
 // Help & support: bug reports, feature requests and questions, as tickets with a conversation.
 // owner_seen_at / admin_seen_at against last_reply_at / last_user_reply_at drive the "new reply"
 // badges on each side; internal comments are admin-only notes the reporter never sees.
@@ -177,7 +179,7 @@ async function verifyRecaptcha(token,ip){
     return j.success===true;
   }catch(e){console.error('reCAPTCHA verification request failed',e);return false}
 }
-function attemptLogin(email,password){const x=db.prepare('SELECT * FROM users WHERE email=?').get(String(email||'').toLowerCase());if(!x||!verify(password||'',x.password_hash))return null;const t=startSession(x.id);return {sessionToken:t,user:{id:x.id,email:x.email,name:x.name,role:x.role,avatarUrl:x.avatar_url}}}
+function attemptLogin(email,password){const x=db.prepare('SELECT * FROM users WHERE email=?').get(String(email||'').toLowerCase());if(!x||!verify(password||'',x.password_hash))return null;if(x.deactivated_at)return {deactivated:true};const t=startSession(x.id);return {sessionToken:t,user:{id:x.id,email:x.email,name:x.name,role:x.role,avatarUrl:x.avatar_url}}}
 
 // Excludes 0/O/1/I/L to avoid transcription mistakes when someone reads a code aloud or off a screen.
 const CODE_ALPHABET='ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -274,7 +276,7 @@ const body=async(req,maxBytes=1e6)=>{
 const csvEscape=v=>{const s=String(v??'');return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
 const cookies=req=>Object.fromEntries((req.headers.cookie||'').split(';').filter(Boolean).map(x=>x.trim().split('=')));
 function sessionToken(req){const bearer=(req.headers.authorization||'').match(/^Bearer (.+)$/i);return bearer?.[1]||cookies(req).session||null}
-function auth(req){const t=sessionToken(req);if(!t)return null;return db.prepare(`SELECT u.id,u.email,u.name,u.role,u.avatar_url,u.bio,u.profile_sharing FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>datetime('now')`).get(crypto.createHash('sha256').update(t).digest('hex'))||null}
+function auth(req){const t=sessionToken(req);if(!t)return null;return db.prepare(`SELECT u.id,u.email,u.name,u.role,u.avatar_url,u.bio,u.profile_sharing FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>datetime('now') AND u.deactivated_at IS NULL`).get(crypto.createHash('sha256').update(t).digest('hex'))||null}
 const need=(res,u,roles)=>{if(!u){send(res,401,{error:'Sign in required'});return false}if(roles&&!roles.includes(u.role)){send(res,403,{error:'Not authorised'});return false}return true};
 const setSessionCookie=t=>({'Set-Cookie':`session=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800`});
 function startSession(uid){const t=crypto.randomBytes(32).toString('hex'),th=crypto.createHash('sha256').update(t).digest('hex');db.prepare("INSERT INTO sessions VALUES(?,?,datetime('now','+7 days'))").run(th,uid);return t}
@@ -437,6 +439,14 @@ const TICKET_TYPES=['bug','feature','question'];
 const TICKET_STATUSES=['new','in_progress','planned','done','declined'];
 const TICKET_RATE_MAX=Number(process.env.TICKET_RATE_LIMIT_MAX||20),TICKET_RATE_WINDOW_MS=60*60_000;
 const isAdmin=u=>u&&u.role==='global_admin';
+const DEACTIVATED_MSG='This account has been deactivated. Contact an administrator if you think that is a mistake.';
+// Guards for admin changes to an account: never lock yourself out, and always leave one working global admin.
+function adminUserChangeError(u,target,{removesAdmin}){
+  if(target.id===u.id)return 'You cannot do that to your own account';
+  if(removesAdmin&&target.role==='global_admin'&&!target.deactivated_at&&
+     db.prepare("SELECT COUNT(*) n FROM users WHERE role='global_admin' AND deactivated_at IS NULL").get().n<=1)return 'This is the only active global admin - make someone else an admin first';
+  return null;
+}
 // A ticket row as the list and detail views want it, with the badge for whoever is looking: the
 // reporter sees "unread" when an admin replied or changed it since they last looked; an admin sees
 // it when the reporter wrote since any admin last looked.
@@ -472,6 +482,7 @@ async function api(req,res,url){
    if(!(await verifyRecaptcha(b.recaptchaToken,ip)))return send(res,400,{error:'Captcha verification failed. Please try again.'});
    const result=attemptLogin(b.email,b.password);
    if(!result)return send(res,401,{error:'Invalid email or password'});
+   if(result.deactivated)return send(res,403,{error:DEACTIVATED_MSG});
    return send(res,200,{ok:true,...result},setSessionCookie(result.sessionToken));
  }
  // Bearer-token login for the Android/iOS companion apps, which have no web page to render a
@@ -481,6 +492,7 @@ async function api(req,res,url){
    if(hitRateLimit('mobilelogin:'+ip,AUTH_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many sign-in attempts from this network. Please try again later.'});
    const b=await body(req),result=attemptLogin(b.email,b.password);
    if(!result)return send(res,401,{error:'Invalid email or password'});
+   if(result.deactivated)return send(res,403,{error:DEACTIVATED_MSG});
    return send(res,200,{ok:true,...result});
  }
  if(m==='POST'&&url.pathname==='/api/logout'){if(u){const t=sessionToken(req);db.prepare('DELETE FROM sessions WHERE token_hash=?').run(crypto.createHash('sha256').update(t).digest('hex'))}return send(res,200,{ok:true},{'Set-Cookie':'session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})}
@@ -773,7 +785,7 @@ async function api(req,res,url){
    return send(res,200,{ok:true});
  }
  // Global admins: every user, with how involved they are.
- if(m==='GET'&&url.pathname==='/api/admin/users'){if(!need(res,u,['global_admin']))return;return send(res,200,{users:db.prepare(`SELECT us.id,us.email,us.name,us.role,us.created_at,us.avatar_url,
+ if(m==='GET'&&url.pathname==='/api/admin/users'){if(!need(res,u,['global_admin']))return;return send(res,200,{users:db.prepare(`SELECT us.id,us.email,us.name,us.role,us.created_at,us.avatar_url,us.deactivated_at,
    (SELECT COUNT(*) FROM challenge_members cm WHERE cm.user_id=us.id) challenges,
    (SELECT COUNT(*) FROM activities a WHERE a.user_id=us.id) activities,
    (SELECT MAX(a.activity_date) FROM activities a WHERE a.user_id=us.id) last_activity,
@@ -797,8 +809,11 @@ async function api(req,res,url){
  if(m==='POST'&&url.pathname==='/api/admin/users'){if(!need(res,u,['global_admin']))return;const b=await body(req);try{const r=db.prepare('INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,?)').run(String(b.email).toLowerCase(),b.name,hash(b.password),b.role||'member');return send(res,201,{id:Number(r.lastInsertRowid)})}catch(e){return send(res,400,{error:'Email already exists or fields are invalid'})}}
  if(m==='PATCH'&&url.pathname.match(/^\/api\/admin\/users\/\d+$/)){
    if(!need(res,u,['global_admin']))return;
-   const id=Number(url.pathname.split('/').pop()),b=await body(req);
-   if(!db.prepare('SELECT id FROM users WHERE id=?').get(id))return send(res,404,{error:'User not found'});
+   const id=Number(url.pathname.split('/').pop()),b=await body(req),target=db.prepare('SELECT id,role,deactivated_at FROM users WHERE id=?').get(id);
+   if(!target)return send(res,404,{error:'User not found'});
+   const deactivating=b.active===false&&!target.deactivated_at,demoting=b.role!==undefined&&b.role!=='global_admin';
+   if(deactivating||(demoting&&target.role==='global_admin')){const err=adminUserChangeError(u,target,{removesAdmin:true});if(err)return send(res,400,{error:err})}
+   if(b.role!==undefined&&!['member','global_admin'].includes(b.role))return send(res,400,{error:'Unknown role'});
    const name=b.name!==undefined?String(b.name).trim():undefined;
    if(name!==undefined&&!name)return send(res,400,{error:'Name cannot be empty'});
    const email=b.email!==undefined?String(b.email).toLowerCase().trim():undefined;
@@ -809,8 +824,30 @@ async function api(req,res,url){
      updateUserFields(id,{name,email,passwordHash});
      if(b.role!==undefined)db.prepare('UPDATE users SET role=? WHERE id=?').run(b.role,id);
    }catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
-   if(passwordHash)db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+   if(b.active!==undefined)db.prepare('UPDATE users SET deactivated_at=? WHERE id=?').run(b.active?null:(target.deactivated_at||nowIso()),id);
+   // A new password or deactivation ends every session that account has open.
+   if(passwordHash||deactivating)db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
    return send(res,200,{ok:true})
+ }
+ // Delete an account for good: its activity and routes, memberships and tickets go with it.
+ // Challenges and teams it created stay (other people are in them), credited to the admin doing the delete.
+ if(m==='DELETE'&&url.pathname.match(/^\/api\/admin\/users\/\d+$/)){
+   if(!need(res,u,['global_admin']))return;
+   const id=Number(url.pathname.split('/').pop()),target=db.prepare('SELECT id,email,role,deactivated_at FROM users WHERE id=?').get(id);
+   if(!target)return send(res,404,{error:'User not found'});
+   const err=adminUserChangeError(u,target,{removesAdmin:true});if(err)return send(res,400,{error:err});
+   if(target.email===seedEmail)return send(res,400,{error:'This is the built-in admin account from the server settings - it would be re-created on restart. Deactivate it instead.'});
+   try{
+     db.exec('BEGIN');
+     db.prepare('DELETE FROM activities WHERE user_id=?').run(id);
+     db.prepare('UPDATE challenges SET created_by=? WHERE created_by=?').run(u.id,id);
+     db.prepare('UPDATE teams SET created_by=? WHERE created_by=?').run(u.id,id);
+     db.prepare('UPDATE invites SET created_by=? WHERE created_by=?').run(u.id,id);
+     db.prepare('DELETE FROM users WHERE id=?').run(id);
+     db.exec('COMMIT');
+   }catch(e){db.exec('ROLLBACK');throw e}
+   pruneRoutes();
+   return send(res,200,{ok:true});
  }
 
  if(m==='GET'&&url.pathname==='/api/health/status'){if(!need(res,u))return;return send(res,200,{healthConnect:{platform:'Android',mode:'native-companion-required'},healthKit:{platform:'iOS',mode:'native-companion-required'},acceptedRecord:'exercise session duration and distance',uploadEndpoint:'/api/health/import'})}

@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.activetogether.companion.Challenge
+import com.activetogether.companion.asChallenge
 import com.activetogether.companion.SERVER_URL
 import java.time.LocalDate
 
@@ -121,8 +122,9 @@ fun ChallengesScreen(vm: AppViewModel, newChallenge: () -> Unit, join: () -> Uni
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, openProfile: (Int) -> Unit) {
-    val c = vm.challenges.firstOrNull { it.id == challengeId } ?: run { Loading(); return }
     LaunchedEffect(challengeId) { vm.loadLeaderboard(challengeId); vm.loadDetail(challengeId) }
+    // A global admin can open a challenge they haven't joined; it's not on their dashboard, so it comes from the full record.
+    val c = vm.challenges.firstOrNull { it.id == challengeId } ?: vm.details[challengeId]?.asChallenge() ?: run { Loading(); return }
     val board = vm.leaderboards.value[challengeId]
     val detail = vm.details[challengeId]
     val context = LocalContext.current

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -18,7 +19,16 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.GroupAdd
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -61,19 +71,25 @@ private fun stateLabel(c: Challenge): String {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun ChallengesScreen(vm: AppViewModel, open: (Challenge) -> Unit) {
-    val scope = rememberCoroutineScope()
-    var refreshing by remember { mutableStateOf(false) }
-    PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; vm.refreshTopLevel(); refreshing = false } }) {
-        LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+fun ChallengesScreen(vm: AppViewModel, newChallenge: () -> Unit, join: () -> Unit, open: (Challenge) -> Unit) {
+    // Box and list both fill the screen: with only a card or two, a pull on the empty space below
+    // them otherwise lands outside the list and nothing happens.
+    PullToRefreshBox(isRefreshing = vm.topRefreshing, onRefresh = { vm.refreshTop() }, modifier = Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 Hero(LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("EEEE d MMMM", java.util.Locale.getDefault())), "Hi ${vm.me?.name?.substringBefore(' ') ?: ""}".trim(), below = {
                     Text("${vm.challenges.count { it.isActive }} active challenge${if (vm.challenges.count { it.isActive } == 1) "" else "s"}",
                         color = Color.White.copy(alpha = 0.9f), modifier = Modifier.padding(top = 4.dp))
                 })
             }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = newChallenge, modifier = Modifier.weight(1f)) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("New challenge") }
+                    OutlinedButton(onClick = join, modifier = Modifier.weight(1f)) { Icon(Icons.Default.GroupAdd, null); Spacer(Modifier.width(6.dp)); Text("Join with code") }
+                }
+            }
             if (vm.challenges.isEmpty() && !vm.loadingChallenges) {
-                item { SectionCard { EmptyNote("You're not in a challenge yet. Join one with an invite code at ${SERVER_URL.removePrefix("https://")}, then pull down to refresh.") } }
+                item { SectionCard { EmptyNote("You're not in a challenge yet. Start one, or join with an invite code someone shared with you.") } }
             }
             items(vm.challenges.sortedWith(compareBy<Challenge> { !it.isActive }.thenByDescending { it.startDate }), key = { it.id }) { c ->
                 SectionCard(modifier = Modifier.clickable { open(c) }) {
@@ -104,16 +120,19 @@ fun ChallengesScreen(vm: AppViewModel, open: (Challenge) -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, openProfile: (Int) -> Unit) {
+fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, openProfile: (Int) -> Unit) {
     val c = vm.challenges.firstOrNull { it.id == challengeId } ?: run { Loading(); return }
-    LaunchedEffect(challengeId) { vm.loadLeaderboard(challengeId) }
+    LaunchedEffect(challengeId) { vm.loadLeaderboard(challengeId); vm.loadDetail(challengeId) }
     val board = vm.leaderboards.value[challengeId]
+    val detail = vm.details[challengeId]
+    val context = LocalContext.current
+    var newTeam by remember { mutableStateOf("") }
     var tab by remember { mutableIntStateOf(if (c.individual) 1 else 0) }
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
 
-    PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; vm.refreshChallenge(challengeId); refreshing = false } }) {
-    LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; vm.refreshChallenge(challengeId); refreshing = false } }, modifier = Modifier.fillMaxSize()) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Hero("${fmtRange(c.startDate, c.endDate)} · ${stateLabel(c)}", c.name,
                 trailing = { HeroStat(if (c.measuresDistance) fmtNum(c.myDistance) else fmtNum(c.myMinutes), if (c.measuresDistance) "my ${if (c.distanceUnit == "km") "km" else "miles"}" else "my minutes") },
@@ -124,6 +143,43 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, openProfile: (Int)
         }
         if (c.descriptionHtml.isNotBlank()) {
             item { SectionCard("About") { Text(htmlToText(c.descriptionHtml), style = MaterialTheme.typography.bodyMedium) } }
+        }
+        if (detail != null) item {
+            SectionCard("Invite people", action = {
+                if (detail.canManage) TextButton(onClick = edit) { Icon(Icons.Default.Edit, null); Spacer(Modifier.width(4.dp)); Text("Edit") }
+            }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Invite code", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(detail.inviteCode, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    }
+                    OutlinedButton(onClick = { shareInvite(context, detail.name, detail.inviteCode) }) { Icon(Icons.Default.Share, null); Spacer(Modifier.width(6.dp)); Text("Share") }
+                }
+            }
+        }
+        if (detail != null && !c.individual) item {
+            SectionCard("Teams") {
+                if (c.myTeams.isEmpty()) Text("You're not in a team yet. Join one or start your own to log activity here.",
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                if (detail.teams.isEmpty()) EmptyNote("No teams yet - create the first one.")
+                detail.teams.forEachIndexed { i, t ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Avatar(t.imageUrl, t.name)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(t.name, style = MaterialTheme.typography.titleMedium)
+                            Text(listOfNotNull("${t.members} member${if (t.members == 1) "" else "s"}", if (t.mine) "your team" else null, t.inviteCode?.let { "code $it" }).joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (!t.mine && detail.role != "admin") TextButton(onClick = { scope.launch { vm.joinTeam(challengeId, t.id) } }) { Text("Join") }
+                    }
+                    if (i < detail.teams.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+                if (detail.role != "admin") Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(newTeam, { newTeam = it }, label = { Text("New team name") }, singleLine = true, modifier = Modifier.weight(1f))
+                    Button(onClick = { scope.launch { if (vm.createTeam(challengeId, newTeam)) newTeam = "" } }, enabled = newTeam.isNotBlank()) { Text("Create") }
+                }
+            }
         }
         item {
             SectionCard("Leaderboard") {

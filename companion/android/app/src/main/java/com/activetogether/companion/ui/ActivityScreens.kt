@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -69,10 +70,8 @@ fun fmtEntry(a: MyActivity): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ActivityListScreen(vm: AppViewModel, open: (MyActivity) -> Unit) {
-    val scope = rememberCoroutineScope()
-    var refreshing by remember { mutableStateOf(false) }
-    PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; vm.refreshTopLevel(); refreshing = false } }) {
-        LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    PullToRefreshBox(modifier = Modifier.fillMaxSize(), isRefreshing = vm.topRefreshing, onRefresh = { vm.refreshTop() }) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item { Text("My activity", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(vertical = 4.dp)) }
             if (vm.activities.isEmpty() && !vm.loadingActivities) {
                 item { SectionCard { EmptyNote("Nothing logged yet. Tap + to log an activity, or sync your workouts from the Sync tab.") } }
@@ -120,8 +119,8 @@ fun ActivityDetailScreen(vm: AppViewModel, activityId: Int, back: () -> Unit, ed
     var refreshing by remember { mutableStateOf(false) }
     LaunchedEffect(activityId) { if (a.hasRoute) route = vm.route(a.id) }
 
-    PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; vm.refreshActivities(); if (a.hasRoute) route = vm.route(a.id); refreshing = false } }) {
-    LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    PullToRefreshBox(modifier = Modifier.fillMaxSize(), isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; vm.refreshActivities(); if (a.hasRoute) route = vm.route(a.id); refreshing = false } }) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Hero(listOfNotNull(fmtDay(a.date), a.startTime?.let { s -> a.endTime?.let { "$s–$it" } ?: s }).joinToString(" · "), a.type,
                 trailing = { HeroStat(fmtEntry(a).substringBefore(" · "), if (a.measuresDistance) "distance" else "active") })

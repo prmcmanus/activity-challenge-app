@@ -11,6 +11,8 @@ import com.activetogether.companion.ActiveTogetherApi
 import com.activetogether.companion.ApiException
 import com.activetogether.companion.Candidate
 import com.activetogether.companion.Challenge
+import com.activetogether.companion.ChallengeDetail
+import com.activetogether.companion.ChallengeFields
 import com.activetogether.companion.HealthConnectSync
 import com.activetogether.companion.Leaderboard
 import com.activetogether.companion.Me
@@ -70,6 +72,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var loadingActivities by mutableStateOf(false); private set
 
     val leaderboards = mutableStateOf<Map<Int, Leaderboard>>(emptyMap())
+    /** Full challenge records (invite code, teams, whether I can edit), loaded when a challenge is opened. */
+    var details by mutableStateOf<Map<Int, ChallengeDetail>>(emptyMap()); private set
+    /** The tab screens' pull-to-refresh (and the top-bar refresh button) share this. */
+    var topRefreshing by mutableStateOf(false); private set
 
     var review by mutableStateOf<List<ReviewItem>?>(null); private set
     /** Help badge: unread replies on my tickets, plus (admins) tickets waiting for support. */
@@ -124,7 +130,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         prefs.signOut()
         SyncWorker.cancel(getApplication())
         signedIn = false
-        me = null; challenges = emptyList(); activities = emptyList(); review = null
+        me = null; challenges = emptyList(); activities = emptyList(); review = null; details = emptyMap()
         message = msg
     }
 
@@ -175,6 +181,74 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         refreshHelpBadge()
     }
 
+    /** Pull-to-refresh / refresh button on the tab screens. Says when it's done, so a refresh that changed nothing still visibly happened. */
+    fun refreshTop() = viewModelScope.launch {
+        if (topRefreshing) return@launch
+        topRefreshing = true
+        val before = message
+        refreshTopLevel()
+        topRefreshing = false
+        if (message == before) message = "Up to date"
+    }
+
+    // --- challenges: open, create, edit, join -------------------------------------------------
+
+    suspend fun loadDetail(id: Int) { call { it.challengeDetail(id) }?.let { details = details + (id to it) } }
+
+    /** Creates the challenge and, for a team challenge, an optional first team. Returns the new id. */
+    suspend fun createChallenge(f: ChallengeFields, firstTeam: String): Int? {
+        val (id, code) = call { it.createChallenge(f) } ?: return null
+        if (!f.individual && firstTeam.isNotBlank()) call { it.createTeam(id, firstTeam.trim()) }
+        call { it.challenges() }?.let { challenges = it }
+        loadDetail(id)
+        message = "Challenge created. Invite code: $code"
+        return id
+    }
+
+    suspend fun updateChallenge(id: Int, f: ChallengeFields): Boolean {
+        call { it.updateChallenge(id, f) } ?: return false
+        call { it.challenges() }?.let { challenges = it }
+        loadDetail(id)
+        leaderboards.value = leaderboards.value - id
+        message = "Challenge saved"
+        return true
+    }
+
+    suspend fun deleteChallenge(id: Int): Boolean {
+        call { it.deleteChallenge(id) } ?: return false
+        challenges = challenges.filterNot { it.id == id }
+        details = details - id
+        call { it.challenges() }?.let { challenges = it }
+        refreshActivities()
+        message = "Challenge deleted"
+        return true
+    }
+
+    /** Join with an invite code; returns the challenge id to open. */
+    suspend fun join(code: String): Int? {
+        val (id, name) = call { it.join(code) } ?: return null
+        call { it.challenges() }?.let { challenges = it }
+        loadDetail(id)
+        message = "Joined ${name.ifBlank { "the challenge" }}"
+        return id
+    }
+
+    suspend fun createTeam(challengeId: Int, name: String): Boolean {
+        call { it.createTeam(challengeId, name.trim()) } ?: return false
+        afterTeamChange(challengeId); message = "Team created - you're in it"; return true
+    }
+
+    suspend fun joinTeam(challengeId: Int, teamId: Int) {
+        call { it.joinTeam(teamId) } ?: return
+        afterTeamChange(challengeId); message = "Joined the team"
+    }
+
+    private suspend fun afterTeamChange(challengeId: Int) {
+        call { it.challenges() }?.let { challenges = it }
+        loadDetail(challengeId)
+        call { it.leaderboard(challengeId) }?.let { leaderboards.value = leaderboards.value + (challengeId to it) }
+    }
+
     suspend fun refreshHelpBadge() {
         call { it.ticketBadge() }?.let { (mine, admin) -> helpBadge = mine + if (me?.isAdmin == true) admin else 0 }
     }
@@ -182,6 +256,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Pull-to-refresh on a challenge: its numbers and leaderboard. */
     suspend fun refreshChallenge(challengeId: Int) {
         call { it.challenges() }?.let { challenges = it }
+        loadDetail(challengeId)
         call { it.leaderboard(challengeId) }?.let { leaderboards.value = leaderboards.value + (challengeId to it) }
     }
 

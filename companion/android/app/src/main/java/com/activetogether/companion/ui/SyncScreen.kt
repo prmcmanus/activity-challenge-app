@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -106,10 +107,10 @@ fun SyncScreen(vm: AppViewModel) {
     val review = vm.review
 
     var refreshing by remember { mutableStateOf(false) }
-    PullToRefreshBox(isRefreshing = refreshing, onRefresh = {
+    PullToRefreshBox(modifier = Modifier.fillMaxSize(), isRefreshing = refreshing, onRefresh = {
         scope.launch { refreshing = true; refreshAccess().join(); if (review != null) vm.startReview().join(); refreshing = false }
     }) {
-    LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Hero("Health Connect", "Sync workouts", below = {
                 Text("Workouts from Health Connect go into every challenge they fit.",

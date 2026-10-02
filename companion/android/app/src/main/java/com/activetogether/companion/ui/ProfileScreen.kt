@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -155,10 +156,10 @@ fun UserProfileScreen(vm: AppViewModel, userId: Int) {
         loading = false
     }
     LaunchedEffect(userId) { load() }
-    PullToRefreshBox(isRefreshing = loading && profile != null, onRefresh = { load() }) {
+    PullToRefreshBox(modifier = Modifier.fillMaxSize(), isRefreshing = loading && profile != null, onRefresh = { load() }) {
         val p = profile
-        if (p == null) { if (missing) LazyColumn(contentPadding = PagePadding) { item { SectionCard { EmptyNote("This profile isn't available.") } } } else Loading(); return@PullToRefreshBox }
-        LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) { profileItems(p) }
+        if (p == null) { if (missing) LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding) { item { SectionCard { EmptyNote("This profile isn't available.") } } } else Loading(); return@PullToRefreshBox }
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) { profileItems(p) }
     }
 }
 
@@ -178,8 +179,8 @@ fun MeScreen(vm: AppViewModel, edit: () -> Unit, help: () -> Unit) {
     }
     LaunchedEffect(me?.id, me?.name, me?.avatarUrl, me?.bio, me?.sharing) { if (me != null) load() }
 
-    PullToRefreshBox(isRefreshing = loading, onRefresh = { load() }) {
-        LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    PullToRefreshBox(modifier = Modifier.fillMaxSize(), isRefreshing = loading, onRefresh = { load() }) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             val p = profile
             if (p == null) item { Loading() } else profileItems(p) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {

@@ -9,6 +9,7 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -59,6 +60,9 @@ fun AppRoot(vm: AppViewModel) {
     LaunchedEffect(vm.message) { vm.message?.let { snackbar.showSnackbar(it); vm.message = null } }
 
     val title = when {
+        route == "challenge/new" -> "New challenge"
+        route == "challenge/{id}/edit" -> "Edit challenge"
+        route == "join" -> "Join a challenge"
         route.startsWith("challenge/") -> "Challenge"
         route.endsWith("/edit") -> "Edit activity"
         route.startsWith("activity/") -> "Activity"
@@ -78,6 +82,8 @@ fun AppRoot(vm: AppViewModel) {
                 title = { Text(title, fontWeight = FontWeight.Bold) },
                 navigationIcon = { if (!isTab) IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 actions = {
+                    // A refresh button as well as pull-to-refresh on the lists, for anyone who doesn't think to pull.
+                    if (route == "challenges" || route == "activity") IconButton(onClick = { vm.refreshTop() }, enabled = !vm.topRefreshing) { Icon(Icons.Default.Refresh, "Refresh") }
                     // Help is one tap from every main screen; the badge counts new replies (and, for admins, tickets waiting).
                     if (isTab) IconButton(onClick = { nav.navigate("help") }) {
                         BadgedBox(badge = { if (vm.helpBadge > 0) Badge { Text("${vm.helpBadge}") } }) { Icon(Icons.AutoMirrored.Filled.HelpOutline, "Help") }
@@ -105,9 +111,20 @@ fun AppRoot(vm: AppViewModel) {
         containerColor = MaterialTheme.colorScheme.background,
     ) { pad ->
         NavHost(nav, startDestination = "challenges", modifier = Modifier.padding(pad)) {
-            composable("challenges") { ChallengesScreen(vm) { c -> nav.navigate("challenge/${c.id}") } }
+            composable("challenges") {
+                ChallengesScreen(vm, newChallenge = { nav.navigate("challenge/new") }, join = { nav.navigate("join") }) { c -> nav.navigate("challenge/${c.id}") }
+            }
+            composable("challenge/new") {
+                ChallengeFormScreen(vm, null) { id -> nav.navigate(if (id != null) "challenge/$id" else "challenges") { popUpTo("challenges") } }
+            }
+            composable("join") { JoinScreen(vm) { id -> nav.navigate("challenge/$id") { popUpTo("challenges") } } }
             composable("challenge/{id}", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
-                ChallengeDetailScreen(vm, it.arguments!!.getInt("id")) { uid -> nav.navigate("user/$uid") }
+                val id = it.arguments!!.getInt("id")
+                ChallengeDetailScreen(vm, id, edit = { nav.navigate("challenge/$id/edit") }) { uid -> nav.navigate("user/$uid") }
+            }
+            composable("challenge/{id}/edit", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
+                // Saved: back to the challenge. Deleted: all the way back to the list.
+                ChallengeFormScreen(vm, it.arguments!!.getInt("id")) { id -> if (id != null) nav.popBackStack() else nav.popBackStack("challenges", inclusive = false) }
             }
             composable("activity") { ActivityListScreen(vm) { a -> nav.navigate("activity/${a.id}") } }
             composable("activity/{id}", arguments = listOf(navArgument("id") { type = NavType.IntType })) {

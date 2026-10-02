@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -147,8 +148,8 @@ fun HelpScreen(vm: AppViewModel, newTicket: () -> Unit, openTicket: (Int) -> Uni
     fun load() = scope.launch { vm.call { it.tickets() }?.let { list = it }; vm.refreshHelpBadge() }
     LaunchedEffect(Unit) { load() }
 
-    PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; load().join(); refreshing = false } }) {
-        LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    PullToRefreshBox(modifier = Modifier.fillMaxSize(), isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; load().join(); refreshing = false } }) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 Hero("Help & support", "How can we help?", below = {
                     Text("Quick answers below. Something broken, or an idea? Send a ticket and follow the replies here.",
@@ -275,10 +276,10 @@ fun TicketScreen(vm: AppViewModel, id: Int) {
     }
     LaunchedEffect(id) { load() }
 
-    PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; load().join(); refreshing = false } }) {
+    PullToRefreshBox(modifier = Modifier.fillMaxSize(), isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; load().join(); refreshing = false } }) {
         val d = data ?: run { Loading(); return@PullToRefreshBox }
         val (t, comments) = d
-        LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 SectionCard {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -354,8 +355,8 @@ fun SupportDashboardScreen(vm: AppViewModel, openTicket: (Int) -> Unit) {
     fun load() = scope.launch { vm.call { it.tickets(all = true, status = status, type = type) }?.let { list = it }; vm.refreshHelpBadge() }
     LaunchedEffect(status, type) { load() }
 
-    PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; load().join(); refreshing = false } }) {
-        LazyColumn(contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    PullToRefreshBox(modifier = Modifier.fillMaxSize(), isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; load().join(); refreshing = false } }) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 val l = list
                 Hero("Admins only", "Support dashboard", below = {

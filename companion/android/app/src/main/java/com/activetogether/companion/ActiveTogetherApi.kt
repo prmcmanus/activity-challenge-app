@@ -56,6 +56,20 @@ data class Challenge(
 
 data class Target(val challengeId: Int, val teamId: Int?)
 
+/** A team as the challenge page shows it; the invite code only comes back for my teams and ones I manage. */
+data class TeamInfo(val id: Int, val name: String, val imageUrl: String?, val members: Int, val mine: Boolean, val canManage: Boolean, val inviteCode: String?)
+
+/** The full challenge record: what owners edit, the invite code to share, and its teams. role is "admin" for a global admin who hasn't joined. */
+data class ChallengeDetail(
+    val id: Int, val name: String, val descriptionHtml: String, val startDate: LocalDate, val endDate: LocalDate,
+    val measuresDistance: Boolean, val distanceUnit: String, val individual: Boolean, val role: String,
+    val canManage: Boolean, val inviteCode: String, val teams: List<TeamInfo>,
+)
+
+/** What a new or edited challenge is set to. description is null to leave it unchanged. */
+data class ChallengeFields(val name: String, val description: String?, val startDate: LocalDate, val endDate: LocalDate,
+    val measuresDistance: Boolean, val distanceUnit: String, val individual: Boolean)
+
 /** A leaderboard row; userId is set for people (tap to see their profile), null for teams. */
 data class Standing(val name: String, val minutes: Double, val distance: Double, val imageUrl: String?, val userId: Int? = null)
 data class Leaderboard(val teams: List<Standing>, val users: List<Standing>)
@@ -135,6 +149,49 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
             )
         }
     }
+
+    fun challengeDetail(id: Int): ChallengeDetail {
+        val c = request("/api/challenges/$id")
+        fun str(o: JSONObject, k: String) = if (o.isNull(k)) null else o.optString(k).takeIf { it.isNotBlank() }
+        val teams = c.optJSONArray("teams") ?: JSONArray()
+        return ChallengeDetail(
+            c.getInt("id"), c.getString("name"), str(c, "description").orEmpty(),
+            LocalDate.parse(c.getString("start_date")), LocalDate.parse(c.getString("end_date")),
+            c.optString("metric") == "distance", if (c.optString("distance_unit") == "km") "km" else "mi",
+            c.optString("participation") == "individual", c.optString("role", "member"), c.optBoolean("canManage"),
+            c.optString("invite_code"),
+            (0 until teams.length()).map { i -> teams.getJSONObject(i).let { t ->
+                TeamInfo(t.getInt("id"), t.getString("name"), str(t, "image_url"), t.optInt("members"), t.optBoolean("mine"), t.optBoolean("canManage"), str(t, "invite_code"))
+            } },
+        )
+    }
+
+    private fun challengeBody(f: ChallengeFields) = JSONObject()
+        .put("name", f.name)
+        .put("start_date", f.startDate.toString())
+        .put("end_date", f.endDate.toString())
+        .put("metric", if (f.measuresDistance) "distance" else "minutes")
+        .put("distance_unit", f.distanceUnit)
+        .put("participation", if (f.individual) "individual" else "teams")
+        .apply { f.description?.let { put("description", it) } }
+
+    /** Create a challenge (I become its owner). Returns its id and invite code. */
+    fun createChallenge(f: ChallengeFields): Pair<Int, String> =
+        request("/api/challenges", "POST", challengeBody(f)).let { it.getInt("id") to it.getString("invite_code") }
+
+    fun updateChallenge(id: Int, f: ChallengeFields) { request("/api/challenges/$id", "PATCH", challengeBody(f)) }
+
+    /** Deletes the challenge and everything logged in it, for everyone. */
+    fun deleteChallenge(id: Int) { request("/api/challenges/$id", "DELETE") }
+
+    /** Join with a challenge or team invite code. Returns the challenge id and what was joined. */
+    fun join(code: String): Pair<Int, String> =
+        request("/api/join", "POST", JSONObject().put("code", code.trim())).let { it.getInt("challengeId") to it.optString("name") }
+
+    fun createTeam(challengeId: Int, name: String): Int =
+        request("/api/teams", "POST", JSONObject().put("challenge_id", challengeId).put("name", name)).getInt("id")
+
+    fun joinTeam(teamId: Int) { request("/api/teams/$teamId/join", "POST", JSONObject()) }
 
     fun leaderboard(challengeId: Int): Leaderboard {
         val r = request("/api/challenges/$challengeId/leaderboard")

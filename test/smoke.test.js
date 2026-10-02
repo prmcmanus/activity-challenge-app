@@ -1872,3 +1872,24 @@ test('global admins can deactivate, reactivate and delete accounts, with guards'
   const tickets = (await jsonFetch(`${origin}/api/tickets?scope=all&status=`, admin2)).body.tickets;
   assert.ok(!tickets.some(x => x.title === 'It broke'));
 });
+
+test('the Android app downloads for signed-in users once published', async () => {
+  const viv = await register('Viv Download');
+  assert.deepEqual((await jsonFetch(`${origin}/api/app/android`, viv.cookie)).body, { available: false });
+  assert.equal((await fetch(`${origin}/api/app/android/download`, { headers: { cookie: viv.cookie } })).status, 404);
+
+  const dir = path.join(dataDir, 'downloads');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'ActiveTogether.apk'), Buffer.from('PK fake apk bytes'));
+  fs.writeFileSync(path.join(dir, 'android.json'), JSON.stringify({ version: '9.9.9', versionCode: 99, sha256: 'abc', published: '2027-01-01T00:00:00Z' }));
+
+  const info = (await jsonFetch(`${origin}/api/app/android`, viv.cookie)).body;
+  assert.deepEqual([info.available, info.version, info.size], [true, '9.9.9', 17]);
+  assert.equal((await fetch(`${origin}/api/app/android/download`)).status, 401);
+  const r = await fetch(`${origin}/api/app/android/download`, { headers: { cookie: viv.cookie } });
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('content-type'), 'application/vnd.android.package-archive');
+  assert.match(r.headers.get('content-disposition'), /filename="ActiveTogether-9\.9\.9\.apk"/);
+  assert.equal(await r.text(), 'PK fake apk bytes');
+  fs.rmSync(dir, { recursive: true, force: true });
+});

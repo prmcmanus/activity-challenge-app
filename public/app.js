@@ -141,6 +141,15 @@ function renderHome(){
   $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${isIndividual(c)?'individuals':`${c.teams.length} of your team(s)`} · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
   $all('[data-open]').forEach(b=>b.onclick=()=>openChallenge(Number(b.dataset.open)));
   loadMyActivity().catch(()=>{});
+  loadAndroidCard();
+}
+// Offer the Android app once it's published; shown on phones and computers alike (people often download on one and install on the other).
+async function loadAndroidCard(){
+  try{
+    const a=await api('/api/app/android');
+    $('#androidCard').classList.toggle('hidden',!a.available);
+    if(a.available)$('#androidMeta').textContent=`Version ${a.version} · ${(a.size/1048576).toFixed(1)} MB`;
+  }catch(e){$('#androidCard').classList.add('hidden')}
 }
 
 async function openChallenge(id){

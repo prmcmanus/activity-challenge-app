@@ -902,7 +902,22 @@ async function api(req,res,url){
    for(const r of refs){const ids=q.all(u.id,b.source,r).map(x=>x.challenge_id);if(ids.length)syncedIn[r]=ids}
    return send(res,200,{synced:Object.keys(syncedIn),syncedIn});
  }
+ if(m==='GET'&&url.pathname==='/api/app/android'){if(!need(res,u))return;const r=androidRelease();return send(res,200,r?{available:true,version:r.version,versionCode:r.versionCode,size:r.size,published:r.published,sha256:r.sha256}:{available:false})}
+ if(m==='GET'&&url.pathname==='/api/app/android/download'){
+   if(!need(res,u))return;
+   const r=androidRelease();if(!r)return send(res,404,{error:'The Android app has not been published yet'});
+   res.writeHead(200,{'Content-Type':'application/vnd.android.package-archive','Content-Length':r.size,'Cache-Control':'no-store',
+     'Content-Disposition':`attachment; filename="ActiveTogether-${String(r.version).replace(/[^0-9A-Za-z.\-]/g,'')}.apk"`,'X-Content-Type-Options':'nosniff'});
+   return fs.createReadStream(ANDROID_APK).pipe(res);
+ }
  return send(res,404,{error:'Not found'});
+}
+// The Android app, published by tools/publish-android.sh onto the data volume (not baked into the
+// image, so a new build needs no redeploy). Signed-in users only.
+const DOWNLOADS_DIR=path.join(DATA,'downloads'),ANDROID_APK=path.join(DOWNLOADS_DIR,'ActiveTogether.apk'),ANDROID_INFO=path.join(DOWNLOADS_DIR,'android.json');
+function androidRelease(){
+  try{if(!fs.existsSync(ANDROID_APK))return null;const info=JSON.parse(fs.readFileSync(ANDROID_INFO,'utf8'));return {...info,size:fs.statSync(ANDROID_APK).size}}
+  catch(e){return null}
 }
 const UPLOAD_MIME={png:'image/png',jpg:'image/jpeg',gif:'image/gif',webp:'image/webp'};
 const server=http.createServer(async(req,res)=>{try{const url=new URL(req.url,ORIGIN);if(url.pathname.startsWith('/api/'))return await api(req,res,url);

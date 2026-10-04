@@ -353,6 +353,9 @@ fun SyncSettingsCard(vm: AppViewModel) {
         askNotifications()
     }
 
+    // Turning routes on asks Health Connect for every route at once; where it can't, Sync asks per workout.
+    val routesLauncher = rememberLauncherForActivityResult(PermissionController.createRequestPermissionResultContract()) { }
+
     SectionCard("Sync settings") {
         SettingRow("Sync automatically",
             if (backgroundSupported) "New workouts go into every challenge they fit, every few hours and when you open the app. Workouts with no distance skip distance challenges."
@@ -374,8 +377,11 @@ fun SyncSettingsCard(vm: AppViewModel) {
             }
         }
         SettingRow("Include GPS routes",
-            "Upload each workout's route so you can see it on a map. Only you can see your routes. Routes recorded by other apps need a tap per workout in Sync.",
-            routes) { on -> routes = on; vm.prefs.includeRoutes = on }
+            "Upload each workout's route so you can see it on a map. Only you can see your routes. If Health Connect can't share every route at once, Sync asks per workout.",
+            routes) { on ->
+            routes = on; vm.prefs.includeRoutes = on
+            if (on) runCatching { routesLauncher.launch(setOf(vm.health.routesPermission)) }
+        }
         Dropdown("Distance unit I type in", listOf("mi", "km"), unit, { if (it == "km") "Kilometres" else "Miles" }, { u -> unit = u; vm.prefs.preferredUnit = u })
     }
 }

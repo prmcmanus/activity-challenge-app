@@ -104,6 +104,8 @@ fun SyncScreen(vm: AppViewModel) {
     val hasWorkouts = granted.containsAll(health.requiredPermissions)
     val hasDistance = health.distancePermission in granted
     val hasSteps = health.stepsPermission in granted
+    val wantsRoutes = vm.prefs.includeRoutes
+    val hasRoutes = health.routesPermission in granted
     val historySupported = remember(sdk) { runCatching { health.historyReadSupported() }.getOrDefault(false) }
     val review = vm.review
 
@@ -129,7 +131,7 @@ fun SyncScreen(vm: AppViewModel) {
                 }
             }
             else -> item {
-                val allAllowed = hasWorkouts && hasDistance && hasSteps && (!historySupported || health.historyPermission in granted)
+                val allAllowed = hasWorkouts && hasDistance && hasSteps && (!wantsRoutes || hasRoutes) && (!historySupported || health.historyPermission in granted)
                 if (allAllowed) {
                     SectionCard {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -142,12 +144,14 @@ fun SyncScreen(vm: AppViewModel) {
                     AccessRow("Workouts", hasWorkouts, "Needed to sync anything")
                     AccessRow("Distance", hasDistance, "For distance challenges")
                     AccessRow("Steps", hasSteps, "For step challenges")
+                    if (wantsRoutes) AccessRow("All routes", hasRoutes, "GPS routes from other apps without asking per workout")
                     if (historySupported) AccessRow("Older than 30 days", health.historyPermission in granted, "For challenges that started more than 30 days ago")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (!hasWorkouts || !hasDistance || !hasSteps || (historySupported && health.historyPermission !in granted)) {
+                        if (!hasWorkouts || !hasDistance || !hasSteps || (wantsRoutes && !hasRoutes) || (historySupported && health.historyPermission !in granted)) {
                             Button(onClick = {
                                 vm.prefs.askedDistance = true
-                                permissionLauncher.launch(health.permissions + (if (historySupported) setOf(health.historyPermission) else emptySet()))
+                                permissionLauncher.launch(health.permissions + (if (historySupported) setOf(health.historyPermission) else emptySet()) +
+                                    (if (wantsRoutes) setOf(health.routesPermission) else emptySet()))
                             }) { Text("Allow access") }
                         }
                         TextButton(onClick = { openHealthConnectSettings(context) }) { Text("Health Connect settings") }

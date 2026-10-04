@@ -60,6 +60,12 @@ class HealthConnectSync(private val context: Context) {
     // their minutes, and only distance challenges skip them.
     val requiredPermissions = setOf(HealthPermission.getReadPermission(ExerciseSessionRecord::class))
     val distancePermission = HealthPermission.getReadPermission(DistanceRecord::class)
+    /**
+     * Every workout's route, whichever app recorded it, with no prompt per workout. Newer Health
+     * Connect only; the 1.1 client library has no constant for it, so it is named directly. Without
+     * it, other apps' routes still come through one at a time with the person's say-so.
+     */
+    val routesPermission = "android.permission.health.READ_EXERCISE_ROUTES"
     /** For step challenges: the phone's (and watch's) daily step counts. */
     val stepsPermission = HealthPermission.getReadPermission(StepsRecord::class)
     val backgroundPermission = HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND

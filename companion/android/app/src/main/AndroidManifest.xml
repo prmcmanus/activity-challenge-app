@@ -6,6 +6,9 @@
     <uses-permission android:name="android.permission.health.READ_EXERCISE" />
     <uses-permission android:name="android.permission.health.READ_DISTANCE" />
     <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <!-- Routes recorded by other apps without a prompt per workout (newer Health Connect only;
+         asked for only when "Include GPS routes" is on). -->
+    <uses-permission android:name="android.permission.health.READ_EXERCISE_ROUTES" />
     <!-- Automatic sync reads Health Connect while the app is closed. -->
     <uses-permission android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
     <!-- Workouts older than 30 days, for a challenge that started before that. -->

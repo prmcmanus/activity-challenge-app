@@ -9,12 +9,16 @@ import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseRoute
 import androidx.health.connect.client.records.ExerciseRouteResult
 import androidx.health.connect.client.records.ExerciseSessionRecord
+import androidx.health.connect.client.records.StepsRecord
+import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.Period
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -56,9 +60,11 @@ class HealthConnectSync(private val context: Context) {
     // their minutes, and only distance challenges skip them.
     val requiredPermissions = setOf(HealthPermission.getReadPermission(ExerciseSessionRecord::class))
     val distancePermission = HealthPermission.getReadPermission(DistanceRecord::class)
+    /** For step challenges: the phone's (and watch's) daily step counts. */
+    val stepsPermission = HealthPermission.getReadPermission(StepsRecord::class)
     val backgroundPermission = HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
     val historyPermission = HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY
-    val permissions = requiredPermissions + distancePermission
+    val permissions = requiredPermissions + distancePermission + stepsPermission
 
     fun status(): Int = HealthConnectClient.getSdkStatus(context)
     fun isAvailable(): Boolean = status() == HealthConnectClient.SDK_AVAILABLE
@@ -121,6 +127,28 @@ class HealthConnectSync(private val context: Context) {
                 sourceApp = s.metadata.dataOrigin.packageName,
             )
         }.sortedByDescending { it.start }
+    }
+
+    /**
+     * Each day's step total from [from] to [to] (local days, today included so far). Health
+     * Connect's aggregate merges the phone and a watch counting the same steps, so each day is
+     * counted once. Days with no steps are left out. Empty without the steps permission.
+     */
+    suspend fun readDailySteps(from: LocalDate, to: LocalDate): Map<LocalDate, Long> {
+        val granted = grantedPermissions()
+        if (stepsPermission !in granted) return emptyMap()
+        val earliest = if (historyPermission in granted) from else maxOf(from, LocalDate.now().minusDays(29))
+        val last = minOf(to, LocalDate.now())
+        if (last.isBefore(earliest)) return emptyMap()
+        val groups = client().aggregateGroupByPeriod(AggregateGroupByPeriodRequest(
+            metrics = setOf(StepsRecord.COUNT_TOTAL),
+            timeRangeFilter = TimeRangeFilter.between(earliest.atStartOfDay(), last.plusDays(1).atStartOfDay()),
+            timeRangeSlicer = Period.ofDays(1),
+        ))
+        return groups.mapNotNull { g ->
+            val n = g.result[StepsRecord.COUNT_TOTAL] ?: return@mapNotNull null
+            if (n <= 0) null else g.startTime.toLocalDate() to n
+        }.toMap()
     }
 
     /**

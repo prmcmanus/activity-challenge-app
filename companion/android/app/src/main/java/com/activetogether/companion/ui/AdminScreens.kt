@@ -184,7 +184,7 @@ private fun ChallengeAdminCard(c: AdminChallenge, open: () -> Unit) {
             Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Text(listOfNotNull(
-            if (c.measuresDistance) "Distance (${if (c.distanceUnit == "km") "km" else "miles"})" else "Active minutes",
+            if (c.measuresSteps) "Steps" else if (c.measuresDistance) "Distance (${if (c.distanceUnit == "km") "km" else "miles"})" else "Active minutes",
             if (c.individual) "Individuals" else plural(c.teams, "team", "teams"),
             plural(c.members, "member", "members"), plural(c.activities, "activity", "activities"),
             "owner: ${c.owners ?: "none"}", "code ${c.inviteCode}",

@@ -53,8 +53,11 @@ fun fmtRange(a: LocalDate, b: LocalDate): String =
 fun fmtNum(v: Double): String = if (v == Math.floor(v)) v.toLong().toString() else String.format(Locale.getDefault(), "%.2f", v).trimEnd('0').trimEnd('.', ',')
 
 /** "12.4 mi" or "340 min" - whichever the challenge measures. */
-fun fmtMeasure(measuresDistance: Boolean, minutes: Double, distance: Double, unit: String) =
-    if (measuresDistance) "${fmtNum(distance)} ${if (unit == "km") "km" else "mi"}" else "${fmtNum(minutes)} min"
+/** "84,200" - step counts read better with separators. */
+fun fmtSteps(n: Number): String = String.format(Locale.getDefault(), "%,d", n.toLong())
+
+fun fmtMeasure(measuresDistance: Boolean, minutes: Double, distance: Double, unit: String, measuresSteps: Boolean = false, steps: Double = 0.0) =
+    if (measuresSteps) "${fmtSteps(steps)} steps" else if (measuresDistance) "${fmtNum(distance)} ${if (unit == "km") "km" else "mi"}" else "${fmtNum(minutes)} min"
 
 /** Challenge descriptions are sanitised HTML from the web editor; on the phone they read as plain text. */
 fun htmlToText(html: String): String = androidx.core.text.HtmlCompat.fromHtml(html, androidx.core.text.HtmlCompat.FROM_HTML_MODE_COMPACT).toString().trim()

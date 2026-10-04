@@ -45,7 +45,7 @@ import kotlinx.coroutines.withContext
 private fun inviteTitle(p: InvitePreview) = if (p.isTeam) "${p.teamName} in ${p.challengeName}" else p.challengeName
 private fun inviteDetail(p: InvitePreview) = listOf(
     fmtRange(p.startDate, p.endDate),
-    if (p.measuresDistance) "measures distance (${if (p.distanceUnit == "km") "km" else "miles"})" else "measures active minutes",
+    if (p.measuresSteps) "counts steps" else if (p.measuresDistance) "measures distance (${if (p.distanceUnit == "km") "km" else "miles"})" else "measures active minutes",
     if (p.individual) "individuals" else "teams",
     "${p.members} member${if (p.members == 1) "" else "s"}",
 ).joinToString(" · ")

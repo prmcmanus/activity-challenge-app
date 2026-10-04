@@ -318,12 +318,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val fresh = call { it.challenges() } ?: return@launch
             challenges = fresh
             val planner = SyncPlanner(getApplication())
+            // Step counts need no review: send them straight away, then review workouts.
+            val steps = withContext(Dispatchers.IO) { runCatching { planner.syncSteps(api(), fresh) }.getOrNull() }
+            val stepDays = steps?.let { it.added + it.updated } ?: 0
+            if (stepDays > 0) call { it.challenges() }?.let { challenges = it }
+            val stepNote = if (stepDays > 0) "Updated steps for $stepDays day${if (stepDays == 1) "" else "s"}. " else ""
+            if (stepDays > 0) message = stepNote.trim()
             val candidates = withContext(Dispatchers.IO) { planner.plan(api(), fresh, prefs.includeRoutes) }
             review = candidates.map { c ->
                 val unit = c.outstanding.firstOrNull { it.measuresDistance }?.distanceUnit ?: c.fits.firstOrNull { it.measuresDistance }?.distanceUnit ?: prefs.preferredUnit
                 ReviewItem(c, unit)
             }
-            syncStatus = if (candidates.isEmpty()) "No workouts in Health Connect fall within your challenges' dates." else ""
+            syncStatus = stepNote + if (candidates.isEmpty()) "No workouts in Health Connect fall within your challenges' dates." else ""
         } catch (e: ApiException) {
             if (e.status == 401) forceSignOut("Your session has expired. Please sign in again.") else syncStatus = "Sync failed: ${e.message}"
         } catch (e: SecurityException) {
@@ -378,9 +384,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!granted.containsAll(health.requiredPermissions)) return@launch
         syncBusy = true
         try {
-            val (workouts, entries) = withContext(Dispatchers.IO) { SyncPlanner(getApplication()).autoSync(api(), prefs) }
-            if (workouts > 0) {
-                syncStatus = "Synced $workouts new workout${if (workouts == 1) "" else "s"} ($entries challenge entr${if (entries == 1) "y" else "ies"})."
+            val counts = withContext(Dispatchers.IO) { SyncPlanner(getApplication()).autoSync(api(), prefs) }
+            if (counts.any) {
+                syncStatus = "Synced ${counts.summary()}."
                 prefs.lastSyncSummary = "$syncStatus - ${LocalDateTime.now().withNano(0).toString().replace('T', ' ')}"
                 afterChange()
             } else if (!quiet) syncStatus = "Nothing new to sync."

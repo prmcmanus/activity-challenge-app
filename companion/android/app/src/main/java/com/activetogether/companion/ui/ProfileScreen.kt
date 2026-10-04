@@ -112,7 +112,7 @@ fun LazyListScope.profileItems(p: Profile, header: @Composable () -> Unit = {}) 
                         Text(listOfNotNull(c.team, fmtRange(c.startDate, c.endDate)).joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Column(horizontalAlignment = Alignment.End) {
-                        Text(fmtMeasure(c.measuresDistance, c.minutes, c.distance, c.distanceUnit), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                        Text(fmtMeasure(c.measuresDistance, c.minutes, c.distance, c.distanceUnit, c.measuresSteps, c.steps), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
                         if (c.rank > 0) Text("${ordinal(c.rank)} of ${c.of}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
@@ -133,7 +133,8 @@ fun LazyListScope.profileItems(p: Profile, header: @Composable () -> Unit = {}) 
                         }
                         val d = a.distance?.let { "${fmtNum(it)} ${if (a.distanceUnit == "km") "km" else "mi"}" }
                         val m = a.minutes?.let { "${fmtNum(it)} min" }
-                        Text((if (a.measuresDistance) listOf(d, m) else listOf(m, d)).filterNotNull().joinToString(" · "), fontWeight = FontWeight.Bold)
+                        Text(a.steps?.takeIf { a.measuresSteps || (a.minutes == null && a.distance == null) }?.let { "${fmtSteps(it)} steps" }
+                            ?: (if (a.measuresDistance) listOf(d, m) else listOf(m, d)).filterNotNull().joinToString(" · "), fontWeight = FontWeight.Bold)
                     }
                     if (i < acts.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }

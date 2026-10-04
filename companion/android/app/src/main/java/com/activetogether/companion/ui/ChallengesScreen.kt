@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Person
@@ -58,8 +59,8 @@ import com.activetogether.companion.asChallenge
 import com.activetogether.companion.SERVER_URL
 import java.time.LocalDate
 
-private fun measureLabel(c: Challenge) = if (c.measuresDistance) (if (c.distanceUnit == "km") "Kilometres" else "Miles") else "Active minutes"
-private fun myTotal(c: Challenge) = fmtMeasure(c.measuresDistance, c.myMinutes, c.myDistance, c.distanceUnit)
+private fun measureLabel(c: Challenge) = if (c.measuresSteps) "Steps" else if (c.measuresDistance) (if (c.distanceUnit == "km") "Kilometres" else "Miles") else "Active minutes"
+private fun myTotal(c: Challenge) = fmtMeasure(c.measuresDistance, c.myMinutes, c.myDistance, c.distanceUnit, c.measuresSteps, c.mySteps)
 
 private fun stateLabel(c: Challenge): String {
     val today = LocalDate.now()
@@ -108,7 +109,7 @@ fun ChallengesScreen(vm: AppViewModel, newChallenge: () -> Unit, join: () -> Uni
                     }
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         AssistChip(onClick = { open(c) }, label = { Text(measureLabel(c), maxLines = 1) },
-                            leadingIcon = { Icon(if (c.measuresDistance) Icons.Default.Straighten else Icons.Default.Timer, null, Modifier.padding(0.dp)) })
+                            leadingIcon = { Icon(if (c.measuresSteps) Icons.AutoMirrored.Filled.DirectionsWalk else if (c.measuresDistance) Icons.Default.Straighten else Icons.Default.Timer, null, Modifier.padding(0.dp)) })
                         AssistChip(onClick = { open(c) }, label = { Text(if (c.individual) "Individual" else c.myTeams.firstOrNull()?.name ?: "No team yet", maxLines = 1) },
                             leadingIcon = { Icon(if (c.individual) Icons.Default.Person else Icons.Default.Groups, null) })
                         AssistChip(onClick = { open(c) }, label = { Text(stateLabel(c), maxLines = 1) },
@@ -138,7 +139,8 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Hero("${fmtRange(c.startDate, c.endDate)} · ${stateLabel(c)}", c.name,
-                trailing = { HeroStat(if (c.measuresDistance) fmtNum(c.myDistance) else fmtNum(c.myMinutes), if (c.measuresDistance) "my ${if (c.distanceUnit == "km") "km" else "miles"}" else "my minutes") },
+                trailing = { HeroStat(if (c.measuresSteps) fmtSteps(c.mySteps) else if (c.measuresDistance) fmtNum(c.myDistance) else fmtNum(c.myMinutes),
+                    if (c.measuresSteps) "my steps" else if (c.measuresDistance) "my ${if (c.distanceUnit == "km") "km" else "miles"}" else "my minutes") },
                 below = {
                     Text(listOfNotNull(measureLabel(c), if (c.individual) "Individuals" else c.myTeams.joinToString { it.name }.ifBlank { null }, "Role: ${c.role}").joinToString(" · "),
                         color = Color.White.copy(alpha = 0.9f), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
@@ -207,7 +209,7 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                                 Avatar(s.imageUrl, s.name)
                                 Spacer(Modifier.width(10.dp))
                                 Text(s.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                                Text(fmtMeasure(c.measuresDistance, s.minutes, s.distance, c.distanceUnit), style = MaterialTheme.typography.titleMedium)
+                                Text(fmtMeasure(c.measuresDistance, s.minutes, s.distance, c.distanceUnit, c.measuresSteps, s.steps), style = MaterialTheme.typography.titleMedium)
                                 if (person != null) Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             if (i < rows.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

@@ -62,6 +62,7 @@ import java.time.format.DateTimeFormatter
 
 /** "3.1 mi · 28 min" - the challenge's own measure first. */
 fun fmtEntry(a: MyActivity): String {
+    if (a.steps != null && (a.measuresSteps || (a.minutes == null && a.distance == null))) return "${fmtSteps(a.steps)} steps"
     val d = a.distance?.let { "${fmtNum(it)} ${if (a.distanceUnit == "km") "km" else "mi"}" }
     val m = a.minutes?.let { "${fmtNum(it)} min" }
     return (if (a.measuresDistance) listOf(d, m) else listOf(m, d)).filterNotNull().joinToString(" · ")
@@ -123,7 +124,7 @@ fun ActivityDetailScreen(vm: AppViewModel, activityId: Int, back: () -> Unit, ed
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Hero(listOfNotNull(fmtDay(a.date), a.startTime?.let { s -> a.endTime?.let { "$s–$it" } ?: s }).joinToString(" · "), a.type,
-                trailing = { HeroStat(fmtEntry(a).substringBefore(" · "), if (a.measuresDistance) "distance" else "active") })
+                trailing = { HeroStat(fmtEntry(a).substringBefore(" · ").removeSuffix(" steps"), if (a.measuresSteps) "steps" else if (a.measuresDistance) "distance" else "active") })
         }
         item {
             Button(onClick = edit, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Edit, null); Spacer(Modifier.width(8.dp)); Text("Edit activity") }
@@ -179,6 +180,7 @@ fun LogActivityScreen(vm: AppViewModel, done: () -> Unit) {
     var minutes by remember { mutableStateOf("") }
     var distance by remember { mutableStateOf("") }
     var unit by remember { mutableStateOf(vm.prefs.preferredUnit) }
+    var steps by remember { mutableStateOf("") }
     var comment by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -212,6 +214,9 @@ fun LogActivityScreen(vm: AppViewModel, done: () -> Unit) {
             }
             OutlinedTextField(minutes, { minutes = it.filter { ch -> ch.isDigit() } }, label = { Text("Minutes") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            if (fits.any { it.measuresSteps }) OutlinedTextField(steps, { steps = it.filter { ch -> ch.isDigit() }.take(6) }, label = { Text("Steps that day") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                supportingText = { Text("For step challenges. Syncing fills this in from your phone each day.") })
             OutlinedTextField(comment, { comment = it.take(500) }, label = { Text("Comment (optional)") }, modifier = Modifier.fillMaxWidth())
         }
         SectionCard("Count it in") {
@@ -221,7 +226,7 @@ fun LogActivityScreen(vm: AppViewModel, done: () -> Unit) {
                     Checkbox(checked = c.id in chosen, onCheckedChange = { if (it) chosen.add(c.id) else chosen.remove(c.id) })
                     Column(Modifier.weight(1f)) {
                         Text(c.name, style = MaterialTheme.typography.titleMedium)
-                        Text((if (c.measuresDistance) "Needs a distance" else "Needs minutes") + (if (c.individual) "" else " · ${c.myTeams.first().name}"),
+                        Text((if (c.measuresSteps) "Needs steps" else if (c.measuresDistance) "Needs a distance" else "Needs minutes") + (if (c.individual) "" else " · ${c.myTeams.first().name}"),
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
@@ -236,8 +241,9 @@ fun LogActivityScreen(vm: AppViewModel, done: () -> Unit) {
                 val targets = fits.filter { it.id in chosen }
                 val dist = distance.trim().replace(',', '.').toDoubleOrNull()?.takeIf { it > 0 }
                 val mins = minutes.toIntOrNull()?.takeIf { it > 0 }
+                val stepCount = steps.toIntOrNull()?.takeIf { it > 0 }
                 scope.launch {
-                    val n = vm.call { it.logActivity(targets.mapNotNull { c -> c.target }, type, date, mins, dist, unit, start?.format(hhmm), end?.format(hhmm), comment) }
+                    val n = vm.call { it.logActivity(targets.mapNotNull { c -> c.target }, type, date, mins, dist, unit, start?.format(hhmm), end?.format(hhmm), comment, stepCount) }
                     busy = false
                     if (n != null) { vm.message = "Logged in $n challenge${if (n == 1) "" else "s"}"; vm.afterChange(); done() }
                     else { error = vm.message; vm.message = null }
@@ -251,6 +257,7 @@ fun LogActivityScreen(vm: AppViewModel, done: () -> Unit) {
 @Composable
 fun EditActivityScreen(vm: AppViewModel, activityId: Int, done: () -> Unit) {
     val a = vm.activities.firstOrNull { it.id == activityId } ?: run { Loading(); return }
+    if (a.measuresSteps) { EditStepsContent(vm, a, done); return }
     val entries = remember(activityId) { siblingsOf(vm, a) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -300,6 +307,37 @@ fun EditActivityScreen(vm: AppViewModel, activityId: Int, done: () -> Unit) {
                     distance.trim().replace(',', '.').toDoubleOrNull()?.takeIf { it > 0 }, unit, start?.format(hhmm), end?.format(hhmm), comment)
                 busy = false
                 if (ok) done()
+            }
+        }) { Text("Save changes") }
+    }
+}
+
+/** A step-challenge entry is a day and a count. */
+@Composable
+private fun EditStepsContent(vm: AppViewModel, a: MyActivity, done: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var date by remember { mutableStateOf(a.date) }
+    var steps by remember { mutableStateOf(a.steps?.toString() ?: "") }
+    var comment by remember { mutableStateOf(a.comment.orEmpty()) }
+    var busy by remember { mutableStateOf(false) }
+    Column(Modifier.verticalScroll(rememberScrollState()).padding(PagePadding), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SectionCard {
+            OutlinedButton(onClick = {
+                DatePickerDialog(context, { _, y, m, d -> date = LocalDate.of(y, m + 1, d) }, date.year, date.monthValue - 1, date.dayOfMonth).show()
+            }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.CalendarMonth, null); Spacer(Modifier.width(8.dp)); Text(fmtDay(date) + " " + date.year) }
+            OutlinedTextField(steps, { steps = it.filter { ch -> ch.isDigit() }.take(6) }, label = { Text("Steps that day") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            OutlinedTextField(comment, { comment = it.take(500) }, label = { Text("Comment (optional)") }, modifier = Modifier.fillMaxWidth())
+            if (a.source == "health_connect") Text("This day came from your phone. The next sync sets it back to the phone's count if they differ.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Button(enabled = !busy && (steps.toIntOrNull() ?: 0) > 0, modifier = Modifier.fillMaxWidth(), onClick = {
+            busy = true
+            scope.launch {
+                val ok = vm.call { it.editSteps(a.id, date, steps.toInt(), comment) } != null
+                busy = false
+                if (ok) { vm.message = "Steps updated"; vm.afterChange(); done() }
             }
         }) { Text("Save changes") }
     }

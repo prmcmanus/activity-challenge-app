@@ -38,7 +38,8 @@ class SyncPlanner(private val context: Context) {
 
     /** Read every workout in the span of my challenges and match each to the challenges it fits. */
     suspend fun plan(api: ActiveTogetherApi, challenges: List<Challenge>, withRoutes: Boolean): List<Candidate> {
-        val open = challenges.filter { it.target != null }
+        // Step challenges take daily totals (see [syncSteps]), not workouts.
+        val open = challenges.filter { it.target != null && !it.measuresSteps }
         if (open.isEmpty()) return emptyList()
         val from = open.minOf { it.startDate }
         val to = minOf(open.maxOf { it.endDate }, LocalDate.now())
@@ -47,6 +48,18 @@ class SyncPlanner(private val context: Context) {
         return workouts.map { w ->
             Candidate(w, open.filter { it.contains(w.day) }, known[w.sourceRef].orEmpty())
         }.filter { it.fits.isNotEmpty() }
+    }
+
+    /**
+     * Every day's step total into each step challenge running that day, up to today. A day already
+     * sent is updated on the server if the count has grown, so this is safe to run often.
+     */
+    suspend fun syncSteps(api: ActiveTogetherApi, challenges: List<Challenge>): ImportResult {
+        val stepChallenges = challenges.filter { it.measuresSteps && it.target != null && !it.startDate.isAfter(LocalDate.now()) }
+        if (stepChallenges.isEmpty()) return ImportResult(0, 0)
+        val daily = health.readDailySteps(stepChallenges.minOf { it.startDate }, stepChallenges.maxOf { it.endDate })
+        val days = stepChallenges.flatMap { c -> daily.filterKeys { c.contains(it) }.map { (day, n) -> StepDay(c.target!!, day, n) } }
+        return api.importSteps(days)
     }
 
     /**
@@ -66,8 +79,10 @@ class SyncPlanner(private val context: Context) {
      * challenge it fits and isn't already in, with the type Health Connect gave it. A distance
      * challenge is skipped for a workout with no recorded distance (nobody is there to type one).
      */
-    suspend fun autoSync(api: ActiveTogetherApi, prefs: Prefs): Pair<Int, Int> {
-        val candidates = plan(api, api.challenges(), prefs.includeRoutes)
+    suspend fun autoSync(api: ActiveTogetherApi, prefs: Prefs): SyncCounts {
+        val challenges = api.challenges()
+        val steps = runCatching { syncSteps(api, challenges) }.getOrDefault(ImportResult(0, 0))
+        val candidates = plan(api, challenges, prefs.includeRoutes)
         var workouts = 0
         var entries = 0
         for (c in candidates) {
@@ -77,8 +92,17 @@ class SyncPlanner(private val context: Context) {
             val r = upload(api, c.workout, c.workout.type, c.workout.distanceMeters, route, into)
             if (r.added > 0) { workouts++; entries += r.added }
         }
-        return workouts to entries
+        return SyncCounts(workouts, entries, steps.added + steps.updated)
     }
+}
+
+/** What an automatic sync did: new workouts, the challenge entries they made, and step days added or updated. */
+data class SyncCounts(val workouts: Int, val entries: Int, val stepDays: Int) {
+    val any: Boolean get() = workouts > 0 || stepDays > 0
+    fun summary(): String = listOfNotNull(
+        if (workouts > 0) "$workouts workout${if (workouts == 1) "" else "s"} ($entries challenge entr${if (entries == 1) "y" else "ies"})" else null,
+        if (stepDays > 0) "steps for $stepDays day${if (stepDays == 1) "" else "s"}" else null,
+    ).joinToString(" and ").ifBlank { "nothing new" }
 }
 
 /** Background sync, every few hours while automatic sync is on. */
@@ -94,10 +118,10 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         // syncs on opening instead.
         if (!granted.containsAll(health.requiredPermissions) || health.backgroundPermission !in granted) return skip("no background read permission")
         return try {
-            val (workouts, entries) = SyncPlanner(applicationContext).autoSync(ActiveTogetherApi(token), prefs)
-            Log.i(TAG, "background sync: $workouts workout(s), $entries entr(ies)")
-            if (workouts > 0) {
-                val msg = "Synced $workouts workout${if (workouts == 1) "" else "s"} ($entries challenge entr${if (entries == 1) "y" else "ies"})"
+            val counts = SyncPlanner(applicationContext).autoSync(ActiveTogetherApi(token), prefs)
+            Log.i(TAG, "background sync: ${counts.summary()}")
+            if (counts.any) {
+                val msg = "Synced ${counts.summary()}"
                 prefs.lastSyncSummary = "$msg - ${java.time.LocalDateTime.now().withNano(0).toString().replace('T', ' ')}"
                 notify(applicationContext, msg)
             }

@@ -103,6 +103,7 @@ fun SyncScreen(vm: AppViewModel) {
 
     val hasWorkouts = granted.containsAll(health.requiredPermissions)
     val hasDistance = health.distancePermission in granted
+    val hasSteps = health.stepsPermission in granted
     val historySupported = remember(sdk) { runCatching { health.historyReadSupported() }.getOrDefault(false) }
     val review = vm.review
 
@@ -113,7 +114,7 @@ fun SyncScreen(vm: AppViewModel) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Hero("Health Connect", "Sync workouts", below = {
-                Text("Workouts from Health Connect go into every challenge they fit.",
+                Text("Workouts from Health Connect go into every challenge they fit, and daily steps into step challenges.",
                     color = Color.White.copy(alpha = 0.9f), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
             })
         }
@@ -128,7 +129,7 @@ fun SyncScreen(vm: AppViewModel) {
                 }
             }
             else -> item {
-                val allAllowed = hasWorkouts && hasDistance && (!historySupported || health.historyPermission in granted)
+                val allAllowed = hasWorkouts && hasDistance && hasSteps && (!historySupported || health.historyPermission in granted)
                 if (allAllowed) {
                     SectionCard {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -140,9 +141,10 @@ fun SyncScreen(vm: AppViewModel) {
                 } else SectionCard("Access") {
                     AccessRow("Workouts", hasWorkouts, "Needed to sync anything")
                     AccessRow("Distance", hasDistance, "For distance challenges")
+                    AccessRow("Steps", hasSteps, "For step challenges")
                     if (historySupported) AccessRow("Older than 30 days", health.historyPermission in granted, "For challenges that started more than 30 days ago")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (!hasWorkouts || !hasDistance || (historySupported && health.historyPermission !in granted)) {
+                        if (!hasWorkouts || !hasDistance || !hasSteps || (historySupported && health.historyPermission !in granted)) {
                             Button(onClick = {
                                 vm.prefs.askedDistance = true
                                 permissionLauncher.launch(health.permissions + (if (historySupported) setOf(health.historyPermission) else emptySet()))

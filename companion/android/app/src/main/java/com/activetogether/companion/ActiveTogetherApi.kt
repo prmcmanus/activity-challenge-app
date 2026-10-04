@@ -24,9 +24,10 @@ data class TicketComment(val id: Int, val body: String, val internal: Boolean, v
 data class TicketList(val tickets: List<Ticket>, val counts: Map<String, Int>, val openByType: Map<String, Int>)
 
 data class ProfileChallenge(val id: Int, val name: String, val startDate: LocalDate, val endDate: LocalDate, val measuresDistance: Boolean,
-    val distanceUnit: String, val team: String?, val minutes: Double, val distance: Double, val rank: Int, val of: Int)
+    val distanceUnit: String, val team: String?, val minutes: Double, val distance: Double, val rank: Int, val of: Int,
+    val measuresSteps: Boolean = false, val steps: Double = 0.0)
 data class ProfileActivity(val type: String, val minutes: Double?, val distance: Double?, val distanceUnit: String, val measuresDistance: Boolean,
-    val date: LocalDate, val startTime: String?, val comment: String?, val challengeName: String)
+    val date: LocalDate, val startTime: String?, val comment: String?, val challengeName: String, val steps: Int? = null, val measuresSteps: Boolean = false)
 /** Someone's profile as a challenge-mate sees it. challenges/activities are null when their sharing level hides them. */
 data class Profile(val id: Int, val name: String, val avatarUrl: String?, val bio: String?, val memberSince: String, val sharing: String, val self: Boolean,
     val challenges: List<ProfileChallenge>?, val activities: List<ProfileActivity>?)
@@ -47,6 +48,9 @@ data class Challenge(
     val myTeams: List<MyTeam>,
     val myMinutes: Double,
     val myDistance: Double,
+    /** A step challenge: one entry per day, counted in steps. */
+    val measuresSteps: Boolean = false,
+    val mySteps: Double = 0.0,
 ) {
     fun contains(day: LocalDate) = !day.isBefore(startDate) && !day.isAfter(endDate)
     /** Where my activity goes in this challenge: no team if individuals-only, else my (first) team. Null if I have no team yet. */
@@ -64,16 +68,17 @@ data class ChallengeDetail(
     val id: Int, val name: String, val descriptionHtml: String, val startDate: LocalDate, val endDate: LocalDate,
     val measuresDistance: Boolean, val distanceUnit: String, val individual: Boolean, val role: String,
     val canManage: Boolean, val inviteCode: String, val teams: List<TeamInfo>,
+    val measuresSteps: Boolean = false,
 )
 
 /** A challenge record as a [Challenge], for opening one I'm not in (a global admin): no team of mine, nothing logged by me. */
 fun ChallengeDetail.asChallenge() = Challenge(id, name, descriptionHtml, startDate, endDate, measuresDistance, distanceUnit, individual, role,
-    teams.filter { it.mine }.map { MyTeam(it.id, it.name) }, 0.0, 0.0)
+    teams.filter { it.mine }.map { MyTeam(it.id, it.name) }, 0.0, 0.0, measuresSteps)
 
 /** What an invite link is for. member/inTeam are only known when signed in. */
 data class InvitePreview(val code: String, val isTeam: Boolean, val challengeId: Int, val challengeName: String, val startDate: LocalDate, val endDate: LocalDate,
     val measuresDistance: Boolean, val distanceUnit: String, val individual: Boolean, val members: Int, val teamName: String?, val teamMembers: Int?,
-    val member: Boolean?, val inTeam: Boolean?) {
+    val member: Boolean?, val inTeam: Boolean?, val measuresSteps: Boolean = false) {
     /** Nothing left to join: in the challenge, and in the team if the link was for one. */
     val alreadyIn: Boolean get() = member == true && (!isTeam || inTeam == true)
 }
@@ -101,14 +106,14 @@ data class AdminUser(val id: Int, val name: String, val email: String, val role:
 /** Global admins: every challenge on the site. state is running | upcoming | finished. */
 data class AdminChallenge(val id: Int, val name: String, val startDate: LocalDate, val endDate: LocalDate, val measuresDistance: Boolean,
     val distanceUnit: String, val individual: Boolean, val inviteCode: String, val owners: String?, val members: Int, val teams: Int,
-    val activities: Int, val state: String, val purgeDate: String)
+    val activities: Int, val state: String, val purgeDate: String, val measuresSteps: Boolean = false)
 
 /** What a new or edited challenge is set to. description is null to leave it unchanged. */
 data class ChallengeFields(val name: String, val description: String?, val startDate: LocalDate, val endDate: LocalDate,
-    val measuresDistance: Boolean, val distanceUnit: String, val individual: Boolean)
+    val measuresDistance: Boolean, val distanceUnit: String, val individual: Boolean, val measuresSteps: Boolean = false)
 
 /** A leaderboard row; userId is set for people (tap to see their profile), null for teams. */
-data class Standing(val name: String, val minutes: Double, val distance: Double, val imageUrl: String?, val userId: Int? = null)
+data class Standing(val name: String, val minutes: Double, val distance: Double, val imageUrl: String?, val userId: Int? = null, val steps: Double = 0.0)
 data class Leaderboard(val teams: List<Standing>, val users: List<Standing>)
 
 data class MyActivity(
@@ -127,6 +132,8 @@ data class MyActivity(
     val comment: String?,
     val source: String,
     val hasRoute: Boolean,
+    val steps: Int? = null,
+    val measuresSteps: Boolean = false,
 )
 
 /** One route point: latitude, longitude, and time (epoch ms) and altitude (m) when known. */
@@ -145,7 +152,10 @@ data class HealthRecord(
     val route: List<RoutePoint>? = null,
 )
 
-data class ImportResult(val added: Int, val skipped: Int)
+data class ImportResult(val added: Int, val skipped: Int, val updated: Int = 0)
+
+/** A day's step total from the phone, for one step challenge. Re-sending a day updates it. */
+data class StepDay(val target: Target, val date: LocalDate, val steps: Long)
 
 /** A failed request, keeping the HTTP status so an expired session (401) can send the user back to sign in. */
 class ApiException(val status: Int, message: String) : IOException(message)
@@ -183,6 +193,8 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
                 myTeams = (0 until teams.length()).map { j -> teams.getJSONObject(j).let { MyTeam(it.getInt("id"), it.getString("name")) } },
                 myMinutes = c.optDouble("myMinutes", 0.0),
                 myDistance = c.optDouble("myDistance", 0.0),
+                measuresSteps = c.optString("metric") == "steps",
+                mySteps = c.optDouble("mySteps", 0.0),
             )
         }
     }
@@ -200,6 +212,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
             (0 until teams.length()).map { i -> teams.getJSONObject(i).let { t ->
                 TeamInfo(t.getInt("id"), t.getString("name"), str(t, "image_url"), t.optInt("members"), t.optBoolean("mine"), t.optBoolean("canManage"), str(t, "invite_code"))
             } },
+            measuresSteps = c.optString("metric") == "steps",
         )
     }
 
@@ -207,7 +220,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         .put("name", f.name)
         .put("start_date", f.startDate.toString())
         .put("end_date", f.endDate.toString())
-        .put("metric", if (f.measuresDistance) "distance" else "minutes")
+        .put("metric", if (f.measuresSteps) "steps" else if (f.measuresDistance) "distance" else "minutes")
         .put("distance_unit", f.distanceUnit)
         .put("participation", if (f.individual) "individual" else "teams")
         .apply { f.description?.let { put("description", it) } }
@@ -238,7 +251,8 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
             LocalDate.parse(c.getString("start_date")), LocalDate.parse(c.getString("end_date")), c.optString("metric") == "distance",
             if (c.optString("distance_unit") == "km") "km" else "mi", c.optString("participation") == "individual", c.optInt("members"),
             t?.optString("name"), t?.optInt("members"),
-            if (r.has("member")) r.optBoolean("member") else null, if (r.has("inTeam") && !r.isNull("inTeam")) r.optBoolean("inTeam") else null)
+            if (r.has("member")) r.optBoolean("member") else null, if (r.has("inTeam") && !r.isNull("inTeam")) r.optBoolean("inTeam") else null,
+            c.optString("metric") == "steps")
     }
 
     fun androidRelease(): AppRelease? {
@@ -263,7 +277,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
             AdminChallenge(c.getInt("id"), c.getString("name"), LocalDate.parse(c.getString("start_date")), LocalDate.parse(c.getString("end_date")),
                 c.optString("metric") == "distance", if (c.optString("distance_unit") == "km") "km" else "mi", c.optString("participation") == "individual",
                 c.optString("invite_code"), if (c.isNull("owners")) (if (c.isNull("creator_name")) null else c.optString("creator_name")) else c.optString("owners"),
-                c.optInt("members"), c.optInt("teams"), c.optInt("activities"), c.optString("state"), c.optString("purge_date"))
+                c.optInt("members"), c.optInt("teams"), c.optInt("activities"), c.optString("state"), c.optString("purge_date"), c.optString("metric") == "steps")
         } }
     }
     /** password: blank keeps the current one (setting one signs that person out everywhere). */
@@ -285,7 +299,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
             val x = a.getJSONObject(i)
             Standing(x.getString("name"), x.optDouble("minutes", 0.0), x.optDouble("distance", 0.0),
                 (x.optString("image_url").ifBlank { x.optString("avatar_url") }).takeIf { it.isNotBlank() && it != "null" },
-                if (people) x.optInt("id") else null)
+                if (people) x.optInt("id") else null, x.optDouble("steps", 0.0))
         }
         return Leaderboard(list(r.getJSONArray("teams"), false), list(r.getJSONArray("users"), true))
     }
@@ -296,18 +310,25 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         val challenges = r.optJSONArray("challenges")?.let { a -> (0 until a.length()).map { i -> a.getJSONObject(i).let { c ->
             ProfileChallenge(c.getInt("id"), c.getString("name"), LocalDate.parse(c.getString("start_date")), LocalDate.parse(c.getString("end_date")),
                 c.optString("metric") == "distance", if (c.optString("distance_unit") == "km") "km" else "mi", str(c, "team"),
-                c.optDouble("minutes", 0.0), c.optDouble("distance", 0.0), c.optInt("rank"), c.optInt("of"))
+                c.optDouble("minutes", 0.0), c.optDouble("distance", 0.0), c.optInt("rank"), c.optInt("of"),
+                c.optString("metric") == "steps", c.optDouble("steps", 0.0))
         } } }
         val activities = r.optJSONArray("activities")?.let { a -> (0 until a.length()).map { i -> a.getJSONObject(i).let { x ->
             ProfileActivity(x.getString("activity_type"), if (x.isNull("minutes")) null else x.getDouble("minutes"),
                 if (x.isNull("distance")) null else x.getDouble("distance"), if (x.optString("distance_unit") == "km") "km" else "mi",
-                x.optString("metric") == "distance", LocalDate.parse(x.getString("activity_date")), str(x, "start_time"), str(x, "comment"), x.getString("challenge_name"))
+                x.optString("metric") == "distance", LocalDate.parse(x.getString("activity_date")), str(x, "start_time"), str(x, "comment"), x.getString("challenge_name"),
+                if (x.isNull("steps") || !x.has("steps")) null else x.getInt("steps"), x.optString("metric") == "steps")
         } } }
         return Profile(r.getInt("id"), r.getString("name"), str(r, "avatar_url"), str(r, "bio"), r.optString("member_since"),
             r.optString("sharing", "summary"), r.optBoolean("self"), challenges, activities)
     }
 
     /** Edit one activity entry; the server checks it still fits its challenge (dates, measure). */
+    /** A step-challenge entry: just the day's count, its date and a comment. */
+    fun editSteps(id: Int, date: LocalDate, steps: Int, comment: String) {
+        request("/api/activities/$id", "PATCH", JSONObject().put("steps", steps).put("activity_date", date.toString()).put("comment", comment))
+    }
+
     fun editActivity(id: Int, type: String, date: LocalDate, minutes: Int?, distance: Double?, unit: String, startTime: String?, endTime: String?, comment: String) {
         val body = JSONObject()
             .put("activity_type", type)
@@ -342,6 +363,8 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
                 comment = a.optString("comment").takeUnless { a.isNull("comment") },
                 source = a.optString("source"),
                 hasRoute = a.optBoolean("has_route"),
+                steps = if (a.isNull("steps") || !a.has("steps")) null else a.getInt("steps"),
+                measuresSteps = a.optString("metric") == "steps",
             )
         }
         return list to r.optBoolean("more")
@@ -362,7 +385,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
     /** Manual log into one or more challenges at once (all or none). */
     fun logActivity(
         targets: List<Target>, type: String, date: LocalDate, minutes: Int?, distance: Double?, unit: String,
-        startTime: String?, endTime: String?, comment: String?,
+        startTime: String?, endTime: String?, comment: String?, steps: Int? = null,
     ): Int {
         val body = JSONObject()
             .put("targets", JSONArray(targets.map { t -> JSONObject().put("challenge_id", t.challengeId).apply { t.teamId?.let { put("team_id", it) } } }))
@@ -371,6 +394,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
             .put("minutes", minutes ?: JSONObject.NULL)
             .put("comment", comment ?: "")
         if (distance != null) body.put("distance", distance).put("distance_unit", unit)
+        if (steps != null) body.put("steps", steps)
         if (!startTime.isNullOrBlank() && !endTime.isNullOrBlank()) body.put("start_time", startTime).put("end_time", endTime)
         return request("/api/activities", "POST", body).optInt("created", targets.size)
     }
@@ -406,7 +430,18 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
                     }
             }))
         val response = request("/api/health/import", "POST", payload)
-        return ImportResult(response.getInt("added"), response.getInt("skipped"))
+        return ImportResult(response.getInt("added"), response.getInt("skipped"), response.optInt("updated"))
+    }
+
+    /** Daily step totals; the server adds new days and updates days already sent. */
+    fun importSteps(days: List<StepDay>): ImportResult {
+        if (days.isEmpty()) return ImportResult(0, 0)
+        val payload = JSONObject().put("source", "health_connect").put("records", JSONArray(days.map { d ->
+            JSONObject().put("challenge_id", d.target.challengeId).apply { d.target.teamId?.let { put("team_id", it) } }
+                .put("activity_type", "Steps").put("steps", d.steps).put("activity_date", d.date.toString()).put("source_ref", "steps:${d.date}")
+        }))
+        val r = request("/api/health/import", "POST", payload)
+        return ImportResult(r.getInt("added"), r.getInt("skipped"), r.optInt("updated"))
     }
 
     fun updateProfile(name: String?, email: String?, currentPassword: String?, newPassword: String?, avatarUrl: String?,

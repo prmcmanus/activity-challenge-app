@@ -1324,7 +1324,7 @@ test('a challenge can measure distance instead of minutes; minutes stays the def
   assert.equal(detail.body.metric, 'distance');
   assert.equal(detail.body.distance_unit, 'mi');
 
-  const bad = await jsonFetch(`${origin}/api/challenges`, ann.cookie, 'POST', { name: 'Bad', start_date: '2027-07-01', end_date: '2027-07-31', metric: 'steps' });
+  const bad = await jsonFetch(`${origin}/api/challenges`, ann.cookie, 'POST', { name: 'Bad', start_date: '2027-07-01', end_date: '2027-07-31', metric: 'calories' });
   assert.equal(bad.status, 400);
   const badUnit = await jsonFetch(`${origin}/api/challenges/${challengeId}`, ann.cookie, 'PATCH', { distance_unit: 'furlongs' });
   assert.equal(badUnit.status, 400);
@@ -1937,4 +1937,41 @@ test('app update links download without a session, briefly', async () => {
   assert.equal((await fetch(`${origin}/api/app/android/download?t=1.${'0'.repeat(32)}`)).status, 401);
   assert.equal((await fetch(`${origin}/api/app/android/link`)).status, 401);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('step challenges: log a day of steps, rank by steps, and a re-synced day updates in place', async () => {
+  const sal = await register('Sal Steps');
+  const tom = await register('Tom Steps');
+  const c = await jsonFetch(`${origin}/api/challenges`, sal.cookie, 'POST', { name: 'Step Up', start_date: '2027-11-01', end_date: '2027-11-30', metric: 'steps', participation: 'individual' });
+  assert.equal(c.status, 201);
+  await jsonFetch(`${origin}/api/join`, tom.cookie, 'POST', { code: c.body.invite_code });
+  assert.equal((await jsonFetch(`${origin}/api/challenges`, sal.cookie, 'POST', { name: 'Bad', start_date: '2027-11-01', end_date: '2027-11-30', metric: 'jumps' })).status, 400);
+
+  // the challenge's measure is required, and must be a sensible whole number
+  const noSteps = await jsonFetch(`${origin}/api/activities`, sal.cookie, 'POST', { challenge_id: c.body.id, activity_type: 'Steps', minutes: 30, activity_date: '2027-11-02' });
+  assert.match(noSteps.body.error, /counts steps/);
+  assert.equal((await jsonFetch(`${origin}/api/activities`, sal.cookie, 'POST', { challenge_id: c.body.id, activity_type: 'Steps', steps: 12.5, activity_date: '2027-11-02' })).status, 400);
+  assert.equal((await jsonFetch(`${origin}/api/activities`, sal.cookie, 'POST', { challenge_id: c.body.id, activity_type: 'Steps', steps: 999999, activity_date: '2027-11-02' })).status, 400);
+  assert.equal((await jsonFetch(`${origin}/api/activities`, sal.cookie, 'POST', { challenge_id: c.body.id, activity_type: 'Steps', steps: 8000, activity_date: '2027-11-02' })).status, 201);
+
+  // a device sends Tom's daily totals; sending a day again replaces it
+  const sync = steps => jsonFetch(`${origin}/api/health/import`, tom.cookie, 'POST', { source: 'health_connect', records: [{ challenge_id: c.body.id, activity_type: 'Steps', steps, activity_date: '2027-11-02', source_ref: 'steps:2027-11-02' }] });
+  assert.deepEqual((await sync(5000)).body, { added: 1, skipped: 0 });
+  assert.deepEqual((await sync(9500)).body, { added: 0, skipped: 0, updated: 1 });
+  assert.deepEqual((await sync(9500)).body, { added: 0, skipped: 1 });
+
+  const lb = (await jsonFetch(`${origin}/api/challenges/${c.body.id}/leaderboard`, sal.cookie)).body;
+  assert.deepEqual(lb.users.map(x => [x.name, x.steps]), [['Tom Steps', 9500], ['Sal Steps', 8000]]);
+  const dash = (await jsonFetch(`${origin}/api/dashboard`, sal.cookie)).body.challenges.find(x => x.id === c.body.id);
+  assert.deepEqual([dash.metric, dash.mySteps], ['steps', 8000]);
+
+  // edit the manual entry
+  const mine = (await jsonFetch(`${origin}/api/me/activities`, sal.cookie)).body.activities.find(a => a.challenge_id === c.body.id);
+  assert.equal(mine.steps, 8000);
+  assert.equal((await jsonFetch(`${origin}/api/activities/${mine.id}`, sal.cookie, 'PATCH', { steps: 11000 })).status, 200);
+  const lb2 = (await jsonFetch(`${origin}/api/challenges/${c.body.id}/leaderboard`, sal.cookie)).body;
+  assert.equal(lb2.users[0].name, 'Sal Steps');
+
+  const csv = await (await fetch(`${origin}/api/challenges/${c.body.id}/leaderboard/export?type=users`, { headers: { cookie: sal.cookie } })).text();
+  assert.match(csv.split('\r\n')[0], /Rank,Name,Email,Steps/);
 });

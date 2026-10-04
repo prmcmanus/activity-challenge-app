@@ -58,17 +58,20 @@ function initRichTextEditor(root){
 
 let me=null, dash=null, curChallenge=null, curLeaderboard=null, authTab='login';
 
-// --- what a challenge measures: active minutes (the default) or distance in miles/km ---------
+// --- what a challenge measures: active minutes (the default), distance in miles/km, or steps ---
 const isDistance=c=>c&&c.metric==='distance';
+// A step challenge counts a day's steps: one entry per day, no duration or distance.
+const isSteps=c=>c&&c.metric==='steps';
 // Individuals-only challenges have no teams: activity is logged straight to the challenge.
 const isIndividual=c=>!!c&&c.participation==='individual';
 const unitShort=c=>c&&c.distance_unit==='km'?'km':'mi';
 const unitLong=c=>c&&c.distance_unit==='km'?'Kilometres':'Miles';
 const fmtNum=n=>Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2});
-// The challenge's own measure, e.g. "12.4 mi" or "340 min".
-function fmtTotal(c,minutes,distance){return isDistance(c)?`${fmtNum(distance)} ${unitShort(c)}`:`${fmtNum(minutes)} min`}
+// The challenge's own measure, e.g. "12.4 mi", "340 min" or "84,200 steps".
+function fmtTotal(c,minutes,distance,steps){return isSteps(c)?`${fmtNum(steps)} steps`:isDistance(c)?`${fmtNum(distance)} ${unitShort(c)}`:`${fmtNum(minutes)} min`}
 // One activity: both figures when it has both, the challenge's measure first.
 function fmtEntry(c,x){
+  if(x.steps!=null&&(isSteps(c)||x.minutes==null&&x.distance==null))return `${fmtNum(x.steps)} steps`;
   const d=x.distance!=null?`${fmtNum(x.distance)} ${unitShort(c)}`:'',m=x.minutes!=null?`${fmtNum(x.minutes)} min`:'';
   return (isDistance(c)?[d,m]:[m,d]).filter(Boolean).join(' · ');
 }
@@ -140,7 +143,7 @@ function showView(id){['#homeView','#challengeView','#helpView','#adminView'].fo
 function showHome(){challengeBack='home';setUrl('/');showView('#homeView');renderHome()}
 function renderHome(){
   $('#hello').textContent=`Welcome, ${me.name}`;
-  $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${isIndividual(c)?'individuals':`${c.teams.length} of your team(s)`} · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
+  $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${isIndividual(c)?'individuals':`${c.teams.length} of your team(s)`} · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance,c.mySteps))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
   $all('[data-open]').forEach(b=>b.onclick=()=>openChallenge(Number(b.dataset.open)));
   loadMyActivity().catch(()=>{});
   loadAndroidCard();
@@ -187,15 +190,20 @@ function renderChallenge(){
   $('#exportUsersCsv').classList.toggle('hidden',!c.canManage);
   if(c.canManage){$('#exportTeamsCsv').href=`/api/challenges/${c.id}/leaderboard/export?type=teams`;$('#exportUsersCsv').href=`/api/challenges/${c.id}/leaderboard/export?type=users`}
   const mine=dash.challenges.find(x=>x.id===c.id);
-  $('#myChMinutes').textContent=fmtNum(mine?(isDistance(c)?mine.myDistance:mine.myMinutes):0);
-  $('#myChMetricLabel').textContent=isDistance(c)?`my ${unitLong(c).toLowerCase()}`:'my minutes';
+  $('#myChMinutes').textContent=fmtNum(mine?(isSteps(c)?mine.mySteps:isDistance(c)?mine.myDistance:mine.myMinutes):0);
+  $('#myChMetricLabel').textContent=isSteps(c)?'my steps':isDistance(c)?`my ${unitLong(c).toLowerCase()}`:'my minutes';
+  // A step challenge asks only for the day's step count and the date.
+  const steps=isSteps(c);
+  ['#activityTypeWrap','#minutesWrap','#timesRow','#gpxWrap'].forEach(s=>$(s).classList.toggle('hidden',steps));
+  $('#stepsWrap').classList.toggle('hidden',!steps);$('#stepsNote').classList.toggle('hidden',!steps);
+  $('#steps').required=steps;$('#activityType').required=!steps;
   // A distance challenge asks for distance and makes minutes optional; a minutes challenge is unchanged.
   $('#distanceWrap').classList.toggle('hidden',!isDistance(c));
   $('#distance').required=isDistance(c);
   // Either unit can be entered - the server converts. Defaults to the challenge's own unit each
   // time a different challenge is opened, but keeps the person's choice while they stay on it.
   if($('#distanceUnit').dataset.cid!==String(c.id)){$('#distanceUnit').value=unitShort(c);$('#distanceUnit').dataset.cid=String(c.id)}
-  $('#minutes').required=!isDistance(c);
+  $('#minutes').required=!isDistance(c)&&!steps;
   $('#minutesLabel').textContent=isDistance(c)?'Minutes (optional)':'Minutes';
   const solo=isIndividual(c),visiting=c.role==='admin';
   // A global admin looking at a challenge they have not joined manages it but has nothing to log.
@@ -220,8 +228,8 @@ function renderChallenge(){
   $all('[data-copylink]').forEach(b=>b.onclick=()=>copyInviteLink(b.dataset.copylink,b));
   $all('[data-jointeam]').forEach(b=>b.onclick=async()=>{await api(`/api/teams/${b.dataset.jointeam}/join`,{method:'POST'});await refreshChallenge()});
   $all('[data-manageteam]').forEach(b=>b.onclick=()=>openTeamManage(Number(b.dataset.manageteam),b.dataset.name));
-  $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${esc(fmtTotal(c,t.minutes,t.distance))}</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
-  $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b></span><span>${esc(fmtTotal(c,x.minutes,x.distance))}</span></div>`).join('')||'<p class="muted">No members yet.</p>';
+  $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${esc(fmtTotal(c,t.minutes,t.distance,t.steps))}</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
+  $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b></span><span>${esc(fmtTotal(c,x.minutes,x.distance,x.steps))}</span></div>`).join('')||'<p class="muted">No members yet.</p>';
   const recent=dash.mine.filter(a=>a.challenge_id===c.id);
   $('#recent').innerHTML=recent.map(x=>{
     const timeBit=x.start_time&&x.end_time?` · ${x.start_time}–${x.end_time}`:'';
@@ -244,7 +252,7 @@ async function openEditChallenge(c,after=refreshChallenge){
       <label>Description (optional)</label>
       <div class="rte" data-rte><div class="rte-toolbar"><button type="button" data-cmd="bold" title="Bold"><b>B</b></button><button type="button" data-cmd="italic" title="Italic"><i>I</i></button><button type="button" data-cmd="insertUnorderedList" title="Bullet list">&bull; List</button><button type="button" data-cmd="insertOrderedList" title="Numbered list">1. List</button><button type="button" data-cmd="createLink" title="Link">Link</button><button type="button" data-cmd="insertImage" title="Insert image">Image</button></div><div id="ecDescription" class="rte-editor" contenteditable="true" data-placeholder="What's this challenge about?">${c.description||''}</div></div>
       <div class="two"><label>Start<input id="ecStart" type="date" value="${c.start_date}" required></label><label>End<input id="ecEnd" type="date" value="${c.end_date}" required></label></div>
-      <div class="two"><label>Measure<select id="ecMetric" data-metric><option value="minutes"${isDistance(c)?'':' selected'}>Active minutes</option><option value="distance"${isDistance(c)?' selected':''}>Distance</option></select></label><label data-unitwrap>Distance unit<select id="ecUnit"><option value="mi"${unitShort(c)==='mi'?' selected':''}>Miles</option><option value="km"${unitShort(c)==='km'?' selected':''}>Kilometres</option></select></label></div>
+      <div class="two"><label>Measure<select id="ecMetric" data-metric><option value="minutes"${isDistance(c)||isSteps(c)?'':' selected'}>Active minutes</option><option value="distance"${isDistance(c)?' selected':''}>Distance</option><option value="steps"${isSteps(c)?' selected':''}>Steps</option></select></label><label data-unitwrap>Distance unit<select id="ecUnit"><option value="mi"${unitShort(c)==='mi'?' selected':''}>Miles</option><option value="km"${unitShort(c)==='km'?' selected':''}>Kilometres</option></select></label></div>
       <p class="muted">Changing what the challenge measures re-ranks the leaderboards. Entries logged without that measure count as zero toward it.</p>
       <label>Who takes part<select id="ecParticipation"><option value="teams"${isIndividual(c)?'':' selected'}>Teams</option><option value="individual"${isIndividual(c)?' selected':''}>Individuals only</option></select></label>
       <p class="muted">Individuals only hides teams: everyone logs straight to the challenge. Activity already logged with a team still counts on the individual leaderboard.</p>
@@ -295,8 +303,21 @@ function minutesBetween(start,end){
   return diff>0?diff:null;
 }
 
+// A step-challenge entry is just a day and a count.
+function openEditSteps(x){
+  $('#modalBody').innerHTML=`<h2>Edit steps</h2>
+    <form id="editStepsForm"><div class="two"><label>Steps that day<input id="esSteps" type="number" min="1" max="200000" step="1" value="${x.steps??''}" required></label><label>Date<input id="esDate" type="date" value="${x.activity_date}" required></label></div>
+      <label>Comment (optional)<input id="esComment" maxlength="500" value="${esc(x.comment||'')}"></label><button>Save changes</button></form><p id="esMsg" class="error"></p>`;
+  $('#modal').showModal();
+  $('#editStepsForm').onsubmit=async e=>{
+    e.preventDefault();
+    try{await api(`/api/activities/${x.id}`,{method:'PATCH',body:JSON.stringify({steps:$('#esSteps').value,activity_date:$('#esDate').value,comment:$('#esComment').value})});$('#modal').close();await refreshChallenge()}
+    catch(err){$('#esMsg').textContent=err.message}
+  };
+}
 function openEditActivity(x){
   const c=curChallenge,dist=isDistance(c);
+  if(isSteps(c))return openEditSteps(x);
   // Distance is shown whenever the challenge measures it, or the entry already has one.
   const distField=dist||x.distance!=null?`<label>Distance${dist?'':' (optional)'}<span class="with-unit"><input id="eaDistance" type="number" min="0.01" step="0.01" inputmode="decimal" value="${x.distance??''}"${dist?' required':''}><select id="eaUnit" aria-label="Distance unit"><option value="mi">miles</option><option value="km">km</option></select></span></label>`:'';
   $('#modalBody').innerHTML=`<h2>Edit activity</h2>
@@ -385,7 +406,7 @@ async function openTeamManage(tid,tname){
 
 // --- Administration (global admins) ---------------------------------------------------------
 let challengeBack='home',adminTab='users',adminUsers=[],adminChallenges=[];
-const MEASURE_LABEL=c=>c.metric==='distance'?`Distance (${c.distance_unit==='km'?'km':'miles'})`:'Active minutes';
+const MEASURE_LABEL=c=>c.metric==='steps'?'Steps':c.metric==='distance'?`Distance (${c.distance_unit==='km'?'km':'miles'})`:'Active minutes';
 const STATE_LABEL={running:'Running',upcoming:'Not started',finished:'Finished'};
 const plural=(n,one,many)=>`${n} ${n===1?one:many}`;
 async function showAdmin(){
@@ -643,6 +664,11 @@ $('#activityForm').onsubmit=async e=>{
   if(!solo&&!teamId){alert('Join a team first');return}
   try{
     // A minutes challenge has no distance box, so a GPX file's distance goes along as extra detail.
+    if(isSteps(curChallenge)){
+      await api('/api/activities',{method:'POST',body:JSON.stringify({...(solo?{}:{team_id:teamId}),challenge_id:curChallenge.id,activity_type:'Steps',steps:$('#steps').value,activity_date:$('#activityDate').value,comment:$('#activityComment').value})});
+      $('#activityMsg').textContent='';e.target.reset();$('#activityDate').value=new Date().toISOString().slice(0,10);
+      await refreshChallenge();return;
+    }
     const dist=isDistance(curChallenge)?{distance:$('#distance').value,distance_unit:$('#distanceUnit').value}:(pendingRoute&&pendingRoute.meters?{distance_m:pendingRoute.meters}:{});
     await api('/api/activities',{method:'POST',body:JSON.stringify({...(solo?{}:{team_id:teamId}),challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,...dist,activity_date:$('#activityDate').value,start_time:$('#startTime').value,end_time:$('#endTime').value,comment:$('#activityComment').value,...(pendingRoute?{route:pendingRoute.points}:{})})});
     pendingRoute=null;$('#gpxInfo').classList.add('hidden');
@@ -774,7 +800,7 @@ async function copyInviteLink(code,btn){
 const isAndroid=/Android/i.test(navigator.userAgent);
 const appInviteLink=code=>`intent://join/${encodeURIComponent(code)}#Intent;scheme=activetogether;package=com.activetogether.companion;end`;
 function inviteSummary(pv){
-  const c=pv.challenge,what=c.metric==='distance'?`distance (${c.distance_unit==='km'?'km':'miles'})`:'active minutes';
+  const c=pv.challenge,what=c.metric==='steps'?'steps':c.metric==='distance'?`distance (${c.distance_unit==='km'?'km':'miles'})`:'active minutes';
   const name=pv.team?`the team <b>${esc(pv.team.name)}</b> in <b>${esc(c.name)}</b>`:`<b>${esc(c.name)}</b>`;
   return {name,detail:`${esc(c.start_date)} → ${esc(c.end_date)} · measures ${what} · ${c.participation==='individual'?'individuals':'teams'} · ${c.members} member${c.members===1?'':'s'}`};
 }

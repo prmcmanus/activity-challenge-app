@@ -41,8 +41,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY,user_id INTEG
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS ticket_comments(id INTEGER PRIMARY KEY,ticket_id INTEGER NOT NULL,user_id INTEGER NOT NULL,body TEXT NOT NULL,internal INTEGER NOT NULL DEFAULT 0,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);`);
-// A challenge measures either active minutes (the original behaviour, and the default for every
-// existing challenge) or distance. Distance is stored on activities in metres whatever the
+// A challenge measures active minutes (the original behaviour, and the default for every
+// existing challenge), distance, or steps. Distance is stored on activities in metres whatever the
 // challenge's display unit, so changing a challenge between miles and km never rewrites history.
 ensureColumn('challenges','metric',"TEXT NOT NULL DEFAULT 'minutes'");
 ensureColumn('challenges','distance_unit',"TEXT NOT NULL DEFAULT 'mi'");
@@ -73,7 +73,7 @@ function relaxActivityColumns(){
   db.exec('PRAGMA foreign_keys=OFF');
   try{
     db.exec('BEGIN');
-    db.exec(`CREATE TABLE activities_new(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,team_id INTEGER,challenge_id INTEGER NOT NULL,activity_type TEXT NOT NULL,minutes INTEGER CHECK(minutes>0),activity_date TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'manual',source_ref TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,start_time TEXT,end_time TEXT,comment TEXT,distance_m REAL,route_id INTEGER,UNIQUE(user_id,source,source_ref,challenge_id),FOREIGN KEY(user_id) REFERENCES users(id),FOREIGN KEY(team_id) REFERENCES teams(id),FOREIGN KEY(challenge_id) REFERENCES challenges(id))`);
+    db.exec(`CREATE TABLE activities_new(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,team_id INTEGER,challenge_id INTEGER NOT NULL,activity_type TEXT NOT NULL,minutes INTEGER CHECK(minutes>0),activity_date TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'manual',source_ref TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,start_time TEXT,end_time TEXT,comment TEXT,distance_m REAL,route_id INTEGER,steps INTEGER,UNIQUE(user_id,source,source_ref,challenge_id),FOREIGN KEY(user_id) REFERENCES users(id),FOREIGN KEY(team_id) REFERENCES teams(id),FOREIGN KEY(challenge_id) REFERENCES challenges(id))`);
     db.exec(`INSERT INTO activities_new(${names}) SELECT ${names} FROM activities`);
     db.exec('DROP TABLE activities');
     db.exec('ALTER TABLE activities_new RENAME TO activities');
@@ -83,6 +83,9 @@ function relaxActivityColumns(){
   finally{db.exec('PRAGMA foreign_keys=ON')}
 }
 relaxActivityColumns();
+// Steps for a step challenge: one entry per day (a phone counts steps all day, not per workout).
+// Added after the rebuild above so an old table is reshaped before it gains the column.
+ensureColumn('activities','steps','INTEGER');
 
 // --- uploaded images (avatars, team logos, description images) --------------------------
 // Stored under DATA_DIR (the persistent volume), never under the app's own public/ dir, which
@@ -300,7 +303,8 @@ function validateTimes(start_time,end_time){
 }
 // --- what a challenge measures ------------------------------------------------------------
 const METERS_PER={mi:1609.344,km:1000};
-const challengeMetric=c=>c&&c.metric==='distance'?'distance':'minutes';
+const METRICS=['minutes','distance','steps'];
+const challengeMetric=c=>c&&METRICS.includes(c.metric)?c.metric:'minutes';
 const PROFILE_SHARING=['private','summary','full'];
 const isIndividual=c=>!!c&&c.participation==='individual';
 // Where an activity may be logged. A team challenge needs a team of that challenge the user is in
@@ -324,7 +328,7 @@ const metersToUnit=(m,unit)=>Math.round(((Number(m)||0)/METERS_PER[unit==='km'?'
 // metric/distance_unit as sent on create or edit: undefined means "not sent" (keep what is there).
 function parseChallengeMeasure(b){
   const out={};
-  if(b.metric!==undefined){if(!['minutes','distance'].includes(b.metric))throw new Error('metric must be minutes or distance');out.metric=b.metric}
+  if(b.metric!==undefined){if(!METRICS.includes(b.metric))throw new Error('metric must be minutes, distance or steps');out.metric=b.metric}
   if(b.distance_unit!==undefined){if(!METERS_PER[b.distance_unit])throw new Error('distance_unit must be mi or km');out.distance_unit=b.distance_unit}
   if(b.participation!==undefined){if(!['teams','individual'].includes(b.participation))throw new Error('participation must be teams or individual');out.participation=b.participation}
   return out;
@@ -337,6 +341,16 @@ function parseMinutes(v){
   if(v===null||v==='')return null;
   const n=Number(v);
   if(!Number.isFinite(n)||n<=0)throw new Error('Minutes must be a positive number');
+  return n;
+}
+// Steps: undefined when not sent, null when sent empty, else a whole number (a day's count, so capped
+// well above anything a person walks).
+function parseSteps(v){
+  if(v===undefined)return undefined;
+  if(v===null||v==='')return null;
+  const n=Number(v);
+  if(!Number.isInteger(n)||n<=0)throw new Error('Steps must be a whole number above zero');
+  if(n>200000)throw new Error('That is more steps than anyone walks in a day - check the number');
   return n;
 }
 function parseDistance(b,fallbackUnit){
@@ -400,8 +414,10 @@ function requireInWindow(challenge,date){
   if(date<challenge.start_date||date>challenge.end_date)throw new Error(`This challenge runs from ${challenge.start_date} to ${challenge.end_date} - the activity date must fall within it`);
 }
 // The challenge's own measure is required; the other is optional extra detail.
-function requireMeasure(challenge,minutes,distance_m){
-  if(challengeMetric(challenge)==='distance'){if(!distance_m)throw new Error('This challenge measures distance - enter how far you went')}
+function requireMeasure(challenge,minutes,distance_m,steps){
+  const metric=challengeMetric(challenge);
+  if(metric==='distance'){if(!distance_m)throw new Error('This challenge measures distance - enter how far you went')}
+  else if(metric==='steps'){if(!steps)throw new Error('This challenge counts steps - enter your step count for the day')}
   else if(!minutes)throw new Error('This challenge measures active minutes - enter how long you were active');
 }
 // Shared by self-service PATCH /api/me and admin PATCH /api/admin/users/:id. Role is deliberately
@@ -414,8 +430,8 @@ function dashboard(uid){
   for(const c of challenges){
     c.role=c.challenge_role; delete c.challenge_role;
     c.teams=db.prepare(`SELECT t.id,t.name,t.invite_code,tm.team_role,(SELECT COUNT(*) FROM team_members z WHERE z.team_id=t.id) members FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=? AND t.challenge_id=? ORDER BY t.name`).all(uid,c.id);
-    const tot=db.prepare('SELECT COALESCE(SUM(minutes),0) m,COALESCE(SUM(distance_m),0) d FROM activities WHERE user_id=? AND challenge_id=?').get(uid,c.id);
-    c.myMinutes=tot.m;
+    const tot=db.prepare('SELECT COALESCE(SUM(minutes),0) m,COALESCE(SUM(distance_m),0) d,COALESCE(SUM(steps),0) s FROM activities WHERE user_id=? AND challenge_id=?').get(uid,c.id);
+    c.myMinutes=tot.m;c.mySteps=tot.s;
     c.myDistance=metersToUnit(tot.d,c.distance_unit);
   }
   const mine=db.prepare(`SELECT a.*,t.name team_name,c.name challenge_name,c.distance_unit FROM activities a LEFT JOIN teams t ON t.id=a.team_id JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=? ORDER BY activity_date DESC,a.id DESC LIMIT 20`).all(uid);
@@ -427,9 +443,9 @@ function dashboard(uid){
 // come back either way (minutes, and distance in the challenge's unit) so the page can show the
 // secondary figure too; the ORDER BY column is chosen from a fixed pair, never from input.
 function leaderboard(challenge){
-  const cid=challenge.id,unit=challengeUnit(challenge),order=challengeMetric(challenge)==='distance'?'distance_m':'minutes';
-  const teams=db.prepare(`SELECT t.id,t.name,t.image_url,COALESCE(SUM(a.minutes),0) minutes,COALESCE(SUM(a.distance_m),0) distance_m FROM teams t LEFT JOIN activities a ON a.team_id=t.id WHERE t.challenge_id=? GROUP BY t.id ORDER BY ${order} DESC,t.name`).all(cid);
-  const users=db.prepare(`SELECT us.id,us.name,us.email,us.avatar_url,COALESCE(SUM(a.minutes),0) minutes,COALESCE(SUM(a.distance_m),0) distance_m FROM challenge_members cmem JOIN users us ON us.id=cmem.user_id LEFT JOIN activities a ON a.user_id=us.id AND a.challenge_id=cmem.challenge_id WHERE cmem.challenge_id=? GROUP BY us.id ORDER BY ${order} DESC,us.name`).all(cid);
+  const cid=challenge.id,unit=challengeUnit(challenge),order={distance:'distance_m',steps:'steps'}[challengeMetric(challenge)]||'minutes';
+  const teams=db.prepare(`SELECT t.id,t.name,t.image_url,COALESCE(SUM(a.minutes),0) minutes,COALESCE(SUM(a.distance_m),0) distance_m,COALESCE(SUM(a.steps),0) steps FROM teams t LEFT JOIN activities a ON a.team_id=t.id WHERE t.challenge_id=? GROUP BY t.id ORDER BY ${order} DESC,t.name`).all(cid);
+  const users=db.prepare(`SELECT us.id,us.name,us.email,us.avatar_url,COALESCE(SUM(a.minutes),0) minutes,COALESCE(SUM(a.distance_m),0) distance_m,COALESCE(SUM(a.steps),0) steps FROM challenge_members cmem JOIN users us ON us.id=cmem.user_id LEFT JOIN activities a ON a.user_id=us.id AND a.challenge_id=cmem.challenge_id WHERE cmem.challenge_id=? GROUP BY us.id ORDER BY ${order} DESC,us.name`).all(cid);
   const shape=({distance_m,...r})=>({...r,distance:metersToUnit(distance_m,unit)});
   return {teams:teams.map(shape),users:users.map(shape)};
 }
@@ -566,10 +582,10 @@ async function api(req,res,url){
  }
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/members$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!db.prepare('SELECT id FROM challenges WHERE id=?').get(cid))return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only a challenge owner can view this'});const members=db.prepare('SELECT us.id,us.name,us.email,cm.challenge_role FROM challenge_members cm JOIN users us ON us.id=cm.user_id WHERE cm.challenge_id=? ORDER BY cm.challenge_role,us.name').all(cid);return send(res,200,{members})}
  if(m==='POST'&&url.pathname.match(/^\/api\/challenges\/\d+\/owners$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!db.prepare('SELECT id FROM challenges WHERE id=?').get(cid))return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only a challenge owner can add another owner'});const b=await body(req),email=String(b.email||'').toLowerCase().trim();if(!email)return send(res,400,{error:'Email is required'});const found=db.prepare('SELECT id,name,email FROM users WHERE email=?').get(email);if(!found)return send(res,404,{error:'No account found for that email. Ask them to register first.'});const existing=db.prepare('SELECT 1 FROM challenge_members WHERE challenge_id=? AND user_id=?').get(cid,found.id);if(existing)db.prepare("UPDATE challenge_members SET challenge_role='owner' WHERE challenge_id=? AND user_id=?").run(cid,found.id);else db.prepare("INSERT INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'owner')").run(cid,found.id);return send(res,201,{ok:true,user:found})}
- if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard\/export$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner or a global admin can export the leaderboard'});const type=url.searchParams.get('type')==='users'?'users':'teams';const lb=leaderboard(challenge),dist=challengeMetric(challenge)==='distance',unitName=challengeUnit(challenge)==='km'?'Kilometres':'Miles';
+ if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard\/export$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner or a global admin can export the leaderboard'});const type=url.searchParams.get('type')==='users'?'users':'teams';const lb=leaderboard(challenge),metric=challengeMetric(challenge),dist=metric==='distance',unitName=challengeUnit(challenge)==='km'?'Kilometres':'Miles';
    // A minutes challenge exports exactly as before; a distance challenge leads with distance and
    // keeps minutes alongside, since synced entries usually carry both.
-   const valueCols=dist?[unitName,'Minutes']:['Minutes'],values=r=>dist?[r.distance,r.minutes]:[r.minutes];let header,rows;if(type==='teams'){header=['Rank','Team',...valueCols];rows=lb.teams.map((r,i)=>[i+1,r.name,...values(r)])}else{header=['Rank','Name','Email',...valueCols];rows=lb.users.map((r,i)=>[i+1,r.name,r.email,...values(r)])}const csv=[header,...rows].map(r=>r.map(csvEscape).join(',')).join('\r\n'),safeName=challenge.name.replace(/[^a-z0-9]+/gi,'-').toLowerCase()||'challenge';res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="${safeName}-${type}.csv"`});return res.end(csv)}
+   const valueCols=metric==='steps'?['Steps']:dist?[unitName,'Minutes']:['Minutes'],values=r=>metric==='steps'?[r.steps]:dist?[r.distance,r.minutes]:[r.minutes];let header,rows;if(type==='teams'){header=['Rank','Team',...valueCols];rows=lb.teams.map((r,i)=>[i+1,r.name,...values(r)])}else{header=['Rank','Name','Email',...valueCols];rows=lb.users.map((r,i)=>[i+1,r.name,r.email,...values(r)])}const csv=[header,...rows].map(r=>r.map(csvEscape).join(',')).join('\r\n'),safeName=challenge.name.replace(/[^a-z0-9]+/gi,'-').toLowerCase()||'challenge';res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="${safeName}-${type}.csv"`});return res.end(csv)}
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!challengeAccess(u.id,cid)&&!isAdmin(u))return send(res,403,{error:'You need an invite code to view this challenge'});const challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});const lb=leaderboard(challenge);return send(res,200,{metric:challengeMetric(challenge),distance_unit:challengeUnit(challenge),participation:isIndividual(challenge)?'individual':'teams',teams:lb.teams.map(({email,...t})=>t),users:lb.users.map(({email,...x})=>x)})}
 
  // What an invite link is for, so the page (or app) can ask "join X?" first. Works signed out too:
@@ -614,15 +630,15 @@ async function api(req,res,url){
    const out={id:target.id,name:target.name,avatar_url:target.avatar_url,bio:target.bio||null,member_since:String(target.created_at||'').slice(0,10),sharing,self};
    if(sharing!=='private'){
      out.challenges=shared.map(c=>{
-       const lb=leaderboard(c),i=lb.users.findIndex(x=>x.id===id),me=lb.users[i]||{minutes:0,distance:0};
+       const lb=leaderboard(c),i=lb.users.findIndex(x=>x.id===id),me=lb.users[i]||{minutes:0,distance:0,steps:0};
        const team=db.prepare('SELECT t.name FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=? AND t.challenge_id=? ORDER BY t.name LIMIT 1').get(id,c.id);
        return {id:c.id,name:c.name,start_date:c.start_date,end_date:c.end_date,metric:challengeMetric(c),distance_unit:challengeUnit(c),participation:isIndividual(c)?'individual':'teams',
-         team:team?team.name:null,minutes:me.minutes,distance:me.distance,rank:i+1,of:lb.users.length};
+         team:team?team.name:null,minutes:me.minutes,distance:me.distance,steps:me.steps,rank:i+1,of:lb.users.length};
      });
    }
    if(sharing==='full'&&shared.length){
      const ids=shared.map(c=>c.id);
-     out.activities=db.prepare(`SELECT a.activity_type,a.minutes,a.distance_m,a.activity_date,a.start_time,a.comment,c.name challenge_name,c.metric,c.distance_unit FROM activities a JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=? AND a.challenge_id IN (${ids.map(()=>'?').join(',')}) ORDER BY a.activity_date DESC,a.start_time DESC,a.id DESC LIMIT 30`)
+     out.activities=db.prepare(`SELECT a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.comment,c.name challenge_name,c.metric,c.distance_unit FROM activities a JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=? AND a.challenge_id IN (${ids.map(()=>'?').join(',')}) ORDER BY a.activity_date DESC,a.start_time DESC,a.id DESC LIMIT 30`)
        .all(id,...ids).map(({distance_m,...a})=>({...a,distance:distance_m==null?null:metersToUnit(distance_m,a.distance_unit)}));
    }
    return send(res,200,out);
@@ -641,10 +657,10 @@ async function api(req,res,url){
      const challengeId=Number(t.challenge_id),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(challengeId);
      const target=activityTarget(u,challenge,t.team_id);
      if(target.error)return send(res,target.status,{error:rawTargets.length>1&&challenge?`${challenge.name}: ${target.error}`:target.error});
-     let times,minutes,distance_m;
-     try{requireInWindow(challenge,b.activity_date);times=validateTimes(b.start_time,b.end_time);minutes=parseMinutes(b.minutes)??null;distance_m=parseDistance(b,challengeUnit(challenge))??null;requireMeasure(challenge,minutes,distance_m)}
+     let times,minutes,distance_m,steps;
+     try{requireInWindow(challenge,b.activity_date);times=validateTimes(b.start_time,b.end_time);minutes=parseMinutes(b.minutes)??null;distance_m=parseDistance(b,challengeUnit(challenge))??null;steps=parseSteps(b.steps)??null;requireMeasure(challenge,minutes,distance_m,steps)}
      catch(e){return send(res,400,{error:rawTargets.length>1?`${challenge.name}: ${e.message}`:e.message})}
-     rows.push({challengeId,teamId:target.teamId,times,minutes,distance_m});
+     rows.push({challengeId,teamId:target.teamId,times,minutes,distance_m,steps});
    }
    let route;
    try{route=parseRoute(b.route)}catch(e){return send(res,400,{error:e.message})}
@@ -653,8 +669,8 @@ async function api(req,res,url){
    try{
      db.exec('BEGIN');
      const routeId=route?saveRoute(u.id,source,sourceRef,route):null;
-     const ins=db.prepare('INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,distance_m,activity_date,source,source_ref,start_time,end_time,comment,route_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)');
-     for(const r of rows)ins.run(u.id,r.teamId,r.challengeId,b.activity_type,r.minutes,r.distance_m,b.activity_date,source,sourceRef,r.times.start_time,r.times.end_time,comment,routeId);
+     const ins=db.prepare('INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,distance_m,steps,activity_date,source,source_ref,start_time,end_time,comment,route_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+     for(const r of rows)ins.run(u.id,r.teamId,r.challengeId,b.activity_type,r.minutes,r.distance_m,r.steps,b.activity_date,source,sourceRef,r.times.start_time,r.times.end_time,comment,routeId);
      db.exec('COMMIT');
    }catch(e){db.exec('ROLLBACK');return send(res,400,{error:'Invalid or duplicate activity'})}
    return send(res,201,{ok:true,created:rows.length});
@@ -664,7 +680,7 @@ async function api(req,res,url){
  if(m==='GET'&&url.pathname==='/api/me/activities'){
    if(!need(res,u))return;
    const limit=Math.min(Math.max(Number(url.searchParams.get('limit'))||50,1),200),offset=Math.max(Number(url.searchParams.get('offset'))||0,0);
-   const rows=db.prepare(`SELECT a.id,a.challenge_id,a.team_id,a.activity_type,a.minutes,a.distance_m,a.activity_date,a.start_time,a.end_time,a.comment,a.source,a.route_id,t.name team_name,c.name challenge_name,c.metric,c.distance_unit FROM activities a LEFT JOIN teams t ON t.id=a.team_id JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=? ORDER BY a.activity_date DESC,a.start_time DESC,a.id DESC LIMIT ? OFFSET ?`).all(u.id,limit+1,offset);
+   const rows=db.prepare(`SELECT a.id,a.challenge_id,a.team_id,a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.end_time,a.comment,a.source,a.route_id,t.name team_name,c.name challenge_name,c.metric,c.distance_unit FROM activities a LEFT JOIN teams t ON t.id=a.team_id JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=? ORDER BY a.activity_date DESC,a.start_time DESC,a.id DESC LIMIT ? OFFSET ?`).all(u.id,limit+1,offset);
    const more=rows.length>limit;
    const activities=rows.slice(0,limit).map(({route_id,...a})=>({...a,distance:a.distance_m==null?null:metersToUnit(a.distance_m,a.distance_unit),has_route:route_id!=null}));
    return send(res,200,{activities,more});
@@ -688,18 +704,19 @@ async function api(req,res,url){
    const b=await body(req);
    const activity_type=b.activity_type!==undefined?String(b.activity_type).trim():existing.activity_type;
    const challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(existing.challenge_id);
-   let minutes,distance_m;
-   try{minutes=parseMinutes(b.minutes);distance_m=parseDistance(b,challengeUnit(challenge))}catch(e){return send(res,400,{error:e.message})}
+   let minutes,distance_m,steps;
+   try{minutes=parseMinutes(b.minutes);distance_m=parseDistance(b,challengeUnit(challenge));steps=parseSteps(b.steps)}catch(e){return send(res,400,{error:e.message})}
    if(minutes===undefined)minutes=existing.minutes;
    if(distance_m===undefined)distance_m=existing.distance_m;
+   if(steps===undefined)steps=existing.steps;
    const activity_date=b.activity_date!==undefined?b.activity_date:existing.activity_date;
    const start_time=b.start_time!==undefined?b.start_time:existing.start_time;
    const end_time=b.end_time!==undefined?b.end_time:existing.end_time;
    const comment=b.comment!==undefined?(String(b.comment).trim().slice(0,500)||null):existing.comment;
    if(!activity_type||!activity_date)return send(res,400,{error:'Invalid activity fields'});
    let times;
-   try{if(b.activity_date!==undefined)requireInWindow(challenge,activity_date);times=validateTimes(start_time,end_time);requireMeasure(challenge,minutes,distance_m)}catch(e){return send(res,400,{error:e.message})}
-   db.prepare('UPDATE activities SET activity_type=?,minutes=?,distance_m=?,activity_date=?,start_time=?,end_time=?,comment=? WHERE id=?').run(activity_type,minutes,distance_m,activity_date,times.start_time,times.end_time,comment,id);
+   try{if(b.activity_date!==undefined)requireInWindow(challenge,activity_date);times=validateTimes(start_time,end_time);requireMeasure(challenge,minutes,distance_m,steps)}catch(e){return send(res,400,{error:e.message})}
+   db.prepare('UPDATE activities SET activity_type=?,minutes=?,distance_m=?,steps=?,activity_date=?,start_time=?,end_time=?,comment=? WHERE id=?').run(activity_type,minutes,distance_m,steps,activity_date,times.start_time,times.end_time,comment,id);
    return send(res,200,{ok:true});
  }
  if(m==='DELETE'&&url.pathname.match(/^\/api\/activities\/\d+$/)){
@@ -869,7 +886,7 @@ async function api(req,res,url){
    try{b=await body(req,ROUTE_BODY_MAX)}catch(e){return send(res,413,{error:'Too much data in one upload - send fewer workouts at a time'})}
    if(!Array.isArray(b.records))return send(res,400,{error:'records array required'});
    if(!['health_connect','health_kit'].includes(b.source))return send(res,400,{error:'source must be health_connect or health_kit'});
-   let added=0,skipped=0;
+   let added=0,skipped=0,updated=0;
    for(const x of b.records){
      const challengeId=Number(x.challenge_id),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(challengeId);
      const target=activityTarget(u,challenge,x.team_id);
@@ -878,15 +895,22 @@ async function api(req,res,url){
      // Minutes stay whole numbers from a device, as before. Distance comes in metres. A record
      // without the challenge's own measure (a yoga session in a distance challenge) is skipped,
      // and counted as such, rather than stored as a zero.
-     let minutes,distance_m,route;
+     let minutes,distance_m,steps,route;
      try{
        route=parseRoute(x.route);
        minutes=parseMinutes(x.minutes)??null;
        if(minutes!==null&&!Number.isInteger(minutes))throw new Error('whole minutes only');
        distance_m=x.distance_m===undefined?null:parseDistance({distance_m:x.distance_m})??null;
-       requireMeasure(challenge,minutes,distance_m);
+       steps=parseSteps(x.steps)??null;
+       requireMeasure(challenge,minutes,distance_m,steps);
        requireInWindow(challenge,x.activity_date);
      }catch(e){skipped++;continue}
+     // A day's step total keeps growing until midnight: sending the same day again replaces the
+     // count already stored rather than being skipped as a duplicate.
+     if(steps!==null&&minutes===null&&distance_m===null){
+       const prev=db.prepare('SELECT id,steps FROM activities WHERE user_id=? AND source=? AND source_ref=? AND challenge_id=?').get(u.id,b.source,String(x.source_ref),challengeId);
+       if(prev){if(prev.steps!==steps){db.prepare('UPDATE activities SET steps=? WHERE id=?').run(steps,prev.id);updated++}else skipped++;continue}
+     }
      // Times here are best-effort device data, not direct user input: an inconsistent or
      // midnight-crossing pair just means "no times", not "reject the whole synced session".
      let times={start_time:null,end_time:null};try{times=validateTimes(x.start_time,x.end_time)}catch(e){}
@@ -894,11 +918,11 @@ async function api(req,res,url){
        // A workout already synced into another challenge keeps its stored route, so a later record
        // for the same workout need not send the points again.
        const routeId=route?saveRoute(u.id,b.source,String(x.source_ref),route):(db.prepare('SELECT id FROM routes WHERE user_id=? AND source=? AND source_ref=?').get(u.id,b.source,String(x.source_ref))?.id??null);
-       db.prepare('INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,distance_m,activity_date,source,source_ref,start_time,end_time,route_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(u.id,teamId,challengeId,String(x.activity_type||'Synced activity').trim().slice(0,60)||'Synced activity',minutes,distance_m,x.activity_date,b.source,x.source_ref,times.start_time,times.end_time,routeId);added++
+       db.prepare('INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,distance_m,steps,activity_date,source,source_ref,start_time,end_time,route_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(u.id,teamId,challengeId,String(x.activity_type||'Synced activity').trim().slice(0,60)||'Synced activity',minutes,distance_m,steps,x.activity_date,b.source,x.source_ref,times.start_time,times.end_time,routeId);added++
      }catch(e){skipped++}
    }
    pruneRoutes();
-   return send(res,200,{added,skipped});
+   return send(res,200,{added,skipped,...(updated?{updated}:{})});
  }
  // Which of these device records this user has already synced, so the companion's review dialog
  // can show them as done rather than offering them again (a re-upload would be skipped anyway).

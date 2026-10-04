@@ -85,7 +85,9 @@ private fun ChallengeForm(vm: AppViewModel, existing: ChallengeDetail?, done: (I
     var description by remember { mutableStateOf(originalDescription) }
     var start by remember { mutableStateOf(existing?.startDate ?: today) }
     var end by remember { mutableStateOf(existing?.endDate ?: today.plusDays(29)) }
-    var distance by remember { mutableStateOf(existing?.measuresDistance ?: false) }
+    // "minutes", "distance" or "steps"
+    var measure by remember { mutableStateOf(when { existing?.measuresSteps == true -> "steps"; existing?.measuresDistance == true -> "distance"; else -> "minutes" }) }
+    val distance = measure == "distance"
     var unit by remember { mutableStateOf(existing?.distanceUnit ?: vm.prefs.preferredUnit) }
     var individual by remember { mutableStateOf(existing?.individual ?: false) }
     var firstTeam by remember { mutableStateOf("") }
@@ -102,7 +104,7 @@ private fun ChallengeForm(vm: AppViewModel, existing: ChallengeDetail?, done: (I
         if (error != null) return
         // The web editor allows formatting; only replace the description when it was actually edited here.
         val desc = if (existing == null) textToHtml(description).ifBlank { null } else if (description.trim() != originalDescription) textToHtml(description) else null
-        val f = ChallengeFields(name.trim(), desc, start, end, distance, unit, individual)
+        val f = ChallengeFields(name.trim(), desc, start, end, distance, unit, individual, measure == "steps")
         busy = true
         scope.launch {
             val id = if (existing == null) vm.createChallenge(f, firstTeam) else if (vm.updateChallenge(existing.id, f)) existing.id else null
@@ -126,12 +128,14 @@ private fun ChallengeForm(vm: AppViewModel, existing: ChallengeDetail?, done: (I
             }
         }
         SectionCard("How it works") {
-            Dropdown("Measure", listOf(false, true), distance, { if (it) "Distance" else "Active minutes" }, { distance = it })
+            Dropdown("Measure", listOf("minutes", "distance", "steps"), measure, { when (it) { "distance" -> "Distance"; "steps" -> "Steps"; else -> "Active minutes" } }, { measure = it })
+            if (measure == "steps") Text("Everyone's daily step total counts. The app fills it in from the phone, or people enter it by hand.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (distance) Dropdown("Distance unit", listOf("mi", "km"), unit, { if (it == "km") "Kilometres" else "Miles" }, { unit = it })
             Dropdown("Who takes part", listOf(false, true), individual, { if (it) "Individuals only" else "Teams" }, { individual = it })
             Text(if (individual) "Everyone logs straight to the challenge; there are no teams." else "People join a team and the teams compete, as well as individuals.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (existing != null && existing.measuresDistance != distance)
+            if (existing != null && (existing.measuresDistance != distance || existing.measuresSteps != (measure == "steps")))
                 Text("Changing the measure re-ranks the leaderboards. Entries logged without that measure count as zero toward it.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             if (existing == null && !individual)

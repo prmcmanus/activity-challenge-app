@@ -7,6 +7,9 @@ on:
     paths: ["companion/ios/**", ".github/workflows/ios.yml"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-15
@@ -45,6 +48,16 @@ jobs:
             companion/ios/version.txt
             companion/ios/build.txt
           retention-days: 30
+      # A public download for any PC: the newest .ipa on the "Latest app builds" release (the Android .apk goes there too).
+      - name: Publish to the release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: companion/ios
+        run: |
+          gh release view latest-apps >/dev/null 2>&1 || gh release create latest-apps --title "Latest app builds" \
+            --notes "Newest builds of the Active Together apps. iPhone: install ActiveTogether.ipa with Sideloadly (see companion/ios/README.md). Android: install ActiveTogether.apk." --latest
+          gh release upload latest-apps ActiveTogether.ipa --clobber
       - name: Upload the build log
         if: always()
         uses: actions/upload-artifact@v4

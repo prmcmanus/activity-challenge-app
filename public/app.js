@@ -147,6 +147,14 @@ function renderHome(){
   $all('[data-open]').forEach(b=>b.onclick=()=>openChallenge(Number(b.dataset.open)));
   loadMyActivity().catch(()=>{});
   loadAndroidCard();
+  loadIosCard();
+}
+async function loadIosCard(){
+  try{
+    const a=await api('/api/app/ios');
+    $('#iosCard').classList.toggle('hidden',!a.available);
+    if(a.available)$('#iosMeta').textContent=`Version ${a.version} · ${(a.size/1048576).toFixed(1)} MB`;
+  }catch(e){$('#iosCard').classList.add('hidden')}
 }
 // Offer the Android app once it's published; shown on phones and computers alike (people often download on one and install on the other).
 async function loadAndroidCard(){
@@ -797,7 +805,7 @@ async function copyInviteLink(code,btn){
   catch(e){prompt('Copy this invite link:',url)}
 }
 // On an Android phone without the app's link handling (or before installing it), offer to open the invite in the app.
-const isAndroid=/Android/i.test(navigator.userAgent);
+const isAndroid=/Android/i.test(navigator.userAgent),isIOS=/iPhone|iPad|iPod/i.test(navigator.userAgent);
 const appInviteLink=code=>`intent://join/${encodeURIComponent(code)}#Intent;scheme=activetogether;package=com.activetogether.companion;end`;
 function inviteSummary(pv){
   const c=pv.challenge,what=c.metric==='steps'?'steps':c.metric==='distance'?`distance (${c.distance_unit==='km'?'km':'miles'})`:'active minutes';
@@ -810,7 +818,7 @@ async function showInviteBanner(){
   if(!code){el.classList.add('hidden');return}
   try{
     const pv=await api(`/api/join/preview?code=${encodeURIComponent(code)}`),s=inviteSummary(pv);
-    el.innerHTML=`<h2>You're invited</h2><p>Join ${s.name}.</p><p class="muted">${s.detail}</p><p>Sign in, or create an account if you're new, and we'll ask you to confirm joining.</p>${isAndroid?`<p><a class="ghost" href="${appInviteLink(code)}">Have the Android app? Open this invite in the app</a></p>`:''}`;
+    el.innerHTML=`<h2>You're invited</h2><p>Join ${s.name}.</p><p class="muted">${s.detail}</p><p>Sign in, or create an account if you're new, and we'll ask you to confirm joining.</p>${isAndroid?`<p><a class="ghost" href="${appInviteLink(code)}">Have the Android app? Open this invite in the app</a></p>`:''}${isIOS?`<p><a class="ghost" href="activetogether://join/${encodeURIComponent(code)}">Have the iPhone app? Open this invite in the app</a></p>`:''}`;
   }catch(e){el.innerHTML=`<h2>Invite link</h2><p class="error">${esc(e.message)}</p><p class="muted">Ask whoever sent it for a new link or code.</p>`}
   el.classList.remove('hidden');
 }

@@ -948,6 +948,15 @@ async function api(req,res,url){
      'Content-Disposition':`attachment; filename="ActiveTogether-${String(r.version).replace(/[^0-9A-Za-z.\-]/g,'')}.apk"`,'X-Content-Type-Options':'nosniff'});
    return fs.createReadStream(ANDROID_APK).pipe(res);
  }
+ // The iPhone app: an .ipa for Sideloadly (no App Store), plus its version for the app's update notice.
+ if(m==='GET'&&url.pathname==='/api/app/ios'){if(!need(res,u))return;const r=iosRelease();return send(res,200,r?{available:true,version:r.version,build:r.build,size:r.size,published:r.published}:{available:false})}
+ if(m==='GET'&&url.pathname==='/api/app/ios/download'){
+   if(!need(res,u))return;
+   const r=iosRelease();if(!r)return send(res,404,{error:'The iPhone app has not been published yet'});
+   res.writeHead(200,{'Content-Type':'application/octet-stream','Content-Length':r.size,'Cache-Control':'no-store',
+     'Content-Disposition':`attachment; filename="ActiveTogether-${String(r.version).replace(/[^0-9A-Za-z.\-]/g,'')}.ipa"`,'X-Content-Type-Options':'nosniff'});
+   return fs.createReadStream(IOS_IPA).pipe(res);
+ }
  return send(res,404,{error:'Not found'});
 }
 // The Android app, published by tools/publish-android.sh onto the data volume (not baked into the
@@ -961,6 +970,11 @@ function validDownloadToken(t){
   const [exp,sig]=String(t||'').split('.');
   if(!exp||!sig||!(Number(exp)>Date.now())||sig.length!==32)return false;
   return crypto.timingSafeEqual(Buffer.from(sig),Buffer.from(downloadSig(exp)));
+}
+const IOS_IPA=path.join(DOWNLOADS_DIR,'ActiveTogether.ipa'),IOS_INFO=path.join(DOWNLOADS_DIR,'ios.json');
+function iosRelease(){
+  try{if(!fs.existsSync(IOS_IPA))return null;const info=JSON.parse(fs.readFileSync(IOS_INFO,'utf8'));return {...info,size:fs.statSync(IOS_IPA).size}}
+  catch(e){return null}
 }
 function androidRelease(){
   try{if(!fs.existsSync(ANDROID_APK))return null;const info=JSON.parse(fs.readFileSync(ANDROID_INFO,'utf8'));return {...info,size:fs.statSync(ANDROID_APK).size}}

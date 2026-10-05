@@ -1,0 +1,54 @@
+# Builds the iPhone app on a macOS runner (this needs a Mac; the repo is developed on Windows).
+# Produces an unsigned-for-distribution .ipa as an artifact: it is ad-hoc signed with the app's
+# entitlements (Apple Health), and Sideloadly re-signs it with a personal Apple ID to install.
+name: iOS app
+on:
+  push:
+    paths: ["companion/ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate the Xcode project
+        working-directory: companion/ios
+        run: xcodegen generate
+      - name: Build
+        working-directory: companion/ios
+        run: |
+          set -o pipefail
+          xcodebuild -project ActiveTogether.xcodeproj -scheme ActiveTogether -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build | tee build.log | grep -E "error:|warning: .*deprecated|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/Build/Products/Release-iphoneos/ActiveTogether.app
+      - name: Package the .ipa
+        working-directory: companion/ios
+        run: |
+          APP=build/Build/Products/Release-iphoneos/ActiveTogether.app
+          # Ad-hoc signature carrying the entitlements, so a re-sign keeps Apple Health access.
+          codesign --force --sign - --entitlements ActiveTogetherCompanion.entitlements "$APP"
+          mkdir -p Payload && cp -R "$APP" Payload/
+          zip -qr ActiveTogether.ipa Payload
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist" > version.txt
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Info.plist" > build.txt
+          echo "Built version $(cat version.txt) ($(cat build.txt))"
+      - name: Upload the .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: ActiveTogether-ipa
+          path: |
+            companion/ios/ActiveTogether.ipa
+            companion/ios/version.txt
+            companion/ios/build.txt
+          retention-days: 30
+      - name: Upload the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: companion/ios/build.log
+          retention-days: 7

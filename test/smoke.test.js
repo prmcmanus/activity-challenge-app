@@ -1975,3 +1975,19 @@ test('step challenges: log a day of steps, rank by steps, and a re-synced day up
   const csv = await (await fetch(`${origin}/api/challenges/${c.body.id}/leaderboard/export?type=users`, { headers: { cookie: sal.cookie } })).text();
   assert.match(csv.split('\r\n')[0], /Rank,Name,Email,Steps/);
 });
+
+test('the iPhone app downloads for signed-in users once published, and reports its build for update notices', async () => {
+  const ivy = await register('Ivy Iphone');
+  assert.deepEqual((await jsonFetch(`${origin}/api/app/ios`, ivy.cookie)).body, { available: false });
+  const dir = path.join(dataDir, 'downloads');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'ActiveTogether.ipa'), Buffer.from('PK ipa'));
+  fs.writeFileSync(path.join(dir, 'ios.json'), JSON.stringify({ version: '2.0.0', build: 20, published: '2027-01-01T00:00:00Z' }));
+  const info = (await jsonFetch(`${origin}/api/app/ios`, ivy.cookie)).body;
+  assert.deepEqual([info.available, info.version, info.build, info.size], [true, '2.0.0', 20, 6]);
+  assert.equal((await fetch(`${origin}/api/app/ios/download`)).status, 401);
+  const r = await fetch(`${origin}/api/app/ios/download`, { headers: { cookie: ivy.cookie } });
+  assert.match(r.headers.get('content-disposition'), /ActiveTogether-2\.0\.0\.ipa/);
+  assert.equal(await r.text(), 'PK ipa');
+  fs.rmSync(path.join(dir, 'ActiveTogether.ipa')); fs.rmSync(path.join(dir, 'ios.json'));
+});

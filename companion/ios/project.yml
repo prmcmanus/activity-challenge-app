@@ -1,0 +1,53 @@
+# XcodeGen project description: `xcodegen generate` here makes ActiveTogether.xcodeproj.
+# Kept as this small text file rather than a hand-edited .xcodeproj, which is easy to corrupt and
+# can't be checked without a Mac. The CI workflow (.github/workflows/ios.yml) generates and builds it.
+name: ActiveTogether
+options:
+  bundleIdPrefix: team.activetogether
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    MARKETING_VERSION: "1.6.1"
+    CURRENT_PROJECT_VERSION: "13"
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: ""
+targets:
+  ActiveTogether:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - Assets.xcassets
+    entitlements:
+      path: ActiveTogetherCompanion.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.access: []
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: team.activetogether.companion
+        PRODUCT_NAME: ActiveTogether
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: NO
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Active Together
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        ITSAppUsesNonExemptEncryption: false
+        # Server address; empty means the live site. A test build can point elsewhere.
+        ATServerURL: ""
+        NSHealthShareUsageDescription: Active Together reads your workouts (their time, distance and, if you choose, GPS route) and your daily steps, to log them in your challenges.
+        NSHealthUpdateUsageDescription: Active Together never writes to Apple Health.
+        # Invite links: activetogether://join/CODE
+        CFBundleURLTypes:
+          - CFBundleURLName: team.activetogether.invite
+            CFBundleURLSchemes: [activetogether]
+        # Automatic sync in the background, when iOS allows it.
+        UIBackgroundModes: [fetch]
+        BGTaskSchedulerPermittedIdentifiers: [team.activetogether.sync]

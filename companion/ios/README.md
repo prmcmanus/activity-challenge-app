@@ -1,90 +1,48 @@
-# Active Together iOS Companion
+# Active Together for iPhone
 
-Native iOS companion MVP for syncing workout durations from Apple Health into Active Together — the
-HealthKit counterpart to [companion/android](../android)'s Health Connect app.
+The SwiftUI counterpart of [the Android app](../android), with the same features:
 
-## What it does
+- Challenges: list, create, edit, delete, join with a code, invite links (`activetogether://join/CODE`),
+  teams (join or create), leaderboards, and tapping a person to see their profile.
+- Activity: everything you've logged, with maps for routes; log by hand into several challenges at once;
+  edit and remove entries; step-challenge days.
+- Sync from Apple Health: review workouts (type, distance, which challenges), GPS routes if you turn them
+  on, and daily step totals for step challenges. Automatic sync on opening the app and in the background
+  when iOS allows.
+- Me: your profile as others see it, editing it (photo, bio, sharing level, email, password), sync settings.
+- Help & support tickets, the admin support dashboard, and the admin users/challenges screens.
+- An "Update available" notice when a newer build is published on the website.
 
-- Signs in to the Active Together server with the same email/password as the web app.
-- Stores the returned bearer session token in app storage.
-- Loads the member's challenge/team memberships from `/api/mobile/bootstrap` and offers them as one
-  combined "Challenge — Team" picker, since a synced record needs a valid team+challenge pairing.
-- Requests HealthKit read access for workouts and workout distance (walking/running, cycling, swimming, wheelchair, snow sports). Declining distance still syncs workouts; a distance challenge then skips them.
-- Reads workouts from the last 30 days.
-- Uploads whole-minute durations and distance (`distance_m`) to `/api/health/import` (with `source: "health_kit"`) using each
-  workout's stable UUID as `source_ref`, so repeated syncs are idempotent.
+## Building
 
-This companion is sync-only: it does not create accounts or join challenges/teams. Register, join
-with an invite code, and create/join a team in the web app first, then sign in here with the same
-credentials.
+There is no `.xcodeproj` in the repo: [`project.yml`](project.yml) describes the project and
+[XcodeGen](https://github.com/yonaskolb/XcodeGen) generates it (`brew install xcodegen && xcodegen generate`).
 
-## Why there's no `.xcodeproj` in this folder
+The [`iOS app` GitHub Actions workflow](../../.github/workflows/ios.yml) does this on a macOS runner on every
+change under `companion/ios/`, builds for iPhone, and uploads `ActiveTogether.ipa` as an artifact. The `.ipa`
+is ad-hoc signed with the app's Apple Health entitlement, ready to be re-signed for a real device.
 
-This app was built without access to Xcode or macOS, and an Xcode project file (`project.pbxproj`)
-is a finicky, mostly-generated format that is easy to corrupt by hand and impossible to verify
-without Xcode itself. Rather than ship a project file that might silently fail to open, this folder
-has the complete, working Swift source in [`Sources/`](Sources/) plus the exact steps below to drop
-it into a fresh Xcode project — about two minutes of clicking, and Xcode generates its own
-known-good project file.
+With a Mac instead: `xcodegen generate`, open `ActiveTogether.xcodeproj`, choose your team under Signing &
+Capabilities, and run on your iPhone.
 
-## Setting up the Xcode project
+## Installing on an iPhone without a Mac
 
-1. **Xcode → File → New → Project…** → iOS → **App**. Set:
-   - Product Name: `ActiveTogetherCompanion`
-   - Interface: **SwiftUI**
-   - Language: **Swift**
-   - Uncheck "Include Tests" (optional)
-   - Organization identifier: your own reverse-DNS (e.g. `team.activetogether`), giving a bundle id
-     like `team.activetogether.ActiveTogetherCompanion`
-2. Save it anywhere convenient — for example as a sibling of this `Sources/` folder, or replace this
-   `companion/ios/` folder's contents once the project exists (either is fine; nothing in the server
-   or web app depends on where the iOS project lives).
-3. In the new project, **delete** the placeholder `ContentView.swift` and the `*App.swift` file that
-   Xcode generated (keep `Assets.xcassets`).
-4. Drag the four files from this repo's [`Sources/`](Sources/) folder into the Xcode project
-   navigator (check **Copy items if needed** and **Add to target: ActiveTogetherCompanion**):
-   - `ActiveTogetherCompanionApp.swift`
-   - `ContentView.swift`
-   - `ActiveTogetherAPI.swift`
-   - `HealthKitSync.swift`
-5. Add the **HealthKit** capability: select the project in the navigator → target
-   `ActiveTogetherCompanion` → **Signing & Capabilities** → **+ Capability** → **HealthKit**. This
-   both links `HealthKit.framework` and generates an entitlements file — if you'd rather start from
-   the one already in this repo, add `../ActiveTogetherCompanion.entitlements` to the target instead
-   and set it as the target's "Code Signing Entitlements" path.
-6. Add a HealthKit usage description: target → **Info** tab → add key
-   `Privacy - Health Share Usage Description`
-   (`NSHealthShareUsageDescription`) with a value such as:
-   > Active Together reads your recent workouts, and the distance covered in them, to log activity
-   > toward your team's challenge.
-7. Set the **Minimum Deployments** iOS version to **16.0** or later (the app uses Swift concurrency
-   and `NavigationStack`, both available since iOS 16).
-8. Build and run on a **physical iPhone** signed into Health, or the iOS Simulator with sample
-   workout data added manually in the Health app (`Health → Browse → Activity → Workouts → Add
-   Data`) — the Simulator has no real Health data of its own.
-9. Use your Mac's LAN IP and the server's port (e.g. `http://203.0.113.10:8700`) as the Server URL —
-   `localhost` from a device or simulator does not reach a server running elsewhere.
+With no Apple Developer Program membership, use [Sideloadly](https://sideloadly.io) (free, Windows or Mac):
 
-## Privacy boundary
+1. Download the `.ipa` (from the website's "Get the iPhone app" card once published, or the workflow artifact).
+2. On Windows, install iTunes from apple.com (Sideloadly needs its drivers), then Sideloadly.
+3. Connect the iPhone by cable and trust the computer.
+4. Drag the `.ipa` into Sideloadly, enter your Apple ID, Start.
+5. On the iPhone: Settings › General › VPN & Device Management › trust your Apple ID; on iOS 16+ also turn on
+   Settings › Privacy & Security › Developer Mode.
 
-The companion reads only workout records and their distance, and uploads only:
+A free Apple ID's signature lasts **7 days**; reinstall the same way to renew (the app's data is kept).
+A paid Apple Developer account would allow TestFlight and `https://activetogether.team/join/...` links
+opening the app directly (Associated Domains); free signing only supports the `activetogether://` links.
 
-- team ID
-- challenge ID
-- activity type (a short label such as "Running" or "Cycling")
-- whole minutes
-- distance in metres (when the workout recorded one)
-- activity date
-- clock start/finish time (only when the workout doesn't cross midnight; otherwise omitted)
-- stable source reference (the workout's UUID)
+Publish a build for the website and the in-app update notice with `tools/publish-ios.sh <ipa> <version> <build>`.
 
-It does not upload routes, heart rate, calories, medical records, GPS data, or raw HealthKit samples.
+## Privacy
 
-## Known limitations
-
-- The session token is stored in `UserDefaults` via `@AppStorage`, matching the Android companion's
-  use of plain `SharedPreferences` — convenient for this MVP, but not Keychain-backed. See the root
-  [README's production checklist](../../README.md#production-checklist) before shipping either
-  companion to real users.
-- `HKWorkoutActivityType` is mapped to a short label for only the most common workout types; anything
-  else uploads as "Exercise" (still a valid, storable activity type on the server).
+Reads only workouts (type, time, distance), daily step counts and - only if "Include GPS routes" is on -
+workout routes. Never writes to Apple Health. Routes are visible only to you on the server.

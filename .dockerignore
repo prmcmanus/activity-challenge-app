@@ -14,3 +14,4 @@ npm-debug.log*
 .env.*
 README.md
 start-local.ps1
+.standby.*

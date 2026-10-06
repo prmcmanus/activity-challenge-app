@@ -17,3 +17,5 @@ companion/ios/**/DerivedData/
 companion/ios/**/*.xcodeproj/project.xcworkspace/
 companion/android/*.apk
 companion/android/app/src/emulator/res/raw/
+.standby.env
+.standby.lock

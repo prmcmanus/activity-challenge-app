@@ -201,6 +201,41 @@ in that function (and updating the privacy policy to match).
 - Client IP is read from `CF-Connecting-IP` first (this deployment sits behind a Cloudflare Tunnel),
   falling back to `X-Forwarded-For` then the raw socket address.
 
+## Standby machine and failover
+
+Two machines can share the job: one is live (the "primary"), the other is a standby that can take
+over in about a minute. Only one is ever live - SQLite and the local uploads folder can't be shared
+by two running copies, so this is failover, not load balancing.
+
+- **Litestream** streams every database change to a Cloudflare R2 bucket within a second, keeping a
+  week of point-in-time history. The app runs SQLite in WAL mode for this.
+- **files-sync** (rclone) copies `/data/uploads` and `/data/downloads` to the same bucket every
+  minute, and once more when it stops.
+- **tunnel** runs `cloudflared` for a tunnel dedicated to this app, so whichever machine is live
+  serves the site. Don't reuse a tunnel that also carries other hostnames.
+- An object called `primary` in the bucket names the live machine's *epoch*
+  (`<HOST_ID>-<UTC time it took over>`), and each epoch replicates under its own prefix, so a
+  machine that comes back after a failover can never overwrite the live copy. A systemd timer on
+  each machine (`tools/standby/guard.sh`) stops the stack there within a minute if R2 says another
+  machine is live.
+
+These services sit in the `primary` compose profile, so `docker compose up` on its own (local dev,
+the test instance) still runs just the app. On the live machine, deploy with
+`docker compose --profile primary up -d --build`.
+
+| Task | Run on | Command |
+| --- | --- | --- |
+| First-time setup, on the machine holding the live data | that machine | `tools/standby/takeover.sh --init` |
+| Install the guard timer (once per machine) | each machine | `tools/standby/install-guard.sh` |
+| Fail over, or fail back | the machine that should go live | `tools/standby/takeover.sh` |
+| ...when the live machine is unreachable | the machine that should go live | `tools/standby/takeover.sh --force` |
+
+`takeover.sh` stops the other machine over SSH (`PEER_SSH`), claims the marker, puts its own stale
+copy aside in `/data/pre-takeover-<time>/`, restores the database and files from the old epoch,
+starts the stack and keeps the three newest epochs in R2. With `--force`, anything written on the
+unreachable machine since its last sync is lost (normally under a second of database changes and a
+minute of uploads).
+
 ## Production checklist
 - Put behind HTTPS and a reverse proxy.
 - Replace local accounts with approved enterprise SSO if deployed at Company.

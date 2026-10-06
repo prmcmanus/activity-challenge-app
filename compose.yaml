@@ -26,5 +26,102 @@ services:
       - ALL
     mem_limit: 384m
     cpus: 0.5
+
+  # The services below only run on the live ("primary") machine of a primary/standby pair, and are
+  # started and stopped by tools/standby/takeover.sh rather than by a plain `docker compose up`.
+  # See "Standby machine and failover" in README.md.
+
+  # Streams every database change to Cloudflare R2, under this machine's current epoch.
+  litestream:
+    image: litestream/litestream:0.5.17
+    profiles: [primary]
+    command: replicate -config /etc/litestream.yml
+    user: "1000:1000"
+    environment: &r2
+      R2_BUCKET: ${R2_BUCKET:-}
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+    env_file:
+      - path: .standby.env
+        required: false
+    configs:
+      - source: litestream
+        target: /etc/litestream.yml
+    volumes:
+      - activity_data:/data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+
+  # Copies uploaded images and the app downloads to R2 every minute, and once more when stopped.
+  files-sync:
+    image: rclone/rclone:1.75.1
+    profiles: [primary]
+    user: "1000:1000"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        sync() { rclone copy /data "r2:$$R2_BUCKET/$$STANDBY_EPOCH/files" --include "/uploads/**" --include "/downloads/**"; }
+        trap 'sync; exit 0' TERM INT
+        while :; do sync; sleep 60 & wait $$!; done
+    environment:
+      <<: *r2
+      HOME: /tmp
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ENDPOINT: ${R2_ENDPOINT:-}
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
+    env_file:
+      - path: .standby.env
+        required: false
+    volumes:
+      - activity_data:/data
+    stop_grace_period: 60s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+
+  # Cloudflare tunnel dedicated to this app; its public hostnames point at http://activity-challenge:3000.
+  tunnel:
+    image: cloudflare/cloudflared:2026.10.0
+    profiles: [primary]
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 128m
+
+configs:
+  litestream:
+    content: |
+      snapshot:
+        interval: 24h
+        retention: 168h
+      dbs:
+        - path: /data/activity.sqlite
+          replica:
+            type: s3
+            bucket: $${R2_BUCKET}
+            path: $${STANDBY_EPOCH}/db
+            endpoint: $${R2_ENDPOINT}
+            region: auto
+            access-key-id: $${R2_ACCESS_KEY_ID}
+            secret-access-key: $${R2_SECRET_ACCESS_KEY}
+            force-path-style: true
+            sync-interval: 1s
+
 volumes:
   activity_data:

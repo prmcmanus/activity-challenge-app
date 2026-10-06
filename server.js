@@ -183,6 +183,8 @@ const clientIp=req=>req.headers['cf-connecting-ip']||(req.headers['x-forwarded-f
 // so local dev and automated tests work with no Google keys registered. The site key is public
 // and served from /api/config so the frontend never needs it baked in at build time.
 const RECAPTCHA_SITE_KEY=process.env.RECAPTCHA_SITE_KEY||'', RECAPTCHA_SECRET_KEY=process.env.RECAPTCHA_SECRET_KEY||'';
+// The shared Apple Shortcut (an iCloud link made on an iPhone); the website offers it once set.
+const SHORTCUT_URL=/^https:\/\/www\.icloud\.com\/shortcuts\/[A-Za-z0-9]+$/.test(process.env.SHORTCUT_URL||'')?process.env.SHORTCUT_URL:'';
 async function verifyRecaptcha(token,ip){
   if(!RECAPTCHA_SECRET_KEY)return true;
   if(!token)return false;
@@ -495,7 +497,7 @@ async function api(req,res,url){
  const ip=clientIp(req);
  if(hitRateLimit('all:'+ip,API_RATE_LIMIT_MAX,API_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many requests. Please slow down and try again shortly.'});
  const u=auth(req), m=req.method;
- if(m==='GET'&&url.pathname==='/api/config')return send(res,200,{recaptchaSiteKey:RECAPTCHA_SITE_KEY||null});
+ if(m==='GET'&&url.pathname==='/api/config')return send(res,200,{recaptchaSiteKey:RECAPTCHA_SITE_KEY||null,shortcutUrl:SHORTCUT_URL||null});
  if(m==='POST'&&url.pathname==='/api/register'){
    if(hitRateLimit('register:'+ip,AUTH_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many registration attempts from this network. Please try again later.'});
    const b=await body(req),email=String(b.email||'').toLowerCase().trim(),name=String(b.name||'').trim();

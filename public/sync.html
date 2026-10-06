@@ -28,61 +28,60 @@
 <p>Most fitness apps have a Health Connect option in their settings. Turn on writing exercise, steps and distance.</p>
 
 <h2 id="shortcuts">iPhone: Apple Shortcuts</h2>
-<p>Shortcuts is a free app from Apple, already on your iPhone (search for "Shortcuts" if you can't see it). You set this up once. After that it sends your day's <b>steps, exercise minutes and walking and running distance</b> from Apple Health twice a day, so it counts in step, minutes and distance challenges alike. It sends daily totals, not individual workouts.</p>
+<p>Shortcuts is a free app from Apple, already on your iPhone (search for "Shortcuts" if you can't see it). Once set up, it sends your day's <b>steps, exercise minutes and walking and running distance</b> from Apple Health twice a day, so it counts in step, minutes and distance challenges alike. It sends daily totals, not individual workouts.</p>
 <div class="tip">Works with an Apple Watch, an iPhone on its own, or a Garmin. In Garmin Connect, go to <b>More</b> → <b>Settings</b> → <b>Connected Apps</b> → <b>Apple Health</b> and switch sharing on.</div>
 
-<h3>Step 1: get your sync key</h3>
+<h3>Set it up (about two minutes)</h3>
 <ol>
-<li>On this website, sign in and choose <b>Set up Apple Shortcuts</b> on the home page.</li>
-<li>Tap <b>Create my sync key</b> and <b>Copy</b>. It's shown only once. If you lose it, just make a new one; the old one then stops working.</li>
+<li>On your iPhone, open <b>activetogether.team</b> in Safari, sign in, and tap <b>Set up Apple Shortcuts</b> on the home page.</li>
+<li>Tap <b>Get the shortcut</b>, then <b>Add Shortcut</b>. Keep its name, "Active Together sync".</li>
+<li>Go back to the website and tap <b>Connect this iPhone</b>. Shortcuts opens and runs it once. Allow it to read <b>Steps</b>, <b>Exercise Minutes</b> and <b>Walking + Running Distance</b>, and choose <b>Always Allow</b> when it asks to connect to activetogether.team or to save a file.</li>
+<li>Check <b>My activity</b> on the website: you'll see entries marked "shortcut" for yesterday and today.</li>
+<li><a href="#automate">Make it automatic</a>, below.</li>
 </ol>
-<p>If someone has shared a ready-made Active Together shortcut with you, tap their link, choose <b>Add Shortcut</b>, paste your key when asked, and go straight to step 3.</p>
+<p>If <b>Get the shortcut</b> isn't there yet, <a href="#build">build the shortcut yourself</a> first.</p>
 
-<h3>Step 2: build the shortcut</h3>
-<p>In the <b>Shortcuts</b> app, tap <b>+</b> at the top right. Tap the name at the top and call it <b>Active Together sync</b>. Then add these actions in order, using the search bar at the bottom ("Search for apps and actions") to find each one.</p>
-<ol>
-<li><b>Text</b>: paste your sync key into the box.</li>
-<li><b>Set Variable</b>: tap <i>Variable Name</i> and type <code>Key</code>. Its input should already be <i>Text</i>.</li>
-</ol>
-<p><b>Steps</b> (actions 3 to 9):</p>
-<ol start="3">
-<li><b>Find Health Samples</b>: tap <i>Type</i> and choose <b>Steps</b>. Tap <i>Add Filter</i>, set it to <b>Start Date</b> <b>is in the last</b> <b>2</b> <b>days</b>. Tap <i>Show More</i> and set <b>Group By</b> to <b>Day</b>.</li>
-<li><b>Repeat with Each</b>: it should repeat with each item in <i>Health Samples</i>. Add the next actions <i>inside</i> it, above <i>End Repeat</i>.</li>
-<li><b>Get Details of Health Sample</b>: set it to get <b>Start Date</b> of <i>Repeat Item</i>.</li>
-<li><b>Format Date</b>: tap <i>Date Format</i> and choose <b>Custom</b>, then type <code>yyyy-MM-dd</code> as the format.</li>
-<li><b>Get Details of Health Sample</b>: set it to get <b>Value</b> of <i>Repeat Item</i>.</li>
-<li><b>Get Contents of URL</b>: type <code>https://activetogether.team/api/shortcut/day</code> as the URL, then tap <i>Show More</i>:
-  <ul>
-  <li><b>Method</b>: POST</li>
-  <li><b>Headers</b>: tap <i>Add new header</i>. Key <code>X-Sync-Key</code>; for the value, choose the <b>Key</b> variable (tap the box, then <i>Select Variable</i>).</li>
-  <li><b>Request Body</b>: JSON. Tap <i>Add new field</i>, then <i>Text</i>: key <code>date</code>, value the <b>Formatted Date</b>. Add another <i>Number</i> field: key <code>steps</code>, value the <b>Value</b> from action 7.</li>
-  </ul></li>
-<li>Check that <b>End Repeat</b> comes after action 8.</li>
-</ol>
-<p><b>Exercise minutes</b> (actions 10 to 16): repeat actions 3 to 9 (long-press each and choose <b>Duplicate</b>, then drag them below <i>End Repeat</i>), with two changes:</p>
-<ul>
-<li>In <b>Find Health Samples</b>, choose the type <b>Exercise Minutes</b>.</li>
-<li>In <b>Get Contents of URL</b>, rename the field <code>steps</code> to <code>minutes</code>, and point every <i>Repeat Item</i>, <i>Formatted Date</i> and <i>Value</i> at the actions in this copy.</li>
-</ul>
-<p><b>Distance</b> (actions 17 to 24): repeat actions 3 to 9 once more, with these changes:</p>
-<ul>
-<li>In <b>Find Health Samples</b>, choose <b>Walking + Running Distance</b>.</li>
-<li>Add one more <b>Get Details of Health Sample</b> inside the repeat, getting the <b>Unit</b> of <i>Repeat Item</i>.</li>
-<li>In <b>Get Contents of URL</b>, call the number field <code>distance</code>, and add a Text field <code>distance_unit</code> whose value is that <b>Unit</b>.</li>
-</ul>
-<p>Tap <b>Done</b>. Now tap the shortcut once to try it. The first time, iPhone asks to let Shortcuts read your Health data (allow <b>Steps</b>, <b>Exercise Minutes</b> and <b>Walking + Running Distance</b>) and to connect to activetogether.team (tap <b>Always Allow</b>). Then check <b>My activity</b> on this website: you'll see entries marked "shortcut" for yesterday and today.</p>
-<div class="tip">If your steps look a little higher than in the Health app, check that each <b>Find Health Samples</b> has <b>Group By: Day</b>. That makes Apple Health count an Apple Watch and an iPhone together only once.</div>
-
-<h3>Step 3: run it automatically</h3>
+<h3 id="automate">Make it automatic</h3>
 <ol>
 <li>In Shortcuts, tap <b>Automation</b> at the bottom, then <b>+</b> (or <b>New Automation</b>).</li>
 <li>Choose <b>Time of Day</b>, pick <b>21:00</b> and <b>Daily</b>, and choose <b>Run Immediately</b> (turn off <i>Notify When Run</i> if you like). Tap <b>Next</b> and choose <b>Active Together sync</b>.</li>
 <li>Add a second automation the same way for <b>08:00</b>. The morning run finishes off yesterday's totals.</li>
 </ol>
-<p>iPhone keeps Health data locked while the phone is locked, so a run while it's locked sends nothing. That's harmless: the next run sends both yesterday and today again, and sending a day twice just updates it.</p>
+<p>iPhone keeps Health data locked while the phone is locked, so a run while it's locked sends nothing. That's harmless: every run sends both yesterday and today, and sending a day twice just updates it.</p>
+
+<h3 id="build">Build the shortcut yourself</h3>
+<p>Only needed if nobody has shared it yet. It takes about 20 minutes. In <b>Shortcuts</b>, tap <b>+</b> at the top right, tap the name at the top and call it exactly <b>Active Together sync</b>. Find each action below with the search bar at the bottom ("Search for apps and actions"). Where it says to choose a variable, tap the field and pick it from the suggestions above the keyboard, or use <i>Select Variable</i>.</p>
+<p><b>Let it receive the key:</b> tap the <b>ⓘ</b> (or the name at the top, then <i>Details</i>) and turn on <b>Show in Share Sheet</b>. A line appears at the top, "Receive <i>Any</i> input from <i>Share Sheet</i>": tap <i>Any</i> and choose only <b>Text</b>, and set <b>If there's no input</b> to <b>Continue</b>.</p>
+<p><b>Part 1: remember the key</b> (actions 1 to 10)</p>
+<ol>
+<li><b>If</b>: <i>Shortcut Input</i> <b>has any value</b>.</li>
+<li><b>Save File</b> (inside the If): save <i>Shortcut Input</i>; turn <b>Ask Where to Save</b> off; set the path to <code>ActiveTogether-key.txt</code> and turn on <b>Overwrite If File Exists</b>.</li>
+<li>Move the <b>Otherwise</b> line so it sits after Save File (it's already there if you added If first).</li>
+<li><b>Get File from Folder</b> (inside Otherwise): folder <b>Shortcuts</b>, path <code>ActiveTogether-key.txt</code>, <b>Error If Not Found</b> off.</li>
+<li><b>If</b>: <i>File</i> <b>does not have any value</b>.</li>
+<li><b>Ask for Input</b>: type <b>Text</b>, prompt <code>Paste your Active Together sync key</code>.</li>
+<li><b>Save File</b>: save <i>Provided Input</i>, same settings as action 2.</li>
+<li>Check the order: <b>End If</b> (inner), then <b>End If</b> (outer).</li>
+<li>After both End Ifs, <b>Get File from Folder</b> again: folder <b>Shortcuts</b>, path <code>ActiveTogether-key.txt</code>.</li>
+<li><b>Get Text from Input</b> (the file), then <b>Set Variable</b>: name it <code>Key</code>.</li>
+</ol>
+<p><b>Part 2: steps</b> (actions 11 to 17)</p>
+<ol start="11">
+<li><b>Find Health Samples</b>: <i>Type</i> <b>Steps</b>. Tap <i>Add Filter</i> and set <b>Start Date</b> <b>is in the last</b> <b>2</b> <b>days</b>. Tap <i>Show More</i>: <b>Group By</b> <b>Day</b>.</li>
+<li><b>Repeat with Each</b> (item in <i>Health Samples</i>). Put the next four actions inside it, above <i>End Repeat</i>.</li>
+<li><b>Get Details of Health Sample</b>: <b>Start Date</b> of <i>Repeat Item</i>.</li>
+<li><b>Format Date</b>: <i>Date Format</i> <b>Custom</b>, format <code>yyyy-MM-dd</code>.</li>
+<li><b>Get Details of Health Sample</b>: <b>Value</b> of <i>Repeat Item</i>.</li>
+<li><b>Get Contents of URL</b>: URL <code>https://activetogether.team/api/shortcut/day</code>. Tap <i>Show More</i>: <b>Method</b> POST; <b>Headers</b> → <i>Add new header</i>: key <code>X-Sync-Key</code>, value the <b>Key</b> variable; <b>Request Body</b> JSON → <i>Add new field</i> → Text: key <code>date</code>, value <i>Formatted Date</i>; then Number: key <code>steps</code>, value <i>Value</i> (from action 15).</li>
+<li>Check that <b>End Repeat</b> comes after action 16.</li>
+</ol>
+<p><b>Part 3: exercise minutes</b>: duplicate actions 11 to 17 (long-press each, <b>Duplicate</b>, and drag the copies below <i>End Repeat</i>). In the copy, set the type to <b>Exercise Minutes</b>, rename the field <code>steps</code> to <code>minutes</code>, and make sure <i>Repeat Item</i>, <i>Formatted Date</i> and <i>Value</i> point at actions in the copy, not the original.</p>
+<p><b>Part 4: distance</b>: duplicate actions 11 to 17 again. Set the type to <b>Walking + Running Distance</b>, call the number field <code>distance</code>, add one more <b>Get Details of Health Sample</b> inside the repeat to get the <b>Unit</b> of <i>Repeat Item</i>, and add a Text field <code>distance_unit</code> whose value is that <i>Unit</i>.</p>
+<p>Tap <b>Done</b>, then connect it as in step 3 of <a href="#shortcuts">Set it up</a>.</p>
+<div class="tip">If your steps look a little higher than in the Health app, check that each <b>Find Health Samples</b> has <b>Group By: Day</b>. That makes Apple Health count an Apple Watch and an iPhone together only once.</div>
 
 <h3>Share it with your challenge</h3>
-<p>Once it works, you can save everyone else steps 1 and 2. Tap the <b>⌄</b> next to the shortcut's name, then the <b>ⓘ</b> details, then <b>Setup</b>, and add an <b>Import Question</b> on the Text action ("Paste your Active Together sync key"). Remove your own key from the Text box first. Then use <b>Share</b> → <b>Copy iCloud Link</b> and send the link round. Each person pastes their own key when they add it.</p>
+<p>Your key isn't inside the shortcut (it's in a file on your iPhone), so the shortcut is safe to share as it is. Tap the <b>⌄</b> next to its name → <b>Share</b> → <b>Copy iCloud Link</b>, and send the link round, or give it to the site's administrator to put behind <b>Get the shortcut</b>.</p>
 
 <h2 id="iphone-app">iPhone: the Active Together app</h2>
 <p>The iPhone app syncs individual workouts (with their type, times and, if you choose, the route) as well as steps. It isn't in the App Store yet, so it's installed from a computer with the free tool <a href="https://sideloadly.io" target="_blank" rel="noopener">Sideloadly</a>. With a free Apple Account the installed app has to be refreshed every 7 days, which Sideloadly can do automatically. See <b>Get the iPhone app</b> on the home page.</p>

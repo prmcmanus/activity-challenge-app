@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Person
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
@@ -55,6 +57,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.activetogether.companion.Challenge
+import com.activetogether.companion.TeamInfo
 import com.activetogether.companion.asChallenge
 import com.activetogether.companion.SERVER_URL
 import java.time.LocalDate
@@ -123,7 +126,7 @@ fun ChallengesScreen(vm: AppViewModel, newChallenge: () -> Unit, join: () -> Uni
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, openProfile: (Int) -> Unit) {
+fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, left: () -> Unit, openProfile: (Int) -> Unit) {
     LaunchedEffect(challengeId) { vm.loadLeaderboard(challengeId); vm.loadDetail(challengeId) }
     // A global admin can open a challenge they haven't joined; it's not on their dashboard, so it comes from the full record.
     val c = vm.challenges.firstOrNull { it.id == challengeId } ?: vm.details[challengeId]?.asChallenge() ?: run { Loading(); return }
@@ -134,6 +137,8 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
     var tab by remember { mutableIntStateOf(if (c.individual) 1 else 0) }
     val scope = rememberCoroutineScope()
     var refreshing by remember { mutableStateOf(false) }
+    var leavingTeam by remember { mutableStateOf<TeamInfo?>(null) }
+    var leavingChallenge by remember { mutableStateOf(false) }
 
     PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; vm.refreshChallenge(challengeId); refreshing = false } }, modifier = Modifier.fillMaxSize()) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -177,6 +182,7 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         if (!t.mine && detail.role != "admin") TextButton(onClick = { scope.launch { vm.joinTeam(challengeId, t.id) } }) { Text("Join") }
+                        if (t.mine) TextButton(onClick = { leavingTeam = t }) { Text("Leave") }
                     }
                     if (i < detail.teams.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
@@ -218,6 +224,29 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                 }
             }
         }
+        if (detail != null && detail.role != "admin") item {
+            OutlinedButton(onClick = { leavingChallenge = true }, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.AutoMirrored.Filled.Logout, null); Spacer(Modifier.width(8.dp)); Text("Leave challenge")
+            }
+        }
     }
+    }
+    leavingTeam?.let { t ->
+        AlertDialog(
+            onDismissRequest = { leavingTeam = null },
+            title = { Text("Leave ${t.name}?") },
+            text = { Text("What you've logged under this team stays on its total. You stay in the challenge.") },
+            confirmButton = { TextButton(onClick = { leavingTeam = null; scope.launch { vm.leaveTeam(challengeId, t.id) } }) { Text("Leave team") } },
+            dismissButton = { TextButton(onClick = { leavingTeam = null }) { Text("Cancel") } },
+        )
+    }
+    if (leavingChallenge) {
+        AlertDialog(
+            onDismissRequest = { leavingChallenge = false },
+            title = { Text("Leave ${c.name}?") },
+            text = { Text("Everything you've logged in it is deleted, and you'll need an invite to join again.") },
+            confirmButton = { TextButton(onClick = { leavingChallenge = false; scope.launch { if (vm.leaveChallenge(challengeId)) left() } }) { Text("Leave challenge") } },
+            dismissButton = { TextButton(onClick = { leavingChallenge = false }) { Text("Cancel") } },
+        )
     }
 }

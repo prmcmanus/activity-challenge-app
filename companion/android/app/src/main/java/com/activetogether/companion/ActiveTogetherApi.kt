@@ -28,9 +28,14 @@ data class ProfileChallenge(val id: Int, val name: String, val startDate: LocalD
     val measuresSteps: Boolean = false, val steps: Double = 0.0)
 data class ProfileActivity(val type: String, val minutes: Double?, val distance: Double?, val distanceUnit: String, val measuresDistance: Boolean,
     val date: LocalDate, val startTime: String?, val comment: String?, val challengeName: String, val steps: Int? = null, val measuresSteps: Boolean = false)
-/** Someone's profile as a challenge-mate sees it. challenges/activities are null when their sharing level hides them. */
+/** Someone in a followers or following list. */
+data class Person(val id: Int, val name: String, val avatarUrl: String?)
+/** Someone's profile as a challenge-mate sees it. challenges/activities are null when their sharing level hides them.
+ *  followers/following only name people I could see anyway (null on a private profile); the counts cover everyone. */
 data class Profile(val id: Int, val name: String, val avatarUrl: String?, val bio: String?, val memberSince: String, val sharing: String, val self: Boolean,
-    val challenges: List<ProfileChallenge>?, val activities: List<ProfileActivity>?)
+    val challenges: List<ProfileChallenge>?, val activities: List<ProfileActivity>?,
+    val followersCount: Int = 0, val followingCount: Int = 0, val isFollowing: Boolean = false, val followsYou: Boolean = false,
+    val followers: List<Person>? = null, val following: List<Person>? = null)
 
 data class MyTeam(val id: Int, val name: String)
 
@@ -242,6 +247,13 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         request("/api/teams", "POST", JSONObject().put("challenge_id", challengeId).put("name", name)).getInt("id")
 
     fun joinTeam(teamId: Int) { request("/api/teams/$teamId/join", "POST", JSONObject()) }
+    /** What I logged under the team stays on its total. */
+    fun leaveTeam(teamId: Int) { request("/api/teams/$teamId/leave", "POST", JSONObject()) }
+    /** Leaves the challenge and its teams, deleting everything I logged in it. */
+    fun leaveChallenge(id: Int) { request("/api/challenges/$id/leave", "POST", JSONObject()) }
+
+    fun follow(userId: Int) { request("/api/users/$userId/follow", "POST", JSONObject()) }
+    fun unfollow(userId: Int) { request("/api/users/$userId/follow", "DELETE") }
 
     /** Works signed out too, for the sign-in screen's "you're invited" card. */
     fun invitePreview(code: String): InvitePreview {
@@ -319,8 +331,10 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
                 x.optString("metric") == "distance", LocalDate.parse(x.getString("activity_date")), str(x, "start_time"), str(x, "comment"), x.getString("challenge_name"),
                 if (x.isNull("steps") || !x.has("steps")) null else x.getInt("steps"), x.optString("metric") == "steps")
         } } }
+        fun people(k: String) = r.optJSONArray(k)?.let { a -> (0 until a.length()).map { i -> a.getJSONObject(i).let { x -> Person(x.getInt("id"), x.getString("name"), str(x, "avatar_url")) } } }
         return Profile(r.getInt("id"), r.getString("name"), str(r, "avatar_url"), str(r, "bio"), r.optString("member_since"),
-            r.optString("sharing", "summary"), r.optBoolean("self"), challenges, activities)
+            r.optString("sharing", "summary"), r.optBoolean("self"), challenges, activities,
+            r.optInt("followers_count"), r.optInt("following_count"), r.optBoolean("is_following"), r.optBoolean("follows_you"), people("followers"), people("following"))
     }
 
     /** Edit one activity entry; the server checks it still fits its challenge (dates, measure). */

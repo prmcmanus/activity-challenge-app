@@ -124,7 +124,7 @@ fun AppRoot(vm: AppViewModel) {
             composable("join") { JoinScreen(vm) { id -> nav.navigate("challenge/$id") { popUpTo("challenges") } } }
             composable("challenge/{id}", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
                 val id = it.arguments!!.getInt("id")
-                ChallengeDetailScreen(vm, id, edit = { nav.navigate("challenge/$id/edit") }) { uid -> nav.navigate("user/$uid") }
+                ChallengeDetailScreen(vm, id, edit = { nav.navigate("challenge/$id/edit") }, left = { nav.popBackStack("challenges", inclusive = false) }) { uid -> nav.navigate("user/$uid") }
             }
             composable("challenge/{id}/edit", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
                 // Saved: back to the challenge. Deleted: back to the admin list if that's where it was opened from, else the challenge list.
@@ -141,11 +141,11 @@ fun AppRoot(vm: AppViewModel) {
                 EditActivityScreen(vm, it.arguments!!.getInt("id")) { nav.popBackStack() }
             }
             composable("user/{id}", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
-                UserProfileScreen(vm, it.arguments!!.getInt("id"))
+                UserProfileScreen(vm, it.arguments!!.getInt("id")) { uid -> nav.navigate("user/$uid") }
             }
             composable("log") { LogActivityScreen(vm) { nav.popBackStack() } }
             composable("sync") { SyncScreen(vm) }
-            composable("profile") { MeScreen(vm, edit = { nav.navigate("editProfile") }, help = { nav.navigate("help") }, admin = { nav.navigate("admin") }) }
+            composable("profile") { MeScreen(vm, edit = { nav.navigate("editProfile") }, help = { nav.navigate("help") }, admin = { nav.navigate("admin") }) { uid -> nav.navigate("user/$uid") } }
             composable("invite/{code}") {
                 InviteScreen(vm, it.arguments!!.getString("code")!!,
                     opened = { id -> nav.navigate("challenge/$id") { popUpTo("challenges") } },

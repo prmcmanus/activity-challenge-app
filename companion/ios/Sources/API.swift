@@ -109,8 +109,14 @@ struct MyActivity: Identifiable, Hashable {
 
 struct ProfileChallenge: Hashable { let id: Int, name: String, startDate: Day, endDate: Day, measure: Measure, distanceUnit: String, team: String?, minutes: Double, distance: Double, steps: Double, rank: Int, of: Int }
 struct ProfileActivity: Hashable { let type: String, minutes: Double?, distance: Double?, steps: Int?, distanceUnit: String, measure: Measure, date: Day, startTime: String?, comment: String?, challengeName: String }
+/// Someone in a followers or following list.
+struct Person: Identifiable, Hashable { let id: Int, name: String, avatarURL: String? }
 /// Someone's profile as a challenge-mate sees it. challenges/activities are nil when their sharing level hides them.
-struct Profile { let id: Int, name: String, avatarURL: String?, bio: String?, memberSince: String, sharing: String, isSelf: Bool, challenges: [ProfileChallenge]?, activities: [ProfileActivity]? }
+/// followers/following only name people I could see anyway (nil on a private profile); the counts cover everyone.
+struct Profile {
+    let id: Int, name: String, avatarURL: String?, bio: String?, memberSince: String, sharing: String, isSelf: Bool, challenges: [ProfileChallenge]?, activities: [ProfileActivity]?
+    let followersCount: Int, followingCount: Int, isFollowing: Bool, followsYou: Bool, followers: [Person]?, following: [Person]?
+}
 
 /// Help & support. type: bug | feature | question; status: new | in_progress | planned | done | declined.
 struct Ticket: Identifiable, Hashable {
@@ -223,6 +229,12 @@ final class API: @unchecked Sendable {
     }
     func createTeam(challengeId: Int, name: String) async throws { _ = try await request("/api/teams", "POST", ["challenge_id": challengeId, "name": name]) }
     func joinTeam(_ id: Int) async throws { _ = try await request("/api/teams/\(id)/join", "POST", [:]) }
+    /// What I logged under the team stays on its total.
+    func leaveTeam(_ id: Int) async throws { _ = try await request("/api/teams/\(id)/leave", "POST", [:]) }
+    /// Leaves the challenge and its teams, deleting everything I logged in it.
+    func leaveChallenge(_ id: Int) async throws { _ = try await request("/api/challenges/\(id)/leave", "POST", [:]) }
+    func follow(_ userId: Int) async throws { _ = try await request("/api/users/\(userId)/follow", "POST", [:]) }
+    func unfollow(_ userId: Int) async throws { _ = try await request("/api/users/\(userId)/follow", "DELETE") }
     func invitePreview(_ code: String) async throws -> InvitePreview {
         let r = try await request("/api/join/preview?code=" + (code.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? code))
         let c = r.obj("challenge") ?? J([:]), t = r.obj("team")
@@ -321,8 +333,11 @@ final class API: @unchecked Sendable {
                             distanceUnit: unit(x), measure: Measure(x.str("metric")), date: x.day("activity_date"), startTime: x.str("start_time"),
                             comment: x.str("comment"), challengeName: x.string("challenge_name"))
         } : nil
+        func people(_ k: String) -> [Person]? { r.has(k) ? r.arr(k).map { Person(id: $0.int("id"), name: $0.string("name"), avatarURL: $0.str("avatar_url")) } : nil }
         return Profile(id: r.int("id"), name: r.string("name"), avatarURL: r.str("avatar_url"), bio: r.str("bio"), memberSince: r.string("member_since"),
-                       sharing: r.str("sharing") ?? "summary", isSelf: r.bool("self"), challenges: challenges, activities: activities)
+                       sharing: r.str("sharing") ?? "summary", isSelf: r.bool("self"), challenges: challenges, activities: activities,
+                       followersCount: r.int("followers_count"), followingCount: r.int("following_count"), isFollowing: r.bool("is_following"),
+                       followsYou: r.bool("follows_you"), followers: people("followers"), following: people("following"))
     }
     func updateProfile(name: String? = nil, email: String? = nil, currentPassword: String? = nil, newPassword: String? = nil,
                        avatarURL: String? = nil, bio: String? = nil, sharing: String? = nil) async throws -> Me {

@@ -41,6 +41,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY,user_id INTEG
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS ticket_comments(id INTEGER PRIMARY KEY,ticket_id INTEGER NOT NULL,user_id INTEGER NOT NULL,body TEXT NOT NULL,internal INTEGER NOT NULL DEFAULT 0,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);`);
+// Following: you can follow anyone whose profile you can see (a challenge-mate). It carries on if you
+// stop sharing a challenge, but their profile then stays hidden as before.
+db.exec(`CREATE TABLE IF NOT EXISTS follows(follower_id INTEGER NOT NULL,followee_id INTEGER NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(follower_id,followee_id),FOREIGN KEY(follower_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(followee_id) REFERENCES users(id) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS follows_followee ON follows(followee_id);`);
 // A challenge measures active minutes (the original behaviour, and the default for every
 // existing challenge), distance, or steps. Distance is stored on activities in metres whatever the
 // challenge's display unit, so changing a challenge between miles and km never rewrites history.
@@ -286,6 +291,7 @@ function startSession(uid){const t=crypto.randomBytes(32).toString('hex'),th=cry
 
 function teamAccess(uid,tid){return db.prepare('SELECT team_role FROM team_members WHERE user_id=? AND team_id=?').get(uid,tid)}
 function challengeAccess(uid,cid){return db.prepare('SELECT challenge_role FROM challenge_members WHERE user_id=? AND challenge_id=?').get(uid,cid)}
+function sharesChallenge(a,b){return !!db.prepare('SELECT 1 FROM challenge_members x JOIN challenge_members y ON y.challenge_id=x.challenge_id WHERE x.user_id=? AND y.user_id=? LIMIT 1').get(a,b)}
 // A team's own admin, the owner of its parent challenge, or a global admin may rename/delete it.
 function canManageTeam(u,team){if(u.role==='global_admin')return true;if(teamAccess(u.id,team.id)?.team_role==='team_admin')return true;return challengeAccess(u.id,team.challenge_id)?.challenge_role==='owner'}
 // The challenge owner or a global admin may edit challenge details.
@@ -580,6 +586,24 @@ async function api(req,res,url){
    console.log(`Challenge ${cid} deleted by user ${u.id}`);
    return send(res,200,{ok:true});
  }
+ // Leave a challenge: your team places in it, and everything you logged in it, go with you. The
+ // last owner can't leave - they add another owner first, or delete the challenge instead.
+ if(m==='POST'&&url.pathname.match(/^\/api\/challenges\/\d+\/leave$/)){
+   if(!need(res,u))return;
+   const cid=Number(url.pathname.split('/')[3]),ca=challengeAccess(u.id,cid);
+   if(!ca)return send(res,400,{error:"You're not in this challenge"});
+   if(ca.challenge_role==='owner'&&db.prepare("SELECT COUNT(*) n FROM challenge_members WHERE challenge_id=? AND challenge_role='owner'").get(cid).n<=1)
+     return send(res,400,{error:"You're the only owner. Make someone else an owner first, or delete the challenge."});
+   try{
+     db.exec('BEGIN');
+     db.prepare('DELETE FROM activities WHERE challenge_id=? AND user_id=?').run(cid,u.id);
+     db.prepare('DELETE FROM team_members WHERE user_id=? AND team_id IN (SELECT id FROM teams WHERE challenge_id=?)').run(u.id,cid);
+     db.prepare('DELETE FROM challenge_members WHERE challenge_id=? AND user_id=?').run(cid,u.id);
+     db.exec('COMMIT');
+   }catch(e){db.exec('ROLLBACK');throw e}
+   pruneRoutes();
+   return send(res,200,{ok:true});
+ }
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/members$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!db.prepare('SELECT id FROM challenges WHERE id=?').get(cid))return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only a challenge owner can view this'});const members=db.prepare('SELECT us.id,us.name,us.email,cm.challenge_role FROM challenge_members cm JOIN users us ON us.id=cm.user_id WHERE cm.challenge_id=? ORDER BY cm.challenge_role,us.name').all(cid);return send(res,200,{members})}
  if(m==='POST'&&url.pathname.match(/^\/api\/challenges\/\d+\/owners$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!db.prepare('SELECT id FROM challenges WHERE id=?').get(cid))return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only a challenge owner can add another owner'});const b=await body(req),email=String(b.email||'').toLowerCase().trim();if(!email)return send(res,400,{error:'Email is required'});const found=db.prepare('SELECT id,name,email FROM users WHERE email=?').get(email);if(!found)return send(res,404,{error:'No account found for that email. Ask them to register first.'});const existing=db.prepare('SELECT 1 FROM challenge_members WHERE challenge_id=? AND user_id=?').get(cid,found.id);if(existing)db.prepare("UPDATE challenge_members SET challenge_role='owner' WHERE challenge_id=? AND user_id=?").run(cid,found.id);else db.prepare("INSERT INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'owner')").run(cid,found.id);return send(res,201,{ok:true,user:found})}
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard\/export$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner or a global admin can export the leaderboard'});const type=url.searchParams.get('type')==='users'?'users':'teams';const lb=leaderboard(challenge),metric=challengeMetric(challenge),dist=metric==='distance',unitName=challengeUnit(challenge)==='km'?'Kilometres':'Miles';
@@ -606,6 +630,13 @@ async function api(req,res,url){
  if(m==='POST'&&url.pathname.match(/^\/api\/teams\/\d+\/join$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!challengeAccess(u.id,team.challenge_id))return send(res,403,{error:'Join the challenge before joining one of its teams'});db.prepare("INSERT OR IGNORE INTO team_members(team_id,user_id,team_role) VALUES(?,?,'member')").run(tid,u.id);return send(res,200,{ok:true})}
  if(m==='PATCH'&&url.pathname.match(/^\/api\/teams\/\d+$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can rename this team'});const b=await body(req),name=String(b.name||'').trim();if(!name)return send(res,400,{error:'Name is required'});let imageUrl;try{imageUrl=validateImageUrl(b.image_url)}catch(e){return send(res,400,{error:e.message})}if(imageUrl!==undefined)db.prepare('UPDATE teams SET name=?,image_url=? WHERE id=?').run(name,imageUrl,tid);else db.prepare('UPDATE teams SET name=? WHERE id=?').run(name,tid);return send(res,200,{ok:true})}
  if(m==='DELETE'&&url.pathname.match(/^\/api\/teams\/\d+$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can delete this team'});try{db.exec('BEGIN');db.prepare('DELETE FROM activities WHERE team_id=?').run(tid);db.prepare('DELETE FROM teams WHERE id=?').run(tid);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}pruneRoutes();return send(res,200,{ok:true})}
+ // Leave a team you're in. What you logged under it stays on its total, as when a team admin removes someone.
+ if(m==='POST'&&url.pathname.match(/^\/api\/teams\/\d+\/leave$/)){
+   if(!need(res,u))return;
+   const tid=Number(url.pathname.split('/')[3]);
+   if(!db.prepare('DELETE FROM team_members WHERE team_id=? AND user_id=?').run(tid,u.id).changes)return send(res,400,{error:"You're not in this team"});
+   return send(res,200,{ok:true});
+ }
  if(m==='GET'&&url.pathname.match(/^\/api\/teams\/\d+\/members$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});const manage=canManageTeam(u,team);if(!teamAccess(u.id,tid)&&!manage)return send(res,403,{error:'You need to be in this team to view its members'});const members=db.prepare('SELECT u.id,u.name,u.email,tm.team_role FROM team_members tm JOIN users u ON u.id=tm.user_id WHERE tm.team_id=? ORDER BY u.name').all(tid);return send(res,200,{members,canManage:manage})}
  if(m==='POST'&&url.pathname.match(/^\/api\/teams\/\d+\/members$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can add members'});const b=await body(req),email=String(b.email||'').toLowerCase().trim();if(!email)return send(res,400,{error:'Email is required'});const found=db.prepare('SELECT id,name,email FROM users WHERE email=?').get(email);if(!found)return send(res,404,{error:'No account found for that email. Ask them to register first, or share the invite code instead.'});db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(team.challenge_id,found.id);db.prepare("INSERT OR IGNORE INTO team_members(team_id,user_id,team_role) VALUES(?,?,'member')").run(tid,found.id);return send(res,201,{ok:true,user:found})}
  if(m==='DELETE'&&url.pathname.match(/^\/api\/teams\/\d+\/members\/\d+$/)){if(!need(res,u))return;const parts=url.pathname.split('/'),tid=Number(parts[3]),targetId=Number(parts[5]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can remove members'});db.prepare('DELETE FROM team_members WHERE team_id=? AND user_id=?').run(tid,targetId);return send(res,200,{ok:true})}
@@ -641,7 +672,27 @@ async function api(req,res,url){
      out.activities=db.prepare(`SELECT a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.comment,c.name challenge_name,c.metric,c.distance_unit FROM activities a JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=? AND a.challenge_id IN (${ids.map(()=>'?').join(',')}) ORDER BY a.activity_date DESC,a.start_time DESC,a.id DESC LIMIT 30`)
        .all(id,...ids).map(({distance_m,...a})=>({...a,distance:distance_m==null?null:metersToUnit(distance_m,a.distance_unit)}));
    }
+   // Followers and following: counts for anyone who can see the profile. The lists only name people
+   // the viewer could see anyway (themselves or a challenge-mate), and a private profile shows none.
+   const followPeople=col=>db.prepare(`SELECT us.id,us.name,us.avatar_url FROM follows f JOIN users us ON us.id=f.${col==='followers'?'follower_id':'followee_id'}
+     WHERE f.${col==='followers'?'followee_id':'follower_id'}=? AND us.deactivated_at IS NULL ORDER BY us.name`).all(id);
+   const followers=followPeople('followers'),following=followPeople('following');
+   const seen=x=>self||u.role==='global_admin'||x.id===u.id||sharesChallenge(u.id,x.id);
+   Object.assign(out,{followers_count:followers.length,following_count:following.length,
+     is_following:!self&&!!db.prepare('SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?').get(u.id,id),
+     follows_you:!self&&!!db.prepare('SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?').get(id,u.id)});
+   if(self||sharing!=='private'){out.followers=followers.filter(seen);out.following=following.filter(seen)}
    return send(res,200,out);
+ }
+ // Follow someone whose profile you can see (a challenge-mate; global admins anyone). Unfollowing always works.
+ if((m==='POST'||m==='DELETE')&&url.pathname.match(/^\/api\/users\/\d+\/follow$/)){
+   if(!need(res,u))return;
+   const id=Number(url.pathname.split('/')[3]);
+   if(m==='DELETE'){db.prepare('DELETE FROM follows WHERE follower_id=? AND followee_id=?').run(u.id,id);return send(res,200,{ok:true,following:false})}
+   if(id===u.id)return send(res,400,{error:"You can't follow yourself"});
+   if(!db.prepare('SELECT 1 FROM users WHERE id=? AND deactivated_at IS NULL').get(id)||(u.role!=='global_admin'&&!sharesChallenge(u.id,id)))return send(res,404,{error:'Not found'});
+   db.prepare('INSERT OR IGNORE INTO follows(follower_id,followee_id) VALUES(?,?)').run(u.id,id);
+   return send(res,200,{ok:true,following:true});
  }
  // One activity into one challenge (challenge_id + team_id, as before) or into several at once
  // (targets: [{challenge_id, team_id?}, ...]) - one entry per challenge, all or none, sharing one

@@ -31,6 +31,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -44,12 +47,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -64,6 +71,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.health.connect.client.PermissionController
+import com.activetogether.companion.Person
 import com.activetogether.companion.Profile
 import com.activetogether.companion.SERVER_URL
 import kotlinx.coroutines.Dispatchers
@@ -82,14 +90,53 @@ fun sharingLabel(code: String) = SHARING_LEVELS.firstOrNull { it.first == code }
 
 private fun ordinal(n: Int) = n.toString() + when { n % 100 in 11..13 -> "th"; n % 10 == 1 -> "st"; n % 10 == 2 -> "nd"; n % 10 == 3 -> "rd"; else -> "th" }
 
-/** A profile: the header, then whatever the person's sharing level shows. Used for anyone, including me. */
-fun LazyListScope.profileItems(p: Profile, header: @Composable () -> Unit = {}) {
+/** A followers or following list; anyone not named is someone I don't share a challenge with. */
+@Composable
+private fun FollowList(title: String, people: List<Person>, count: Int, openProfile: (Int) -> Unit) {
+    Text("$title · $count", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 4.dp))
+    if (people.isEmpty() && count == 0) EmptyNote("Nobody yet.")
+    people.forEach { x ->
+        Row(Modifier.fillMaxWidth().clickable { openProfile(x.id) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Avatar(x.avatarUrl, x.name, size = 32.dp); Spacer(Modifier.width(10.dp))
+            Text(x.name, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+    if (count > people.size) EmptyNote("+ ${count - people.size} you don't share a challenge with")
+}
+
+/** A profile: the header, then followers, then whatever the person's sharing level shows. Used for anyone, including me. */
+fun LazyListScope.profileItems(p: Profile, openProfile: (Int) -> Unit = {}, follow: (() -> Unit)? = null, header: @Composable () -> Unit = {}) {
     item {
         Hero(if (p.memberSince.isNotBlank()) "Member since ${runCatching { LocalDate.parse(p.memberSince).let { "${it.month.name.lowercase().replaceFirstChar(Char::uppercase)} ${it.year}" } }.getOrDefault(p.memberSince)}" else "Profile",
             p.name, trailing = { Avatar(p.avatarUrl, p.name, size = 72.dp) },
             below = { p.bio?.let { Text(it, color = Color.White.copy(alpha = 0.92f), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 6.dp)) } })
     }
     item { header() }
+    item {
+        var tab by remember(p.id) { mutableIntStateOf(0) }
+        SectionCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("${p.followersCount} follower${if (p.followersCount == 1) "" else "s"} · ${p.followingCount} following", style = MaterialTheme.typography.titleMedium)
+                    if (p.followsYou) Text("Follows you", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                }
+                if (follow != null) {
+                    if (p.isFollowing) OutlinedButton(onClick = follow) { Icon(Icons.Default.Check, null); Spacer(Modifier.width(6.dp)); Text("Following") }
+                    else Button(onClick = follow) { Icon(Icons.Default.PersonAdd, null); Spacer(Modifier.width(6.dp)); Text("Follow") }
+                }
+            }
+            val followers = p.followers; val following = p.following
+            if (followers != null && following != null) {
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    SegmentedButton(tab == 0, { tab = 0 }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("Followers") }
+                    SegmentedButton(tab == 1, { tab = 1 }, SegmentedButtonDefaults.itemShape(1, 2)) { Text("Following") }
+                }
+                if (tab == 0) FollowList("Followers", followers, p.followersCount, openProfile)
+                else FollowList("Following", following, p.followingCount, openProfile)
+            }
+        }
+    }
     val challenges = p.challenges
     if (challenges == null) {
         item {
@@ -146,7 +193,7 @@ fun LazyListScope.profileItems(p: Profile, header: @Composable () -> Unit = {}) 
 /** Someone else's profile (or mine), opened from a leaderboard. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun UserProfileScreen(vm: AppViewModel, userId: Int) {
+fun UserProfileScreen(vm: AppViewModel, userId: Int, openProfile: (Int) -> Unit) {
     val scope = rememberCoroutineScope()
     var profile by remember { mutableStateOf<Profile?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -161,14 +208,18 @@ fun UserProfileScreen(vm: AppViewModel, userId: Int) {
     PullToRefreshBox(modifier = Modifier.fillMaxSize(), isRefreshing = loading && profile != null, onRefresh = { load() }) {
         val p = profile
         if (p == null) { if (missing) LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding) { item { SectionCard { EmptyNote("This profile isn't available.") } } } else Loading(); return@PullToRefreshBox }
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) { profileItems(p) }
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            profileItems(p, openProfile, follow = if (p.self) null else ({
+                scope.launch { if (vm.call { if (p.isFollowing) it.unfollow(p.id) else it.follow(p.id) } != null) load() }
+            }))
+        }
     }
 }
 
 /** Me: my profile exactly as challenge-mates see it, then settings. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MeScreen(vm: AppViewModel, edit: () -> Unit, help: () -> Unit, admin: () -> Unit) {
+fun MeScreen(vm: AppViewModel, edit: () -> Unit, help: () -> Unit, admin: () -> Unit, openProfile: (Int) -> Unit) {
     val me = vm.me
     val scope = rememberCoroutineScope()
     var profile by remember { mutableStateOf<Profile?>(null) }
@@ -184,7 +235,7 @@ fun MeScreen(vm: AppViewModel, edit: () -> Unit, help: () -> Unit, admin: () -> 
     PullToRefreshBox(modifier = Modifier.fillMaxSize(), isRefreshing = loading, onRefresh = { load() }) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             val p = profile
-            if (p == null) item { Loading() } else profileItems(p) {
+            if (p == null) item { Loading() } else profileItems(p, openProfile) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Default.Visibility, null, tint = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.width(8.dp))
                     Text("How people in your challenges see you · sharing: ${sharingLabel(me?.sharing ?: "summary")}",

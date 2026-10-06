@@ -1991,3 +1991,97 @@ test('the iPhone app downloads for signed-in users once published, and reports i
   assert.equal(await r.text(), 'PK ipa');
   fs.rmSync(path.join(dir, 'ActiveTogether.ipa')); fs.rmSync(path.join(dir, 'ios.json'));
 });
+
+// --- following, and leaving teams and challenges -----------------------------------------------
+
+test('following: only challenge-mates can follow, and the lists name only people the viewer can see', async () => {
+  const ann = await register('Ann Followed');
+  const ben = await register('Ben Follower');
+  const cal = await register('Cal Elsewhere');
+  const one = await jsonFetch(`${origin}/api/challenges`, ann.cookie, 'POST', { name: 'Follow One', start_date: '2027-10-01', end_date: '2027-10-31', participation: 'individual' });
+  const two = await jsonFetch(`${origin}/api/challenges`, ann.cookie, 'POST', { name: 'Follow Two', start_date: '2027-10-01', end_date: '2027-10-31', participation: 'individual' });
+  await jsonFetch(`${origin}/api/join`, ben.cookie, 'POST', { code: one.body.invite_code });
+
+  assert.equal((await jsonFetch(`${origin}/api/users/${ann.user.id}/follow`, cal.cookie, 'POST')).status, 404, 'a stranger cannot follow');
+  assert.equal((await jsonFetch(`${origin}/api/users/${ann.user.id}/follow`, ann.cookie, 'POST')).status, 400, 'nor can you follow yourself');
+  const f = await jsonFetch(`${origin}/api/users/${ann.user.id}/follow`, ben.cookie, 'POST');
+  assert.equal(f.status, 200);
+  assert.equal(f.body.following, true);
+  assert.equal((await jsonFetch(`${origin}/api/users/${ann.user.id}/follow`, ben.cookie, 'POST')).status, 200, 'following twice is harmless');
+
+  // Cal shares the other challenge with Ann, so can follow her too - but Ben doesn't share one with Cal.
+  await jsonFetch(`${origin}/api/join`, cal.cookie, 'POST', { code: two.body.invite_code });
+  assert.equal((await jsonFetch(`${origin}/api/users/${ann.user.id}/follow`, cal.cookie, 'POST')).status, 200);
+  await jsonFetch(`${origin}/api/users/${ben.user.id}/follow`, ann.cookie, 'POST');
+
+  const seenByBen = (await jsonFetch(`${origin}/api/users/${ann.user.id}/profile`, ben.cookie)).body;
+  assert.equal(seenByBen.followers_count, 2);
+  assert.equal(seenByBen.following_count, 1);
+  assert.equal(seenByBen.is_following, true);
+  assert.equal(seenByBen.follows_you, true);
+  assert.deepEqual(seenByBen.followers.map(x => x.name), ['Ben Follower'], 'Cal is counted but not named to Ben');
+  assert.deepEqual(seenByBen.following.map(x => x.name), ['Ben Follower']);
+  const own = (await jsonFetch(`${origin}/api/users/${ann.user.id}/profile`, ann.cookie)).body;
+  assert.deepEqual(own.followers.map(x => x.name), ['Ben Follower', 'Cal Elsewhere'], 'you see all your own followers');
+  assert.equal(own.is_following, false);
+
+  // A private profile keeps its counts but not who is in them.
+  await jsonFetch(`${origin}/api/me`, ann.cookie, 'PATCH', { profileSharing: 'private' });
+  const priv = (await jsonFetch(`${origin}/api/users/${ann.user.id}/profile`, ben.cookie)).body;
+  assert.equal(priv.followers_count, 2);
+  assert.equal(priv.followers, undefined);
+  assert.equal(priv.following, undefined);
+  await jsonFetch(`${origin}/api/me`, ann.cookie, 'PATCH', { profileSharing: 'summary' });
+
+  const un = await jsonFetch(`${origin}/api/users/${ann.user.id}/follow`, ben.cookie, 'DELETE');
+  assert.equal(un.status, 200);
+  const after = (await jsonFetch(`${origin}/api/users/${ann.user.id}/profile`, ben.cookie)).body;
+  assert.equal(after.followers_count, 1);
+  assert.equal(after.is_following, false);
+});
+
+test('anyone can leave a team; what they logged stays on the team total', async () => {
+  const own = await register('Tia Owner');
+  const mem = await register('Tom Leaver');
+  const c = await jsonFetch(`${origin}/api/challenges`, own.cookie, 'POST', { name: 'Leave Team Oct', start_date: '2027-10-01', end_date: '2027-10-31' });
+  const t = await jsonFetch(`${origin}/api/teams`, own.cookie, 'POST', { challenge_id: c.body.id, name: 'Leavers' });
+  await jsonFetch(`${origin}/api/join`, mem.cookie, 'POST', { code: t.body.invite_code });
+  await jsonFetch(`${origin}/api/activities`, mem.cookie, 'POST', { challenge_id: c.body.id, team_id: t.body.id, activity_type: 'Run', minutes: 30, activity_date: '2027-10-02' });
+
+  const left = await jsonFetch(`${origin}/api/teams/${t.body.id}/leave`, mem.cookie, 'POST');
+  assert.equal(left.status, 200);
+  const members = (await jsonFetch(`${origin}/api/teams/${t.body.id}/members`, own.cookie)).body.members;
+  assert.deepEqual(members.map(x => x.name), ['Tia Owner']);
+  const detail = (await jsonFetch(`${origin}/api/challenges/${c.body.id}`, mem.cookie)).body;
+  assert.equal(detail.teams.find(x => x.id === t.body.id).mine, false, 'still in the challenge, no longer in the team');
+  const board = (await jsonFetch(`${origin}/api/challenges/${c.body.id}/leaderboard`, own.cookie)).body;
+  assert.equal(board.teams.find(x => x.id === t.body.id).minutes, 30);
+  assert.equal((await jsonFetch(`${origin}/api/teams/${t.body.id}/leave`, mem.cookie, 'POST')).status, 400, 'not in it any more');
+});
+
+test('leaving a challenge takes your entries with you; the last owner cannot leave', async () => {
+  const own = await register('Uma Owner');
+  const mem = await register('Ugo Leaver');
+  const c = await jsonFetch(`${origin}/api/challenges`, own.cookie, 'POST', { name: 'Leave Challenge Oct', start_date: '2027-10-01', end_date: '2027-10-31' });
+  const t = await jsonFetch(`${origin}/api/teams`, own.cookie, 'POST', { challenge_id: c.body.id, name: 'Stayers' });
+  await jsonFetch(`${origin}/api/join`, mem.cookie, 'POST', { code: t.body.invite_code });
+  await jsonFetch(`${origin}/api/activities`, mem.cookie, 'POST', { challenge_id: c.body.id, team_id: t.body.id, activity_type: 'Swim', minutes: 45, activity_date: '2027-10-03', route: ROUTE });
+  await jsonFetch(`${origin}/api/activities`, own.cookie, 'POST', { challenge_id: c.body.id, team_id: t.body.id, activity_type: 'Walk', minutes: 20, activity_date: '2027-10-03' });
+
+  const left = await jsonFetch(`${origin}/api/challenges/${c.body.id}/leave`, mem.cookie, 'POST');
+  assert.equal(left.status, 200);
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${c.body.id}`, mem.cookie)).status, 403, 'no longer a member');
+  assert.equal((await jsonFetch(`${origin}/api/me/activities`, mem.cookie)).body.activities.filter(a => a.challenge_id === c.body.id).length, 0);
+  const board = (await jsonFetch(`${origin}/api/challenges/${c.body.id}/leaderboard`, own.cookie)).body;
+  assert.deepEqual(board.users.map(x => x.name), ['Uma Owner']);
+  assert.equal(board.teams[0].minutes, 20, 'their minutes leave the team total too');
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${c.body.id}/leave`, mem.cookie, 'POST')).status, 400);
+
+  const sole = await jsonFetch(`${origin}/api/challenges/${c.body.id}/leave`, own.cookie, 'POST');
+  assert.equal(sole.status, 400);
+  assert.match(sole.body.error, /only owner/);
+  // With a co-owner, the original owner can go.
+  await jsonFetch(`${origin}/api/join`, mem.cookie, 'POST', { code: c.body.invite_code });
+  await jsonFetch(`${origin}/api/challenges/${c.body.id}/owners`, own.cookie, 'POST', { email: mem.email });
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${c.body.id}/leave`, own.cookie, 'POST')).status, 200);
+});

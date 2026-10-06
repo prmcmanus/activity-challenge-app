@@ -39,7 +39,12 @@ A dependency-free Node.js MVP for time-based team activity challenges.
   Android app. Routes are stored once per workout, shown on an OpenStreetMap map under My activity,
   and visible only to their owner
 - My activity on the home page lists everything you've logged across every challenge
-- Profiles: challenge-mates can open each other's profile (name, photo, an "about me" line). Each
+- Anyone can leave a team (what they logged stays on its total) or a whole challenge (their entries
+  in it are deleted; the last owner has to hand over or delete the challenge instead)
+- Following: follow a challenge-mate from their profile. Profiles show follower and following counts
+  and lists, naming only people the viewer shares a challenge with (counts only on a private profile)
+- Profiles: challenge-mates can open each other's profile (name, photo, an "about me" line) from the
+  leaderboard, on the web as well as in the apps. Each
   person chooses what else it shows - Private, Totals (default) or Full (recent activity) - and only
   for challenges they share; routes never appear
 - Help & support (web header and app): quick answers, plus tickets - bug reports, feature requests

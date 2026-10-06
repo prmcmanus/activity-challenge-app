@@ -60,6 +60,8 @@ struct ChallengeDetailView: View {
     let challengeId: Int
     @State private var tab = 0
     @State private var newTeam = ""
+    @State private var leavingTeam: TeamInfo?
+    @State private var leavingChallenge = false
 
     var body: some View {
         // A global admin can open a challenge they haven't joined; it's not on their dashboard, so it comes from the full record.
@@ -121,9 +123,22 @@ struct ChallengeDetailView: View {
                     }
                 } else { ProgressView().frame(maxWidth: .infinity) }
             }
+            if let d = detail, d.role != "admin" {
+                Button(role: .destructive) { leavingChallenge = true } label: {
+                    Label("Leave challenge", systemImage: "rectangle.portrait.and.arrow.right").frame(maxWidth: .infinity)
+                }.buttonStyle(.bordered).controlSize(.large)
+            }
         }
         .navigationTitle("Challenge").navigationBarTitleDisplayMode(.inline)
         .task(id: challengeId) { await model.loadLeaderboard(challengeId); await model.loadDetail(challengeId) }
+        .alert("Leave \(leavingTeam?.name ?? "the team")?", isPresented: Binding(get: { leavingTeam != nil }, set: { if !$0 { leavingTeam = nil } }), presenting: leavingTeam) { t in
+            Button("Leave team", role: .destructive) { Task { await model.leaveTeam(c.id, t.id) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in Text("What you've logged under this team stays on its total. You stay in the challenge.") }
+        .alert("Leave \(c.name)?", isPresented: $leavingChallenge) {
+            Button("Leave challenge", role: .destructive) { Task { if await model.leaveChallenge(c.id) { router.popToRoot() } } }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Everything you've logged in it is deleted, and you'll need an invite to join again.") }
     }
 
     private func teams(_ c: Challenge, _ d: ChallengeDetail) -> some View {
@@ -140,6 +155,7 @@ struct ChallengeDetailView: View {
                     }
                     Spacer()
                     if !t.mine && d.role != "admin" { Button("Join") { Task { await model.joinTeam(c.id, t.id) } } }
+                    if t.mine { Button("Leave") { leavingTeam = t }.foregroundStyle(.secondary) }
                 }
             }
             if d.role != "admin" {

@@ -114,8 +114,8 @@ initRecaptcha();
 
 async function load(){
   const m=await api('/api/me'); me=m.user;
-  if(!me){showInviteBanner();$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');$('#helpBtn').classList.add('hidden');$('#adminBtn').classList.add('hidden');renderAuth();return}
-  $('#authSection').classList.add('hidden');$('#app').classList.remove('hidden');$('#logout').classList.remove('hidden');$('#myAccount').classList.remove('hidden');$('#helpBtn').classList.remove('hidden');refreshHelpBadge();
+  if(!me){showInviteBanner();$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');$('#myProfile').classList.add('hidden');$('#helpBtn').classList.add('hidden');$('#adminBtn').classList.add('hidden');renderAuth();return}
+  $('#authSection').classList.add('hidden');$('#app').classList.remove('hidden');$('#logout').classList.remove('hidden');$('#myAccount').classList.remove('hidden');$('#myProfile').classList.remove('hidden');$('#helpBtn').classList.remove('hidden');refreshHelpBadge();
   if(pendingInviteToken){try{await api('/api/invites/accept',{method:'POST',body:JSON.stringify({token:pendingInviteToken})})}catch(e){alert(e.message)}pendingInviteToken=null}
   await loadDashboard();
   $('#adminBtn').classList.toggle('hidden',me.role!=='global_admin');
@@ -192,8 +192,9 @@ function renderChallenge(){
   $('#challengeDescription').innerHTML=c.description||'';
   $('#challengeDescription').classList.toggle('hidden',!c.description);
   $('#challengeCode').innerHTML=`<span class="invite-box"><span class="invite-label">Invite people</span><span class="linkrow"><code>${esc(inviteUrl(c.invite_code))}</code><button type="button" data-copylink="${esc(c.invite_code)}">Copy link</button></span><span class="invite-note">Or share the code <b>${esc(c.invite_code)}</b>. Anyone with the link or code can join this challenge.</span></span>`;
-  $('#challengeActions').innerHTML=c.canManage?'<button class="ghost" data-editchallenge="1">Edit challenge</button>':'';
+  $('#challengeActions').innerHTML=(c.canManage?'<button class="ghost" data-editchallenge="1">Edit challenge</button>':'')+(c.role!=='admin'?'<button class="ghost" data-leavechallenge="1">Leave challenge</button>':'');
   if(c.canManage)$('[data-editchallenge]').onclick=()=>openEditChallenge(c);
+  if(c.role!=='admin')$('[data-leavechallenge]').onclick=()=>leaveChallenge(c);
   $('#exportTeamsCsv').classList.toggle('hidden',!c.canManage);
   $('#exportUsersCsv').classList.toggle('hidden',!c.canManage);
   if(c.canManage){$('#exportTeamsCsv').href=`/api/challenges/${c.id}/leaderboard/export?type=teams`;$('#exportUsersCsv').href=`/api/challenges/${c.id}/leaderboard/export?type=users`}
@@ -227,6 +228,7 @@ function renderChallenge(){
   $('#teamList').innerHTML=c.teams.map(t=>{
     const actions=[];
     if(!t.mine)actions.push(`<button data-jointeam="${t.id}">Join</button>`);
+    if(t.mine)actions.push(`<button class="ghost" data-leaveteam="${t.id}" data-name="${esc(t.name)}">Leave</button>`);
     if(t.canManage)actions.push(`<button class="ghost" data-manageteam="${t.id}" data-name="${esc(t.name)}">Manage</button>`);
     const bits=[`${t.members} member(s)`];
     if(t.mine)bits.push('you are in this team');
@@ -236,8 +238,12 @@ function renderChallenge(){
   $all('[data-copylink]').forEach(b=>b.onclick=()=>copyInviteLink(b.dataset.copylink,b));
   $all('[data-jointeam]').forEach(b=>b.onclick=async()=>{await api(`/api/teams/${b.dataset.jointeam}/join`,{method:'POST'});await refreshChallenge()});
   $all('[data-manageteam]').forEach(b=>b.onclick=()=>openTeamManage(Number(b.dataset.manageteam),b.dataset.name));
+  $all('[data-leaveteam]').forEach(b=>b.onclick=async()=>{
+    if(!confirm(`Leave team "${b.dataset.name}"? What you've logged under it stays on the team's total.`))return;
+    try{await api(`/api/teams/${b.dataset.leaveteam}/leave`,{method:'POST'});await refreshChallenge()}catch(e){alert(e.message)}
+  });
   $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${esc(fmtTotal(c,t.minutes,t.distance,t.steps))}</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
-  $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b></span><span>${esc(fmtTotal(c,x.minutes,x.distance,x.steps))}</span></div>`).join('')||'<p class="muted">No members yet.</p>';
+  $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader" data-profile="${x.id}" title="See ${esc(x.name)}'s profile"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b></span><span>${esc(fmtTotal(c,x.minutes,x.distance,x.steps))}</span></div>`).join('')||'<p class="muted">No members yet.</p>';
   const recent=dash.mine.filter(a=>a.challenge_id===c.id);
   $('#recent').innerHTML=recent.map(x=>{
     const timeBit=x.start_time&&x.end_time?` · ${x.start_time}–${x.end_time}`:'';
@@ -411,6 +417,43 @@ async function openTeamManage(tid,tname){
     try{await api(`/api/teams/${tid}`,{method:'DELETE'});$('#modal').close();await refreshChallenge()}catch(x){$('#manageMsg').textContent=x.message}
   };
 }
+
+// --- Leaving a challenge, and profiles with following -------------------------------------
+async function leaveChallenge(c){
+  if(!confirm(`Leave "${c.name}"? Everything you've logged in it is deleted, and you'll need an invite to join again.`))return;
+  try{await api(`/api/challenges/${c.id}/leave`,{method:'POST'});await loadDashboard();showHome()}catch(e){alert(e.message)}
+}
+const ordinal=n=>n+(n%100>=11&&n%100<=13?'th':({1:'st',2:'nd',3:'rd'}[n%10]||'th'));
+function personButton(x){return `<button type="button" class="person" data-profile="${x.id}">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<span>${esc(x.name)}</span></button>`}
+function followList(title,people,count,empty){
+  const hidden=count-people.length;
+  return `<div><h3>${title} <span class="muted">${count}</span></h3>${people.map(personButton).join('')||(hidden?'':`<p class="muted">${empty}</p>`)}${hidden>0?`<p class="muted">+ ${hidden} you don't share a challenge with</p>`:''}</div>`;
+}
+// Anyone's profile (or mine) in the modal: follow button, followers/following, then whatever their
+// sharing level shows. People in the lists open their own profile in place.
+async function openProfile(id){
+  let p;
+  try{p=await api(`/api/users/${id}/profile`)}catch(e){alert(e.message==='Not found'?"This profile isn't available.":e.message);return}
+  const first=esc(p.name.split(' ')[0]);
+  const since=p.member_since?`Member since ${new Date(p.member_since+'T00:00:00').toLocaleDateString(undefined,{month:'long',year:'numeric'})}`:'';
+  const counts=`<b>${p.followers_count}</b> follower${p.followers_count===1?'':'s'} · <b>${p.following_count}</b> following${p.follows_you?' · <span class="status">Follows you</span>':''}`;
+  const lists=p.followers?`<div class="follow-cols">${followList('Followers',p.followers,p.followers_count,p.self?'Nobody yet.':'No followers yet.')}${followList('Following',p.following,p.following_count,'Nobody yet.')}</div>`:'';
+  let body='';
+  if(p.challenges){
+    body+=`<div class="profile-section"><h3>${p.self?'My challenges':'Challenges you share'}</h3>${p.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.team?`${esc(c.team)} · `:''}${c.start_date} → ${c.end_date}</div></div><div style="text-align:right"><b>${esc(fmtTotal(c,c.minutes,c.distance,c.steps))}</b>${c.rank?`<div class="muted">${ordinal(c.rank)} of ${c.of}</div>`:''}</div></div>`).join('')||'<p class="muted">No challenges yet.</p>'}</div>`;
+    if(p.activities)body+=`<div class="profile-section"><h3>Recent activity</h3>${p.activities.map(a=>`<div class="listrow"><div><b>${esc(a.activity_type)}</b><div class="muted">${a.activity_date}${a.start_time?` · ${a.start_time}`:''} · ${esc(a.challenge_name)}</div>${a.comment?`<div class="muted">“${esc(a.comment)}”</div>`:''}</div><b>${esc(fmtEntry(a,a))}</b></div>`).join('')||'<p class="muted">Nothing logged yet.</p>'}</div>`;
+  }else body+=`<p class="muted">${p.self?'Your profile is private: people only see your name and photo.':`${first} keeps their profile private.`}</p>`;
+  $('#modalBody').innerHTML=`<div class="profile-head">${avatarHtml(p.avatar_url,p.name,'avatar-lg')}<div><h2>${esc(p.name)}</h2>${p.bio?`<div>${esc(p.bio)}</div>`:''}<div class="muted">${since}</div></div></div>
+    <div class="row"><div>${counts}</div><div class="btnrow">${p.self?'<button class="ghost" id="profileEdit">Edit my account</button>':`<button id="followBtn" class="${p.is_following?'ghost':''}">${p.is_following?'Following ✓':'Follow'}</button>`}</div></div>
+    ${lists}${body}<p id="profileMsg" class="error"></p>`;
+  if(!$('#modal').open)$('#modal').showModal();
+  if(p.self)$('#profileEdit').onclick=()=>{$('#modal').close();openMyAccount()};
+  else $('#followBtn').onclick=async()=>{
+    try{await api(`/api/users/${p.id}/follow`,{method:p.is_following?'DELETE':'POST'});await openProfile(p.id)}catch(e){$('#profileMsg').textContent=e.message}
+  };
+}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-profile]');if(b){e.preventDefault();openProfile(Number(b.dataset.profile))}});
+$('#myProfile').onclick=()=>openProfile(me.id);
 
 // --- Administration (global admins) ---------------------------------------------------------
 let challengeBack='home',adminTab='users',adminUsers=[],adminChallenges=[];
@@ -639,11 +682,13 @@ $('#newChallengeForm').onsubmit=async e=>{
   e.preventDefault();
   const fields=Object.fromEntries(new FormData(e.target));
   fields.description=newChallengeRte.querySelector('.rte-editor').innerHTML;
-  await api('/api/challenges',{method:'POST',body:JSON.stringify(fields)});
+  const created=await api('/api/challenges',{method:'POST',body:JSON.stringify(fields)});
   e.target.reset();
   syncNewChallengeMeasure();
   newChallengeRte.querySelector('.rte-editor').innerHTML='';
-  await loadDashboard();renderHome();
+  await loadDashboard();
+  challengeBack='home';
+  await openChallenge(created.id);
 };
 $('#newTeamImage').addEventListener('change',()=>{
   const f=$('#newTeamImage').files[0];

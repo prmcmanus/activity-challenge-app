@@ -265,6 +265,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         afterTeamChange(challengeId); message = "Joined the team"
     }
 
+    suspend fun leaveTeam(challengeId: Int, teamId: Int) {
+        call { it.leaveTeam(teamId) } ?: return
+        afterTeamChange(challengeId); message = "You've left the team"
+    }
+
+    /** Leave a challenge; returns true once I'm out, so the screen can go back. */
+    suspend fun leaveChallenge(id: Int): Boolean {
+        call { it.leaveChallenge(id) } ?: return false
+        challenges = challenges.filterNot { it.id == id }
+        details = details - id
+        leaderboards.value = leaderboards.value - id
+        call { it.challenges() }?.let { challenges = it }
+        refreshActivities()
+        message = "You've left the challenge"
+        return true
+    }
+
     private suspend fun afterTeamChange(challengeId: Int) {
         call { it.challenges() }?.let { challenges = it }
         loadDetail(challengeId)

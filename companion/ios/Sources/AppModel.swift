@@ -312,6 +312,20 @@ enum BackgroundSync {
         await refreshChallenge(challengeId); message = "Joined the team"
     }
 
+    func leaveTeam(_ challengeId: Int, _ teamId: Int) async {
+        guard await call({ try await $0.leaveTeam(teamId) }) != nil else { return }
+        await refreshChallenge(challengeId); message = "You've left the team"
+    }
+    /// Leave a challenge; true once I'm out, so the screen can go back.
+    func leaveChallenge(_ id: Int) async -> Bool {
+        guard await call({ try await $0.leaveChallenge(id) }) != nil else { return false }
+        challenges.removeAll { $0.id == id }; details[id] = nil; leaderboards[id] = nil
+        if let c = await call({ try await $0.challenges() }) { challenges = c }
+        await refreshActivities()
+        message = "You've left the challenge"
+        return true
+    }
+
     // Invites
     func openLink(_ url: URL) {
         guard let code = inviteCode(from: url) else { return }

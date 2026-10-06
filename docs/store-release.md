@@ -33,9 +33,9 @@ The website downloads (sideloaded APK and Sideloadly .ipa) keep working alongsid
    Today they are `com.activetogether.companion` (Android) and `team.activetogether.companion`
    (iPhone). Keeping them is fine. If you'd rather lose "companion" before it's fixed for good,
    change them now (one line in each app, plus `public/.well-known/assetlinks.json`).
-3. **The name must be free.** Search both stores for "Active Together" first. Apple won't let two
-   apps share a name; if it's taken, use something like "Active Together: Team Challenges". The
-   name under the icon on the phone stays "Active Together" either way.
+3. **Store name: ActiveTogether.Team.** "Active Together" is already taken on the App Store (a
+   Sports app from 2023), and Apple won't let two apps share a name, so both stores list the app
+   by its web address. The name under the icon on the phone stays "Active Together".
 
 ## Google Play
 
@@ -45,7 +45,7 @@ The website downloads (sideloaded APK and Sideloadly .ipa) keep working alongsid
 3. Verify a contact phone number and email when asked.
 
 ### 2. Create the app
-1. **Create app** → App name "Active Together", default language English (UK), **App**, **Free**.
+1. **Create app** → App name "ActiveTogether.Team", default language English (UK), **App**, **Free**.
 2. Accept the declarations.
 
 ### 3. Build the upload file
@@ -106,7 +106,7 @@ If reCAPTCHA is switched on for the website, mention that Google receives IP and
 sign-up and sign-in on the **website**. The app itself doesn't use reCAPTCHA.
 
 ### 6. Store listing (Grow users → Store presence → Main store listing)
-- **App name:** Active Together
+- **App name:** ActiveTogether.Team
 - **Short description** and **full description:** see "Listing text" below.
 - **App icon:** `public/icon-512.png` (512 × 512).
 - **Feature graphic:** 1024 × 500 PNG/JPG (still to make; brand red with the logo and name works).
@@ -138,7 +138,7 @@ sign-up and sign-in on the **website**. The app itself doesn't use reCAPTCHA.
 
 ### 3. Create the app in App Store Connect
 1. https://appstoreconnect.apple.com → Apps → **+** → New App.
-2. Platform iOS, name "Active Together", primary language English (U.K.), the bundle ID above,
+2. Platform iOS, name "ActiveTogether.Team", primary language English (U.K.), the bundle ID above,
    SKU `activetogether`, Full Access.
 
 ### 4. Let GitHub upload builds
@@ -179,7 +179,7 @@ TestFlight:
 
 ## Listing text
 
-**Name:** Active Together
+**Store name:** ActiveTogether.Team (on the phone's home screen: Active Together)
 
 **Subtitle (Apple, max 30):** Team activity challenges
 

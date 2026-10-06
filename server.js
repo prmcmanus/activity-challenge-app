@@ -987,7 +987,7 @@ async function api(req,res,url){
    let b;try{b=await body(req)}catch(e){return send(res,400,{error:'Send the day as JSON'})}
    const key=String(req.headers['x-sync-key']||b.key||'').trim();
    const owner=key&&db.prepare('SELECT id,name FROM users WHERE sync_key_hash=? AND deactivated_at IS NULL').get(sha256hex(key));
-   if(!owner)return send(res,401,{error:'That sync key is not recognised. Make a new one under My account on activetogether.team.'});
+   if(!owner)return send(res,401,{error:'That sync key is not recognised. Make a new one with Set up Apple Shortcuts on the activetogether.team home page.'});
    const date=String(b.date||'').trim();
    if(!DATE_RE.test(date))return send(res,400,{error:'date must be YYYY-MM-DD'});
    if(date>new Date(Date.now()+864e5).toISOString().slice(0,10))return send(res,400,{error:'That date is in the future'});

@@ -569,8 +569,17 @@ function openMyAccount(){
       <label>Current password (required to change email or password)<input id="acctCurrentPassword" type="password"></label>
       <button>Save changes</button>
     </form>
-    <p id="acctMsg" class="error"></p>`;
+    <p id="acctMsg" class="error"></p>
+    <div class="danger-zone"><h2>Delete my account</h2>
+      <p class="muted">Deletes your account, everything you've logged, your routes, follows and support tickets, straight away. A challenge you own alone passes to its longest-standing member, or is deleted if nobody else is in it. This can't be undone.</p>
+      <form id="deleteAccountForm"><label>Your password<input id="deletePassword" type="password" required autocomplete="current-password"></label><button class="danger">Delete my account</button></form>
+      <p id="deleteMsg" class="error"></p></div>`;
   $('#modal').showModal();
+  $('#deleteAccountForm').onsubmit=async e=>{
+    e.preventDefault();
+    if(!confirm('Delete your Active Together account and everything in it? This cannot be undone.'))return;
+    try{await api('/api/me',{method:'DELETE',body:JSON.stringify({password:$('#deletePassword').value})});location.href='/'}catch(x){$('#deleteMsg').textContent=x.message}
+  };
   $('#acctAvatar').addEventListener('change',()=>{
     const f=$('#acctAvatar').files[0];
     if(!f)return;

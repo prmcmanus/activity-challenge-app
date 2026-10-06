@@ -221,6 +221,8 @@ struct EditProfileView: View {
     @State private var note: String?
     @State private var photo: PhotosPickerItem?
     @State private var photoBusy = false
+    @State private var deleting = false
+    @State private var deletePassword = ""
     @State private var loaded = false
 
     private var sensitive: Bool { !newPassword.isEmpty || (model.me.map { email.trimmingCharacters(in: .whitespaces).lowercased() != $0.email.lowercased() } ?? false) }
@@ -252,8 +254,16 @@ struct EditProfileView: View {
             if let note { Text(note).foregroundStyle(.red) }
             Button("Save") { save() }.bold()
                 .disabled(busy || name.trimmingCharacters(in: .whitespaces).isEmpty || email.isEmpty || (sensitive && currentPassword.isEmpty))
+            Section(header: Text("Delete my account"), footer: Text("Deletes your account, everything you've logged, your routes, follows and support tickets, straight away. A challenge you own alone passes to its longest-standing member, or is deleted if nobody else is in it. This can't be undone.")) {
+                Button("Delete my account", role: .destructive) { deletePassword = ""; deleting = true }
+            }
         }
         .navigationTitle("Edit profile").navigationBarTitleDisplayMode(.inline)
+        .alert("Delete your account?", isPresented: $deleting) {
+            SecureField("Password", text: $deletePassword)
+            Button("Delete account", role: .destructive) { let pw = deletePassword; Task { _ = await model.deleteAccount(password: pw) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Everything in it is deleted for good. Enter your password to confirm.") }
         .onAppear {
             guard !loaded, let me = model.me else { return }
             loaded = true; name = me.name; bio = me.bio ?? ""; sharing = me.sharing; email = me.email

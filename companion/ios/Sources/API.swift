@@ -2,6 +2,8 @@ import Foundation
 
 /// The one server this app talks to. A build setting can point a test build elsewhere.
 let serverURL: String = (Bundle.main.object(forInfoDictionaryKey: "ATServerURL") as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "https://activetogether.team"
+/// An App Store build is only ever updated by the App Store, so it never offers the website download.
+let isAppStoreBuild: Bool = (Bundle.main.object(forInfoDictionaryKey: "ATDistribution") as? String) == "appstore"
 
 /// Absolute URL for a server path such as /uploads/abc.png.
 func serverURLFor(_ path: String?) -> URL? {
@@ -229,6 +231,8 @@ final class API: @unchecked Sendable {
     }
     func createTeam(challengeId: Int, name: String) async throws { _ = try await request("/api/teams", "POST", ["challenge_id": challengeId, "name": name]) }
     func joinTeam(_ id: Int) async throws { _ = try await request("/api/teams/\(id)/join", "POST", [:]) }
+    /// Deletes my account and everything in it; the server signs me out.
+    func deleteAccount(password: String) async throws { _ = try await request("/api/me/delete", "POST", ["password": password]) }
     /// What I logged under the team stays on its total.
     func leaveTeam(_ id: Int) async throws { _ = try await request("/api/teams/\(id)/leave", "POST", [:]) }
     /// Leaves the challenge and its teams, deleting everything I logged in it.

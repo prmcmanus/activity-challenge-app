@@ -12,7 +12,7 @@ class HealthPermissionsRationaleActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val text = TextView(this).apply {
-            text = "Active Together Companion reads your exercise sessions and, if you allow it, the distance " +
+            text = "Active Together reads your exercise sessions and, if you allow it, the distance " +
                 "recorded during them. For each workout it uploads only the activity type, date, start/finish time, " +
                 "whole minutes and distance to the challenges you choose at $SERVER_URL. " +
                 "If you switch on \"Include GPS routes\", it also uploads each workout's route so you can see it " +

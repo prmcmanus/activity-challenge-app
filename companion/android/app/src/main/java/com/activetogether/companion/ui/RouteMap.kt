@@ -21,7 +21,7 @@ import org.osmdroid.views.overlay.Polyline
 /** OpenStreetMap needs an identifying user agent, and osmdroid caches tiles in the app's own cache. */
 private fun configureOsm(context: Context) {
     val c = Configuration.getInstance()
-    c.userAgentValue = "ActiveTogetherCompanion/${context.packageName}"
+    c.userAgentValue = "ActiveTogether/${context.packageName}"
     c.osmdroidBasePath = context.cacheDir.resolve("osmdroid")
     c.osmdroidTileCache = context.cacheDir.resolve("osmdroid/tiles")
 }

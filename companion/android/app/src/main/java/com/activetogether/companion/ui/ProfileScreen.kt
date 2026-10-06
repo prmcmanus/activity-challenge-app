@@ -38,7 +38,9 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -310,6 +312,7 @@ fun EditProfileScreen(vm: AppViewModel, done: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf<String?>(null) }
     var avatarBusy by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -381,6 +384,35 @@ fun EditProfileScreen(vm: AppViewModel, done: () -> Unit) {
                 } else { note = vm.message; vm.message = null }
             }
         }) { Text("Save") }
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        Text("Delete my account", style = MaterialTheme.typography.titleMedium)
+        Text("Deletes your account, everything you've logged, your routes, follows and support tickets, straight away. A challenge you own alone passes to its longest-standing member, or is deleted if nobody else is in it. This can't be undone.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        OutlinedButton(onClick = { deleting = true }, modifier = Modifier.fillMaxWidth()) { Text("Delete my account", color = MaterialTheme.colorScheme.error) }
+    }
+    if (deleting) {
+        var password by remember { mutableStateOf("") }
+        var working by remember { mutableStateOf(false) }
+        var error by remember { mutableStateOf<String?>(null) }
+        AlertDialog(
+            onDismissRequest = { if (!working) deleting = false },
+            title = { Text("Delete your account?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Everything in it is deleted for good. Enter your password to confirm.")
+                    OutlinedTextField(password, { password = it }, label = { Text("Password") }, singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = password.isNotEmpty() && !working, onClick = {
+                    working = true; error = null
+                    scope.launch { if (!vm.deleteAccount(password)) { error = vm.message; vm.message = null; working = false } }
+                }) { Text("Delete account", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(enabled = !working, onClick = { deleting = false }) { Text("Cancel") } },
+        )
     }
 }
 

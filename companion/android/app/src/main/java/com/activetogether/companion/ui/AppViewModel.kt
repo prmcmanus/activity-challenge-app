@@ -89,6 +89,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun clearInvite() { pendingInvite = null; prefs.pendingInvite = null }
 
     suspend fun checkForUpdate() {
+        // A Play Store build is only ever updated by the Play Store.
+        if (!BuildConfig.SELF_UPDATE) return
         // Quietly: a failed check shouldn't put up an error.
         update = runCatching { withContext(Dispatchers.IO) { api().androidRelease() } }.getOrNull()?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }
     }
@@ -145,6 +147,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val api = api()
         runCatching { withContext(Dispatchers.IO) { api.logout() } }
         forceSignOut(null)
+    }
+
+    /** Delete my account; on success I'm signed out with a note saying so. */
+    suspend fun deleteAccount(password: String): Boolean {
+        call { it.deleteAccount(password) } ?: return false
+        forceSignOut("Your account has been deleted")
+        return true
     }
 
     private fun forceSignOut(msg: String?) {

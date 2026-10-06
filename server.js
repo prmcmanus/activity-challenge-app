@@ -911,6 +911,36 @@ async function api(req,res,url){
  }
  // Delete an account for good: its activity and routes, memberships and tickets go with it.
  // Challenges and teams it created stay (other people are in them), credited to the admin doing the delete.
+ // Delete my own account, confirmed with my password - both app stores require this in the app. The
+ // same clean-up as an admin deletion; a challenge I own alone passes to its longest-standing member,
+ // or is deleted with me if nobody else is in it.
+ if((m==='DELETE'&&url.pathname==='/api/me')||(m==='POST'&&url.pathname==='/api/me/delete')){
+   if(!need(res,u))return;
+   const b=await body(req),row=db.prepare('SELECT password_hash FROM users WHERE id=?').get(u.id);
+   if(!b.password||!verify(String(b.password),row.password_hash))return send(res,400,{error:'Enter your current password to delete your account'});
+   if(u.email===seedEmail)return send(res,400,{error:"This is the site's built-in admin account from the server settings - it can't be deleted."});
+   const heir=db.prepare("SELECT id FROM users WHERE role='global_admin' AND deactivated_at IS NULL AND id!=? ORDER BY id LIMIT 1").get(u.id);
+   if(!heir)return send(res,400,{error:"You're the only global admin - make someone else an admin first"});
+   try{
+     db.exec('BEGIN');
+     const solo=db.prepare(`SELECT challenge_id FROM challenge_members cm WHERE cm.user_id=? AND cm.challenge_role='owner'
+       AND NOT EXISTS (SELECT 1 FROM challenge_members o WHERE o.challenge_id=cm.challenge_id AND o.challenge_role='owner' AND o.user_id!=?)`).all(u.id,u.id);
+     for(const {challenge_id:cid} of solo){
+       const next=db.prepare('SELECT user_id FROM challenge_members WHERE challenge_id=? AND user_id!=? ORDER BY joined_at,user_id LIMIT 1').get(cid,u.id);
+       if(next)db.prepare("UPDATE challenge_members SET challenge_role='owner' WHERE challenge_id=? AND user_id=?").run(cid,next.user_id);
+       else{db.prepare('DELETE FROM activities WHERE challenge_id=?').run(cid);db.prepare('DELETE FROM challenges WHERE id=?').run(cid)}
+     }
+     db.prepare('DELETE FROM activities WHERE user_id=?').run(u.id);
+     db.prepare('UPDATE challenges SET created_by=? WHERE created_by=?').run(heir.id,u.id);
+     db.prepare('UPDATE teams SET created_by=? WHERE created_by=?').run(heir.id,u.id);
+     db.prepare('UPDATE invites SET created_by=? WHERE created_by=?').run(heir.id,u.id);
+     db.prepare('DELETE FROM users WHERE id=?').run(u.id);
+     db.exec('COMMIT');
+   }catch(e){db.exec('ROLLBACK');throw e}
+   pruneRoutes();
+   console.log(`User ${u.id} deleted their own account`);
+   return send(res,200,{ok:true},{'Set-Cookie':'session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'});
+ }
  if(m==='DELETE'&&url.pathname.match(/^\/api\/admin\/users\/\d+$/)){
    if(!need(res,u,['global_admin']))return;
    const id=Number(url.pathname.split('/').pop()),target=db.prepare('SELECT id,email,role,deactivated_at FROM users WHERE id=?').get(id);

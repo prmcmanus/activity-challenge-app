@@ -173,6 +173,9 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
 
     fun logout() { request("/api/logout", "POST", JSONObject()) }
 
+    /** Deletes my account and everything in it; the server signs me out. */
+    fun deleteAccount(password: String) { request("/api/me/delete", "POST", JSONObject().put("password", password)) }
+
     /** Signed out shows as {user: null} rather than an error, so treat that as an expired session. */
     fun me(): Me {
         val r = request("/api/me")

@@ -2085,3 +2085,29 @@ test('leaving a challenge takes your entries with you; the last owner cannot lea
   await jsonFetch(`${origin}/api/challenges/${c.body.id}/owners`, own.cookie, 'POST', { email: mem.email });
   assert.equal((await jsonFetch(`${origin}/api/challenges/${c.body.id}/leave`, own.cookie, 'POST')).status, 200);
 });
+
+test('anyone can delete their own account with their password; a challenge they owned alone passes on or goes', async () => {
+  const del = await register('Dee Leaving');
+  const mate = await register('Mo Staying');
+  const shared = await jsonFetch(`${origin}/api/challenges`, del.cookie, 'POST', { name: 'Handed On', start_date: '2027-11-01', end_date: '2027-11-30', participation: 'individual' });
+  const alone = await jsonFetch(`${origin}/api/challenges`, del.cookie, 'POST', { name: 'Just Me', start_date: '2027-11-01', end_date: '2027-11-30', participation: 'individual' });
+  await jsonFetch(`${origin}/api/join`, mate.cookie, 'POST', { code: shared.body.invite_code });
+  await jsonFetch(`${origin}/api/activities`, del.cookie, 'POST', { targets: [{ challenge_id: shared.body.id }, { challenge_id: alone.body.id }], activity_type: 'Row', minutes: 30, activity_date: '2027-11-02' });
+  await jsonFetch(`${origin}/api/users/${del.user.id}/follow`, mate.cookie, 'POST');
+
+  assert.equal((await jsonFetch(`${origin}/api/me`, del.cookie, 'DELETE', { password: 'wrong-password' })).status, 400, 'needs the right password');
+  const gone = await jsonFetch(`${origin}/api/me`, del.cookie, 'DELETE', { password: 'SuperSecret123!' });
+  assert.equal(gone.status, 200);
+  assert.deepEqual((await jsonFetch(`${origin}/api/me`, del.cookie)).body, { user: null }, 'signed out');
+  const login = await fetch(`${origin}/api/mobile/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: del.email, password: 'SuperSecret123!' }) });
+  assert.equal(login.status, 401, 'the account no longer exists');
+
+  const handed = await jsonFetch(`${origin}/api/challenges/${shared.body.id}`, mate.cookie);
+  assert.equal(handed.body.role, 'owner', 'the remaining member now owns it');
+  assert.deepEqual((await jsonFetch(`${origin}/api/challenges/${shared.body.id}/leaderboard`, mate.cookie)).body.users.map(x => x.name), ['Mo Staying']);
+  const admin = await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }) });
+  const adminCookie = admin.headers.get('set-cookie').split(';')[0];
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${alone.body.id}`, adminCookie)).status, 404, 'a challenge nobody else was in is deleted');
+  assert.equal((await jsonFetch(`${origin}/api/users/${mate.user.id}/profile`, mate.cookie)).body.following_count, 0, 'follows go too');
+  assert.equal((await jsonFetch(`${origin}/api/me`, adminCookie, 'DELETE', { password: 'ChangeMe123!' })).status, 400, 'the built-in admin cannot delete itself');
+});

@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -6,16 +8,31 @@ plugins {
 
 android {
     namespace = "com.activetogether.companion"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.activetogether.companion"
         minSdk = 28
-        targetSdk = 35
-        versionCode = 14
-        versionName = "1.7.0"
+        targetSdk = 36
+        versionCode = 15
+        versionName = "1.8.0"
         buildConfigField("String", "SERVER_URL", "\"https://activetogether.team\"")
         manifestPlaceholders["cleartext"] = "false"
+        // Whether the app offers its own updates from the website. Off in the Play Store build.
+        buildConfigField("boolean", "SELF_UPDATE", "true")
+    }
+
+    // The Play Store upload key, kept outside the repo: ~/.android/activetogether-upload.properties holds
+    // storeFile (relative to that folder), storePassword, keyAlias and keyPassword. Without it the play build is left unsigned.
+    val uploadProps = File(System.getProperty("user.home"), ".android/activetogether-upload.properties")
+    signingConfigs {
+        if (uploadProps.exists()) create("upload") {
+            val p = Properties().apply { uploadProps.inputStream().use { load(it) } }
+            storeFile = File(uploadProps.parentFile, p.getProperty("storeFile"))
+            storePassword = p.getProperty("storePassword")
+            keyAlias = p.getProperty("keyAlias")
+            keyPassword = p.getProperty("keyPassword")
+        }
     }
 
     buildTypes {
@@ -26,6 +43,14 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("debug")
+        }
+        // What goes to the Google Play Store: the release build, signed with the upload key, and never
+        // offering its own updates (Play policy: a Play app is only updated by Play). ./gradlew bundlePlay
+        create("play") {
+            initWith(getByName("release"))
+            matchingFallbacks += listOf("release")
+            signingConfig = signingConfigs.findByName("upload")
+            buildConfigField("boolean", "SELF_UPDATE", "false")
         }
         // For trying the app on an emulator against a local server (http://10.0.2.2:<port> is the
         // host machine), with a tool that writes sample workouts into Health Connect. Never shipped:

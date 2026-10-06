@@ -213,6 +213,12 @@ enum BackgroundSync {
         try? await api.logout()
         forceSignOut(nil)
     }
+    /// Delete my account; on success I'm signed out with a note saying so.
+    func deleteAccount(password: String) async -> Bool {
+        guard await call({ try await $0.deleteAccount(password: password) }) != nil else { return false }
+        forceSignOut("Your account has been deleted")
+        return true
+    }
     private func forceSignOut(_ msg: String?) {
         Prefs.token = nil
         signedIn = false
@@ -252,6 +258,7 @@ enum BackgroundSync {
         if let b = await call({ try await $0.ticketBadge() }) { helpBadge = b.0 + (me?.isAdmin == true ? b.1 : 0) }
     }
     func checkForUpdate() async {
+        if isAppStoreBuild { update = nil; return }
         let build = Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0") ?? 0
         if let r = try? await api.iosRelease(), r.build > build { update = r } else { update = nil }
     }

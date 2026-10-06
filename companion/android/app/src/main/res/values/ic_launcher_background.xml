@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The edge colour of the app icon artwork, so the adaptive icon's margin blends in. -->
+    <color name="ic_launcher_background">#B2050F</color>
+</resources>

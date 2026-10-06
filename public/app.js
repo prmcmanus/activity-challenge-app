@@ -114,8 +114,8 @@ initRecaptcha();
 
 async function load(){
   const m=await api('/api/me'); me=m.user;
-  if(!me){showInviteBanner();$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');$('#myProfile').classList.add('hidden');$('#helpBtn').classList.add('hidden');$('#adminBtn').classList.add('hidden');renderAuth();return}
-  $('#authSection').classList.add('hidden');$('#app').classList.remove('hidden');$('#logout').classList.remove('hidden');$('#myAccount').classList.remove('hidden');$('#myProfile').classList.remove('hidden');$('#helpBtn').classList.remove('hidden');refreshHelpBadge();
+  if(!me){showInviteBanner();$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');$('#myProfile').classList.add('hidden');$('#menuToggle').classList.add('hidden');$('#helpBtn').classList.add('hidden');$('#adminBtn').classList.add('hidden');renderAuth();return}
+  $('#authSection').classList.add('hidden');$('#app').classList.remove('hidden');$('#logout').classList.remove('hidden');$('#myAccount').classList.remove('hidden');$('#myProfile').classList.remove('hidden');$('#menuToggle').classList.remove('hidden');$('#helpBtn').classList.remove('hidden');refreshHelpBadge();
   if(pendingInviteToken){try{await api('/api/invites/accept',{method:'POST',body:JSON.stringify({token:pendingInviteToken})})}catch(e){alert(e.message)}pendingInviteToken=null}
   await loadDashboard();
   $('#adminBtn').classList.toggle('hidden',me.role!=='global_admin');
@@ -454,6 +454,15 @@ async function openProfile(id){
 }
 document.addEventListener('click',e=>{const b=e.target.closest('[data-profile]');if(b){e.preventDefault();openProfile(Number(b.dataset.profile))}});
 $('#myProfile').onclick=()=>openProfile(me.id);
+// Phones: the header buttons fold into a Menu dropdown, closed by choosing anything, tapping outside or Escape.
+{
+  const header=document.querySelector('header'),toggle=$('#menuToggle');
+  const setMenu=open=>{header.classList.toggle('open',open);toggle.setAttribute('aria-expanded',String(open))};
+  toggle.onclick=e=>{e.stopPropagation();setMenu(!header.classList.contains('open'))};
+  $('#headerNav').addEventListener('click',e=>{if(e.target.closest('button'))setMenu(false)});
+  document.addEventListener('click',e=>{if(!header.contains(e.target))setMenu(false)});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')setMenu(false)});
+}
 
 // --- Apple Shortcuts sync key ----------------------------------------------------------------
 // The key is shown once, when it's made; the server keeps only a hash of it.
@@ -648,6 +657,7 @@ async function refreshHelpBadge(){
   try{
     const b=await api('/api/tickets/badge'),n=b.mine+(me.role==='global_admin'?b.admin:0);
     $('#helpBadge').textContent=n;$('#helpBadge').classList.toggle('hidden',!n);
+    $('#menuBadge').textContent=n;$('#menuBadge').classList.toggle('hidden',!n);
     $('#helpBadge').title=me.role==='global_admin'?`${b.mine} repl${b.mine===1?'y':'ies'} to you, ${b.admin} ticket(s) needing support`:`${n} new repl${n===1?'y':'ies'}`;
   }catch(e){}
 }

@@ -2111,3 +2111,67 @@ test('anyone can delete their own account with their password; a challenge they 
   assert.equal((await jsonFetch(`${origin}/api/users/${mate.user.id}/profile`, mate.cookie)).body.following_count, 0, 'follows go too');
   assert.equal((await jsonFetch(`${origin}/api/me`, adminCookie, 'DELETE', { password: 'ChangeMe123!' })).status, 400, 'the built-in admin cannot delete itself');
 });
+
+test('Apple Shortcuts sync: a personal key sends a day of totals into every challenge it fits, and a resend updates it', async () => {
+  const sam = await register('Sam Shortcut');
+  // Real days around today: the endpoint refuses future dates.
+  const day = n => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+  const D1 = day(-2), D2 = day(-1), FROM = day(-10), TO = day(20);
+  const steps = await jsonFetch(`${origin}/api/challenges`, sam.cookie, 'POST', { name: 'SC Steps', start_date: FROM, end_date: TO, metric: 'steps', participation: 'individual' });
+  const mins = await jsonFetch(`${origin}/api/challenges`, sam.cookie, 'POST', { name: 'SC Minutes', start_date: FROM, end_date: TO, participation: 'individual' });
+  const dist = await jsonFetch(`${origin}/api/challenges`, sam.cookie, 'POST', { name: 'SC Km', start_date: FROM, end_date: TO, metric: 'distance', distance_unit: 'km', participation: 'individual' });
+  const teams = await jsonFetch(`${origin}/api/challenges`, sam.cookie, 'POST', { name: 'SC No Team', start_date: FROM, end_date: TO });
+  await jsonFetch(`${origin}/api/challenges`, sam.cookie, 'POST', { name: 'SC Later', start_date: day(30), end_date: day(60), participation: 'individual' });
+
+  assert.equal((await jsonFetch(`${origin}/api/me/sync-key`, sam.cookie)).body.exists, false);
+  const first = (await jsonFetch(`${origin}/api/me/sync-key`, sam.cookie, 'POST')).body.key;
+  const key = (await jsonFetch(`${origin}/api/me/sync-key`, sam.cookie, 'POST')).body.key;
+  assert.match(key, /^at_[0-9a-f]{40}$/);
+  assert.equal((await jsonFetch(`${origin}/api/me/sync-key`, sam.cookie)).body.exists, true);
+  const send = (k, payload) => fetch(`${origin}/api/shortcut/day`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sync-Key': k }, body: JSON.stringify(payload) })
+    .then(async r => ({ status: r.status, body: await r.json() }));
+
+  assert.equal((await send(first, { date: D1, steps: 100 })).status, 401, 'a replaced key stops working');
+  const r = await send(key, { date: D1, steps: '8,412', minutes: 31.6, distance: 5.4, distance_unit: 'km' });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.saved, ['SC Km', 'SC Minutes', 'SC Steps']);
+  assert.deepEqual(r.body.skipped, ['SC No Team: join a team first']);
+  assert.match(r.body.message, /8,412 steps, 32 active min, 5\.4 km/);
+
+  const mine = async () => (await jsonFetch(`${origin}/api/me/activities?limit=50`, sam.cookie)).body.activities.filter(a => a.source === 'shortcut');
+  let rows = await mine();
+  assert.equal(rows.length, 3);
+  assert.equal(rows.find(a => a.challenge_id === steps.body.id).steps, 8412);
+  assert.equal(rows.find(a => a.challenge_id === mins.body.id).minutes, 32);
+  assert.equal(rows.find(a => a.challenge_id === dist.body.id).distance, 5.4);
+
+  // The same day later on: figures replaced, not added.
+  await send(key, { date: D1, steps: 10250, minutes: 45, distance: 7, distance_unit: 'km' });
+  rows = await mine();
+  assert.equal(rows.length, 3);
+  assert.equal(rows.find(a => a.challenge_id === steps.body.id).steps, 10250);
+  const board = (await jsonFetch(`${origin}/api/challenges/${mins.body.id}/leaderboard`, sam.cookie)).body;
+  assert.equal(board.users[0].minutes, 45);
+
+  // One figure at a time, as the shortcut sends them: the others are kept.
+  await send(key, { date: D1, steps: 11000 });
+  await send(key, { date: D1, distance: 7500, distance_unit: 'm' });
+  rows = await mine();
+  assert.equal(rows.find(a => a.challenge_id === steps.body.id).steps, 11000);
+  assert.equal(rows.find(a => a.challenge_id === mins.body.id).minutes, 45, 'minutes kept');
+  assert.equal(rows.find(a => a.challenge_id === dist.body.id).distance, 7.5, 'metres accepted');
+  assert.equal((await send(key, { date: D1 })).status, 400, 'something must be sent');
+  assert.equal((await send(key, { date: D1, distance: 3, distance_unit: 'furlongs' })).status, 400);
+
+  // Joining a team in the team challenge lets the next send count there too.
+  const team = await jsonFetch(`${origin}/api/teams`, sam.cookie, 'POST', { challenge_id: teams.body.id, name: 'Shortcutters' });
+  assert.deepEqual((await send(key, { date: D2, minutes: 20 })).body.saved, ['SC Minutes', 'SC No Team']);
+  assert.equal((await mine()).find(a => a.challenge_id === teams.body.id).team_name, 'Shortcutters');
+
+  assert.equal((await send(key, { date: '2099-01-01', steps: 5 })).status, 400, 'no future days');
+  assert.equal((await send(key, { date: 'yesterday', steps: 5 })).status, 400);
+  assert.equal((await send('at_nope', { date: D1, steps: 5 })).status, 401);
+  await jsonFetch(`${origin}/api/me/sync-key`, sam.cookie, 'DELETE');
+  assert.equal((await send(key, { date: D1, steps: 5 })).status, 401, 'a removed key stops working');
+  void team;
+});

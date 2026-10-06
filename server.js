@@ -32,6 +32,11 @@ ensureColumn('users','bio','TEXT');
 ensureColumn('users','profile_sharing',"TEXT NOT NULL DEFAULT 'summary'");
 // Set when an admin deactivates the account: it can't sign in, but its activity still counts.
 ensureColumn('users','deactivated_at','TEXT');
+// Apple Shortcuts sync: a personal key, stored only as a hash, lets a shortcut on an iPhone send a day's
+// totals from Apple Health without signing in. Making a new key replaces the old one.
+ensureColumn('users','sync_key_hash','TEXT');
+ensureColumn('users','sync_key_created_at','TEXT');
+const sha256hex=v=>crypto.createHash('sha256').update(String(v)).digest('hex');
 // Help & support: bug reports, feature requests and questions, as tickets with a conversation.
 // owner_seen_at / admin_seen_at against last_reply_at / last_user_reply_at drive the "new reply"
 // badges on each side; internal comments are admin-only notes the reporter never sees.
@@ -961,6 +966,66 @@ async function api(req,res,url){
  }
 
  if(m==='GET'&&url.pathname==='/api/health/status'){if(!need(res,u))return;return send(res,200,{healthConnect:{platform:'Android',mode:'native-companion-required'},healthKit:{platform:'iOS',mode:'native-companion-required'},acceptedRecord:'exercise session duration and distance',uploadEndpoint:'/api/health/import'})}
+ // My Apple Shortcuts key: whether I have one, a new one (shown once, replacing any old one), or none.
+ if(url.pathname==='/api/me/sync-key'&&['GET','POST','DELETE'].includes(m)){
+   if(!need(res,u))return;
+   if(m==='POST'){
+     const key='at_'+crypto.randomBytes(20).toString('hex');
+     db.prepare("UPDATE users SET sync_key_hash=?,sync_key_created_at=datetime('now') WHERE id=?").run(sha256hex(key),u.id);
+     return send(res,201,{key});
+   }
+   if(m==='DELETE'){db.prepare('UPDATE users SET sync_key_hash=NULL,sync_key_created_at=NULL WHERE id=?').run(u.id);return send(res,200,{ok:true})}
+   const r=db.prepare('SELECT sync_key_created_at FROM users WHERE id=?').get(u.id);
+   return send(res,200,{exists:!!r.sync_key_created_at,created_at:r.sync_key_created_at});
+ }
+ // One day's totals from the Apple Shortcut: steps, exercise minutes and/or distance, in one request or
+ // one per figure (a figure not sent keeps what's stored). They go into every challenge I'm in that runs
+ // that day, as that challenge's measure (a step challenge takes the steps, and so on), under my first
+ // team in a team challenge. Sending a day again replaces its figures, so the shortcut can run as often
+ // as it likes; an entry left with nothing to count is removed.
+ if(m==='POST'&&url.pathname==='/api/shortcut/day'){
+   let b;try{b=await body(req)}catch(e){return send(res,400,{error:'Send the day as JSON'})}
+   const key=String(req.headers['x-sync-key']||b.key||'').trim();
+   const owner=key&&db.prepare('SELECT id,name FROM users WHERE sync_key_hash=? AND deactivated_at IS NULL').get(sha256hex(key));
+   if(!owner)return send(res,401,{error:'That sync key is not recognised. Make a new one under My account on activetogether.team.'});
+   const date=String(b.date||'').trim();
+   if(!DATE_RE.test(date))return send(res,400,{error:'date must be YYYY-MM-DD'});
+   if(date>new Date(Date.now()+864e5).toISOString().slice(0,10))return send(res,400,{error:'That date is in the future'});
+   // Shortcuts may send numbers as text, with thousands separators or decimals, and the distance in
+   // whatever unit the Health app uses. undefined = not sent this time.
+   const num=v=>{if(v===undefined)return undefined;const n=Number(String(v??'').replace(/,/g,''));return Number.isFinite(n)&&n>0?n:0};
+   const u8=String(b.distance_unit||'mi').trim().toLowerCase();
+   const unitM=/^(km|kilomet(er|re)s?)$/.test(u8)?1000:/^(m|met(er|re)s?)$/.test(u8)?1:/^(mi|miles?)$/.test(u8)?METERS_PER.mi:null;
+   if(unitM===null)return send(res,400,{error:'distance_unit must be mi, km or m'});
+   const unit=unitM===METERS_PER.mi?'mi':'km';
+   const steps=num(b.steps)===undefined?undefined:Math.round(num(b.steps)),minutes=num(b.minutes)===undefined?undefined:Math.round(num(b.minutes)),distance_m=num(b.distance)===undefined?undefined:num(b.distance)*unitM;
+   if(steps===undefined&&minutes===undefined&&distance_m===undefined)return send(res,400,{error:'Send steps, minutes or distance'});
+   if(steps>200000)return send(res,400,{error:'That is more steps than anyone walks in a day - check the shortcut'});
+   const challenges=db.prepare('SELECT c.* FROM challenges c JOIN challenge_members cm ON cm.challenge_id=c.id WHERE cm.user_id=? AND c.start_date<=? AND c.end_date>=? ORDER BY c.name').all(owner.id,date,date);
+   const saved=[],skipped=[],ref='day:'+date;
+   for(const c of challenges){
+     let teamId=null;
+     if(!isIndividual(c)){
+       const t=db.prepare('SELECT t.id FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=? AND t.challenge_id=? ORDER BY t.id LIMIT 1').get(owner.id,c.id);
+       if(!t){skipped.push(`${c.name}: join a team first`);continue}
+       teamId=t.id;
+     }
+     const metric=challengeMetric(c);
+     const prev=db.prepare("SELECT id,steps,minutes,distance_m FROM activities WHERE user_id=? AND source='shortcut' AND source_ref=? AND challenge_id=?").get(owner.id,ref,c.id);
+     const pick=(sent,kept)=>(sent===undefined?kept:sent)||null;
+     const row=metric==='steps'?{type:'Steps',steps:pick(steps,prev?.steps),minutes:null,distance_m:null}
+       :{type:'Daily activity',steps:null,minutes:pick(minutes,prev?.minutes),distance_m:pick(distance_m,prev?.distance_m)};
+     const counts=metric==='steps'?row.steps:metric==='distance'?row.distance_m:row.minutes;
+     if(!counts){if(prev)db.prepare('DELETE FROM activities WHERE id=?').run(prev.id);skipped.push(`${c.name}: nothing to count`);continue}
+     if(prev)db.prepare('UPDATE activities SET team_id=?,steps=?,minutes=?,distance_m=? WHERE id=?').run(teamId,row.steps,row.minutes,row.distance_m,prev.id);
+     else db.prepare("INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,distance_m,steps,activity_date,source,source_ref) VALUES(?,?,?,?,?,?,?,?,'shortcut',?)")
+       .run(owner.id,teamId,c.id,row.type,row.minutes,row.distance_m,row.steps,date,ref);
+     saved.push(c.name);
+   }
+   const figures=[steps!==undefined&&`${steps.toLocaleString('en-GB')} steps`,minutes!==undefined&&`${minutes} active min`,distance_m!==undefined&&`${(distance_m/METERS_PER[unit]).toFixed(1)} ${unit}`].filter(Boolean).join(', ');
+   const message=saved.length?`${date}: ${figures} - saved to ${saved.join(', ')}`:`${date}: ${figures} - not saved (${skipped.join('; ')||'no challenge of yours runs that day'})`;
+   return send(res,200,{ok:true,date,saved,skipped,message});
+ }
  if(m==='POST'&&url.pathname==='/api/health/import'){
    if(!need(res,u))return;
    let b;

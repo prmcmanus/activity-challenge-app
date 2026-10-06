@@ -1,0 +1,99 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sync your activity — Active Together</title><link rel="icon" href="favicon.ico" sizes="any"><link rel="apple-touch-icon" href="apple-touch-icon.png"><link rel="stylesheet" href="style.css"><style>.policy h2{margin-top:28px}.policy h3{margin:20px 0 6px;font-size:16px}.policy ul,.policy ol{padding-left:22px}.policy li{margin:7px 0;line-height:1.5}.policy p{line-height:1.6}.policy code{background:#f3f4f6;padding:1px 5px;border-radius:4px}.pick{width:100%;border-collapse:collapse;margin:8px 0}.pick th,.pick td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}.pick th{font-size:13px;color:var(--muted)}.tip{background:#fffbea;border:1px solid #f3e3a1;border-radius:10px;padding:12px 14px;margin:12px 0}</style></head><body>
+<header><div><img class="mark" src="mark.png" width="36" height="36" alt=""><b>Active Together</b></div><div class="btnrow"><a href="/" class="ghost">&larr; Back to app</a></div></header>
+<main>
+<section class="card policy">
+<h1>Sync your activity automatically</h1>
+<p>You can always log activity by hand on the website. To have it counted for you, connect your phone. Your watch or fitness band doesn't need its own connection: its app passes everything to your phone's health store (Health Connect on Android, Apple Health on iPhone), and Active Together picks it up from there.</p>
+
+<h2>Which option is for me?</h2>
+<table class="pick">
+<tr><th>Your phone</th><th>Watch or band</th><th>What to use</th></tr>
+<tr><td>Android</td><td>None, Fitbit, Garmin, Samsung, Pixel Watch, others</td><td><a href="#android">The Android app</a></td></tr>
+<tr><td>iPhone</td><td>None, Apple Watch or Garmin</td><td><a href="#shortcuts">Apple Shortcuts</a> (free, daily totals) or <a href="#iphone-app">the iPhone app</a> (individual workouts)</td></tr>
+<tr><td>iPhone</td><td>Fitbit</td><td>Not possible yet: Fitbit doesn't share with Apple Health. Log by hand for now.</td></tr>
+</table>
+<div class="tip"><b>Use one way per challenge.</b> If two of these send the same activity (say, the app and the shortcut), it counts twice. Pick one, or delete the duplicates under My activity.</div>
+
+<h2 id="android">Android: the Active Together app</h2>
+<ol>
+<li>Sign in on this website, and on the home page tap <b>Download for Android</b>. Open the downloaded file to install it (allow installs from your browser if Android asks).</li>
+<li>Open the app, sign in, go to <b>Sync</b> and allow access to Health Connect when asked.</li>
+<li>Review your workouts and upload them, or turn on <b>Sync automatically</b> under <b>Me</b>.</li>
+</ol>
+<h3>With a Fitbit</h3>
+<p>In the Fitbit app (now called Google Health on some phones): tap your profile picture, then <b>Health Connect</b>, and turn sharing on for steps, exercise and distance.</p>
+<h3>With a Garmin (Android 14 or newer)</h3>
+<p>In Garmin Connect: <b>More</b> (or your profile) → <b>Settings</b> → <b>Health Connect</b>, and allow it to write steps, activities and distance.</p>
+<h3>With a Samsung, Pixel Watch or other app</h3>
+<p>Most fitness apps have a Health Connect option in their settings. Turn on writing exercise, steps and distance.</p>
+
+<h2 id="shortcuts">iPhone: Apple Shortcuts</h2>
+<p>Shortcuts is a free app from Apple, already on your iPhone (search for "Shortcuts" if you can't see it). You set this up once. After that it sends your day's <b>steps, exercise minutes and walking and running distance</b> from Apple Health twice a day, so it counts in step, minutes and distance challenges alike. It sends daily totals, not individual workouts.</p>
+<div class="tip">Works with an Apple Watch, an iPhone on its own, or a Garmin. In Garmin Connect, go to <b>More</b> → <b>Settings</b> → <b>Connected Apps</b> → <b>Apple Health</b> and switch sharing on.</div>
+
+<h3>Step 1: get your sync key</h3>
+<ol>
+<li>On this website, sign in and choose <b>Set up Apple Shortcuts</b> on the home page.</li>
+<li>Tap <b>Create my sync key</b> and <b>Copy</b>. It's shown only once. If you lose it, just make a new one; the old one then stops working.</li>
+</ol>
+<p>If someone has shared a ready-made Active Together shortcut with you, tap their link, choose <b>Add Shortcut</b>, paste your key when asked, and go straight to step 3.</p>
+
+<h3>Step 2: build the shortcut</h3>
+<p>In the <b>Shortcuts</b> app, tap <b>+</b> at the top right. Tap the name at the top and call it <b>Active Together sync</b>. Then add these actions in order, using the search bar at the bottom ("Search for apps and actions") to find each one.</p>
+<ol>
+<li><b>Text</b>: paste your sync key into the box.</li>
+<li><b>Set Variable</b>: tap <i>Variable Name</i> and type <code>Key</code>. Its input should already be <i>Text</i>.</li>
+</ol>
+<p><b>Steps</b> (actions 3 to 9):</p>
+<ol start="3">
+<li><b>Find Health Samples</b>: tap <i>Type</i> and choose <b>Steps</b>. Tap <i>Add Filter</i>, set it to <b>Start Date</b> <b>is in the last</b> <b>2</b> <b>days</b>. Tap <i>Show More</i> and set <b>Group By</b> to <b>Day</b>.</li>
+<li><b>Repeat with Each</b>: it should repeat with each item in <i>Health Samples</i>. Add the next actions <i>inside</i> it, above <i>End Repeat</i>.</li>
+<li><b>Get Details of Health Sample</b>: set it to get <b>Start Date</b> of <i>Repeat Item</i>.</li>
+<li><b>Format Date</b>: tap <i>Date Format</i> and choose <b>Custom</b>, then type <code>yyyy-MM-dd</code> as the format.</li>
+<li><b>Get Details of Health Sample</b>: set it to get <b>Value</b> of <i>Repeat Item</i>.</li>
+<li><b>Get Contents of URL</b>: type <code>https://activetogether.team/api/shortcut/day</code> as the URL, then tap <i>Show More</i>:
+  <ul>
+  <li><b>Method</b>: POST</li>
+  <li><b>Headers</b>: tap <i>Add new header</i>. Key <code>X-Sync-Key</code>; for the value, choose the <b>Key</b> variable (tap the box, then <i>Select Variable</i>).</li>
+  <li><b>Request Body</b>: JSON. Tap <i>Add new field</i>, then <i>Text</i>: key <code>date</code>, value the <b>Formatted Date</b>. Add another <i>Number</i> field: key <code>steps</code>, value the <b>Value</b> from action 7.</li>
+  </ul></li>
+<li>Check that <b>End Repeat</b> comes after action 8.</li>
+</ol>
+<p><b>Exercise minutes</b> (actions 10 to 16): repeat actions 3 to 9 (long-press each and choose <b>Duplicate</b>, then drag them below <i>End Repeat</i>), with two changes:</p>
+<ul>
+<li>In <b>Find Health Samples</b>, choose the type <b>Exercise Minutes</b>.</li>
+<li>In <b>Get Contents of URL</b>, rename the field <code>steps</code> to <code>minutes</code>, and point every <i>Repeat Item</i>, <i>Formatted Date</i> and <i>Value</i> at the actions in this copy.</li>
+</ul>
+<p><b>Distance</b> (actions 17 to 24): repeat actions 3 to 9 once more, with these changes:</p>
+<ul>
+<li>In <b>Find Health Samples</b>, choose <b>Walking + Running Distance</b>.</li>
+<li>Add one more <b>Get Details of Health Sample</b> inside the repeat, getting the <b>Unit</b> of <i>Repeat Item</i>.</li>
+<li>In <b>Get Contents of URL</b>, call the number field <code>distance</code>, and add a Text field <code>distance_unit</code> whose value is that <b>Unit</b>.</li>
+</ul>
+<p>Tap <b>Done</b>. Now tap the shortcut once to try it. The first time, iPhone asks to let Shortcuts read your Health data (allow <b>Steps</b>, <b>Exercise Minutes</b> and <b>Walking + Running Distance</b>) and to connect to activetogether.team (tap <b>Always Allow</b>). Then check <b>My activity</b> on this website: you'll see entries marked "shortcut" for yesterday and today.</p>
+<div class="tip">If your steps look a little higher than in the Health app, check that each <b>Find Health Samples</b> has <b>Group By: Day</b>. That makes Apple Health count an Apple Watch and an iPhone together only once.</div>
+
+<h3>Step 3: run it automatically</h3>
+<ol>
+<li>In Shortcuts, tap <b>Automation</b> at the bottom, then <b>+</b> (or <b>New Automation</b>).</li>
+<li>Choose <b>Time of Day</b>, pick <b>21:00</b> and <b>Daily</b>, and choose <b>Run Immediately</b> (turn off <i>Notify When Run</i> if you like). Tap <b>Next</b> and choose <b>Active Together sync</b>.</li>
+<li>Add a second automation the same way for <b>08:00</b>. The morning run finishes off yesterday's totals.</li>
+</ol>
+<p>iPhone keeps Health data locked while the phone is locked, so a run while it's locked sends nothing. That's harmless: the next run sends both yesterday and today again, and sending a day twice just updates it.</p>
+
+<h3>Share it with your challenge</h3>
+<p>Once it works, you can save everyone else steps 1 and 2. Tap the <b>⌄</b> next to the shortcut's name, then the <b>ⓘ</b> details, then <b>Setup</b>, and add an <b>Import Question</b> on the Text action ("Paste your Active Together sync key"). Remove your own key from the Text box first. Then use <b>Share</b> → <b>Copy iCloud Link</b> and send the link round. Each person pastes their own key when they add it.</p>
+
+<h2 id="iphone-app">iPhone: the Active Together app</h2>
+<p>The iPhone app syncs individual workouts (with their type, times and, if you choose, the route) as well as steps. It isn't in the App Store yet, so it's installed from a computer with the free tool <a href="https://sideloadly.io" target="_blank" rel="noopener">Sideloadly</a>. With a free Apple Account the installed app has to be refreshed every 7 days, which Sideloadly can do automatically. See <b>Get the iPhone app</b> on the home page.</p>
+
+<h2>Stopping</h2>
+<ul>
+<li><b>Android:</b> turn off <i>Sync automatically</i> under Me, or uninstall the app.</li>
+<li><b>Shortcuts:</b> delete the automations (and the shortcut), or remove your sync key on the website so it can't send anything.</li>
+</ul>
+<p>Anything already synced stays in your challenges until you delete it under My activity.</p>
+</section>
+</main>
+<footer><a href="/privacy.html">Privacy Policy</a></footer>
+</body></html>

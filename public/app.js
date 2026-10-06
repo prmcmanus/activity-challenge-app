@@ -455,6 +455,33 @@ async function openProfile(id){
 document.addEventListener('click',e=>{const b=e.target.closest('[data-profile]');if(b){e.preventDefault();openProfile(Number(b.dataset.profile))}});
 $('#myProfile').onclick=()=>openProfile(me.id);
 
+// --- Apple Shortcuts sync key ----------------------------------------------------------------
+// The key is shown once, when it's made; the server keeps only a hash of it.
+async function openShortcutSetup(){
+  let st;try{st=await api('/api/me/sync-key')}catch(e){alert(e.message);return}
+  $('#modalBody').innerHTML=`<h2>Apple Shortcuts sync</h2>
+    <p>A sync key lets a shortcut on your iPhone send your daily steps, exercise minutes and distance from Apple Health. Treat it like a password.</p>
+    <div id="keyBox"><p class="muted">${st.exists?`You made a sync key on ${esc(fmtWhen(st.created_at))}. It's only shown once; if you need it again, make a new one (the old one then stops working).`:"You don't have a sync key yet."}</p></div>
+    <div class="btnrow"><button id="makeKey">${st.exists?'Make a new key':'Create my sync key'}</button>${st.exists?'<button class="ghost" id="dropKey">Remove key</button>':''}</div>
+    <p>Then follow the <a href="/sync.html#shortcuts" target="_blank" rel="noopener">step-by-step guide</a> to build the shortcut. It takes about 10 minutes, once.</p>
+    <p id="keyMsg" class="error"></p>`;
+  if(!$('#modal').open)$('#modal').showModal();
+  $('#makeKey').onclick=async()=>{
+    if(st.exists&&!confirm('Make a new key? A shortcut using the old one stops working until you paste the new key into it.'))return;
+    try{
+      const {key}=await api('/api/me/sync-key',{method:'POST'});
+      $('#keyBox').innerHTML=`<p><b>Your sync key.</b> Copy it now; it won't be shown again.</p><div class="linkrow"><code>${esc(key)}</code><button type="button" id="copyKey">Copy</button></div>`;
+      $('#makeKey').remove();$('#dropKey')?.remove();
+      $('#copyKey').onclick=async()=>{try{await navigator.clipboard.writeText(key);$('#copyKey').textContent='Copied'}catch(e){prompt('Copy your sync key:',key)}};
+    }catch(e){$('#keyMsg').textContent=e.message}
+  };
+  if(st.exists)$('#dropKey').onclick=async()=>{
+    if(!confirm('Remove your sync key? Your shortcut stops sending until you make a new one.'))return;
+    try{await api('/api/me/sync-key',{method:'DELETE'});openShortcutSetup()}catch(e){$('#keyMsg').textContent=e.message}
+  };
+}
+$('#shortcutSetup').onclick=openShortcutSetup;
+
 // --- Administration (global admins) ---------------------------------------------------------
 let challengeBack='home',adminTab='users',adminUsers=[],adminChallenges=[];
 const MEASURE_LABEL=c=>c.metric==='steps'?'Steps':c.metric==='distance'?`Distance (${c.distance_unit==='km'?'km':'miles'})`:'Active minutes';

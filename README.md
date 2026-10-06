@@ -52,7 +52,11 @@ A dependency-free Node.js MVP for time-based team activity challenges.
   "new reply" badge); global admins get a support dashboard (counts, status/type filters), reply,
   add internal notes and set status (New, In progress, Planned, Done, Declined) and the outcome
 - SQLite persistence, password hashing, HTTP-only sessions and duplicate-safe health imports
-- Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes and distance in
+- Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes and distance in.
+  Fitbit, Garmin and other watches come through the phone's health store (see public/sync.html)
+- Apple Shortcuts sync for iPhone with no app install: a personal sync key (stored hashed) lets a
+  shortcut POST a day's steps, exercise minutes and distance to `/api/shortcut/day`; resending a day
+  updates it. Step-by-step setup: https://activetogether.team/sync.html#shortcuts
 - Optional reCAPTCHA on registration/sign-in, plus per-IP rate limiting everywhere, against bots
 
 ## How the data model fits together

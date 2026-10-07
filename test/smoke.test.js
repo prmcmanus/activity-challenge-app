@@ -2131,7 +2131,8 @@ test('Apple Shortcuts sync: a personal key sends a day of totals into every chal
   const send = (k, payload) => fetch(`${origin}/api/shortcut/day`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sync-Key': k }, body: JSON.stringify(payload) })
     .then(async r => ({ status: r.status, body: await r.json() }));
 
-  assert.equal((await send(first, { date: D1, steps: 100 })).status, 401, 'a replaced key stops working');
+  assert.equal((await send(first, { date: D1, steps: 100 })).status, 200, 'an earlier key (another iPhone) keeps working');
+  assert.equal((await jsonFetch(`${origin}/api/me/sync-key`, sam.cookie)).body.count, 2);
   const r = await send(key, { date: D1, steps: '8,412', minutes: 31.6, distance: 5.4, distance_unit: 'km' });
   assert.equal(r.status, 200);
   assert.deepEqual(r.body.saved, ['SC Km', 'SC Minutes', 'SC Steps']);
@@ -2182,8 +2183,12 @@ test('Apple Shortcuts sync: a personal key sends a day of totals into every chal
   assert.equal(form.status, 200, 'a form body works too');
   assert.equal((await mine()).find(a => a.challenge_id === steps.body.id && a.activity_date === D1).steps, 9003);
   assert.equal((await send('at_nope', { date: D1, steps: 5 })).status, 401);
+  // Only the newest five keys are kept.
+  for (let i = 0; i < 4; i++) await jsonFetch(`${origin}/api/me/sync-key`, sam.cookie, 'POST');
+  assert.equal((await send(first, { date: D1, steps: 100 })).status, 401, 'the oldest of six keys is dropped');
+  assert.equal((await send(key, { date: D1, steps: 100 })).status, 200);
   await jsonFetch(`${origin}/api/me/sync-key`, sam.cookie, 'DELETE');
-  assert.equal((await send(key, { date: D1, steps: 5 })).status, 401, 'a removed key stops working');
+  assert.equal((await send(key, { date: D1, steps: 5 })).status, 401, 'disconnecting stops every key');
   void team;
 });
 

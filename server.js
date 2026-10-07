@@ -36,6 +36,13 @@ ensureColumn('users','deactivated_at','TEXT');
 // totals from Apple Health without signing in. Making a new key replaces the old one.
 ensureColumn('users','sync_key_hash','TEXT');
 ensureColumn('users','sync_key_created_at','TEXT');
+// Keys are per device: making a new one (for another iPhone, or to paste in) leaves the others working.
+// The newest few per person are kept. Keys from before this move across once.
+db.exec(`CREATE TABLE IF NOT EXISTS sync_keys(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,key_hash TEXT UNIQUE NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`);
+db.exec(`INSERT OR IGNORE INTO sync_keys(user_id,key_hash,created_at) SELECT id,sync_key_hash,COALESCE(sync_key_created_at,datetime('now')) FROM users WHERE sync_key_hash IS NOT NULL;
+  UPDATE users SET sync_key_hash=NULL,sync_key_created_at=NULL WHERE sync_key_hash IS NOT NULL;`);
+const SYNC_KEYS_KEPT=5;
 const sha256hex=v=>crypto.createHash('sha256').update(String(v)).digest('hex');
 // Site-wide settings a global admin can change. invite_only: '1' when creating an account needs an invite.
 db.exec('CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT)');
@@ -1275,12 +1282,13 @@ async function api(req,res,url){
    if(!need(res,u))return;
    if(m==='POST'){
      const key='at_'+crypto.randomBytes(20).toString('hex');
-     db.prepare("UPDATE users SET sync_key_hash=?,sync_key_created_at=datetime('now') WHERE id=?").run(sha256hex(key),u.id);
+     db.prepare('INSERT INTO sync_keys(user_id,key_hash) VALUES(?,?)').run(u.id,sha256hex(key));
+     db.prepare('DELETE FROM sync_keys WHERE user_id=? AND id NOT IN (SELECT id FROM sync_keys WHERE user_id=? ORDER BY id DESC LIMIT ?)').run(u.id,u.id,SYNC_KEYS_KEPT);
      return send(res,201,{key});
    }
-   if(m==='DELETE'){db.prepare('UPDATE users SET sync_key_hash=NULL,sync_key_created_at=NULL WHERE id=?').run(u.id);return send(res,200,{ok:true})}
-   const r=db.prepare('SELECT sync_key_created_at FROM users WHERE id=?').get(u.id);
-   return send(res,200,{exists:!!r.sync_key_created_at,created_at:r.sync_key_created_at});
+   if(m==='DELETE'){db.prepare('DELETE FROM sync_keys WHERE user_id=?').run(u.id);return send(res,200,{ok:true})}
+   const r=db.prepare('SELECT COUNT(*) n,MAX(created_at) newest FROM sync_keys WHERE user_id=?').get(u.id);
+   return send(res,200,{exists:r.n>0,count:r.n,created_at:r.newest});
  }
  // One day's totals from the Apple Shortcut: steps, exercise minutes, walking and running distance and
  // cycling distance, in one request or one per figure. Each figure is kept in shortcut_days, so one
@@ -1294,9 +1302,9 @@ async function api(req,res,url){
    let b,raw;
    try{raw=await bodyText(req);b=raw.trim().startsWith('{')?JSON.parse(raw):Object.fromEntries(new URLSearchParams(raw))}catch(e){b=null}
    const key=String(req.headers['x-sync-key']||b?.key||'').trim();
-   const owner=key&&db.prepare('SELECT id,name FROM users WHERE sync_key_hash=? AND deactivated_at IS NULL').get(sha256hex(key));
+   const owner=key&&db.prepare('SELECT u.id,u.name FROM sync_keys k JOIN users u ON u.id=k.user_id WHERE k.key_hash=? AND u.deactivated_at IS NULL').get(sha256hex(key));
    if(!owner){
-     console.log(`Shortcut sync: key not recognised (${key?`${key.length} characters, starting ${key.slice(0,3)}`:'no key sent'}; ${req.headers['x-sync-key']?'in the header':'in the body'})`);
+     console.log(`Shortcut sync: key not recognised (${key?`${key.length} characters, starting ${key.slice(0,3)}`:'no key sent'}; ${req.headers['x-sync-key']?'in the header':'in the body'}; fields: ${b?Object.keys(b).map(k=>JSON.stringify(k)).join(', ')||'none':'body unreadable'}; ${req.headers['content-type']||'no content type'})`);
      return send(res,401,{error:'That sync key is not recognised. Make a new one with Set up Apple Shortcuts on the activetogether.team home page.'});
    }
    // A rejected day is logged (field names and values, never the key) and the reply says what arrived,

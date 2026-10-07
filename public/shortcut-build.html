@@ -20,6 +20,12 @@
 <li>After both End Ifs, <b>Get File from Folder</b> again: folder <b>Shortcuts</b>, path <code>ActiveTogether-key.txt</code>.</li>
 <li><b>Get Text from Input</b> (the file), then <b>Set Variable</b>: name it <code>Key</code>.</li>
 </ol>
+<p><b>Your answers</b> (two yes/no questions, so one shortcut suits everyone)</p>
+<ol type="a">
+<li><b>Text</b>: type <code>no</code> (or <code>yes</code> if you wear an Apple Watch). Then <b>Set Variable</b>: name it <code>Watch</code>.</li>
+<li><b>Text</b>: type <code>no</code> (or <code>yes</code> if you cycle). Then <b>Set Variable</b>: name it <code>Cycle</code>.</li>
+</ol>
+<p>When you share the shortcut, iPhone asks each person these two questions (see <a href="#share">Share it</a>), and the parts for exercise minutes and cycling only run for people who answered yes.</p>
 <p><b>Part 2: steps</b> (actions 11 to 17)</p>
 <ol start="11">
 <li><b>Find Health Samples</b>: <i>Type</i> <b>Steps</b>. Tap <i>Add Filter</i> and set <b>Start Date</b> <b>is in the last</b> <b>2</b> <b>days</b>. Tap <i>Show More</i>: <b>Group By</b> <b>Day</b>.</li>
@@ -31,14 +37,18 @@
 <li>Check that <b>End Repeat</b> comes after action 16.</li>
 </ol>
 <p><b>Part 3: walking and running distance</b>: duplicate actions 11 to 17 (long-press each, <b>Duplicate</b>, and drag the copies below <i>End Repeat</i>). Set the type to <b>Walking + Running Distance</b>, call the number field <code>distance</code>, add one more <b>Get Details of Health Sample</b> inside the repeat to get the <b>Unit</b> of <i>Repeat Item</i>, and add a Text field <code>distance_unit</code> whose value is that <i>Unit</i>.</p>
-<p><b>Part 4: exercise minutes</b> (Apple Watch only): duplicate actions 11 to 17 (long-press each, <b>Duplicate</b>, and drag the copies below <i>End Repeat</i>). In the copy, set the type to <b>Exercise Minutes</b>, rename the field <code>steps</code> to <code>minutes</code>, and make sure <i>Repeat Item</i>, <i>Formatted Date</i> and <i>Value</i> point at actions in the copy, not the original. Leave this part out if nobody using the shortcut wears an Apple Watch: an iPhone on its own records no exercise minutes.</p>
-<p><b>Part 5: cycling distance</b> (keep this last): duplicate the distance part once more. Set the type to <b>Cycling Distance</b>, call the number field <code>cycling_distance</code> and the unit field <code>cycling_unit</code>. Cycling is sent separately so it only counts where rides do: in cycling journeys, and in ordinary distance challenges (walking and cycling added together). On-foot journeys only take walking and running.</p>
-<div class="tip"><b>Order matters.</b> When <b>Find Health Samples</b> finds nothing it stops the whole shortcut with "No Samples Found", so every part after it is skipped. Keep the parts in this order, steps and distance first, and cycling last, since many days have no ride.</div>
+<p><b>Part 4: exercise minutes</b> (Apple Watch only): duplicate actions 11 to 17 (long-press each, <b>Duplicate</b>, and drag the copies below <i>End Repeat</i>). In the copy, set the type to <b>Exercise Minutes</b>, rename the field <code>steps</code> to <code>minutes</code>, and make sure <i>Repeat Item</i>, <i>Formatted Date</i> and <i>Value</i> point at actions in the copy, not the original. Then wrap the whole part in an <b>If</b>: add <b>If</b> above its <b>Find Health Samples</b> with <i>Watch</i> <b>is</b> <code>yes</code>, delete the <b>Otherwise</b> line, and drag <b>End If</b> below its <b>End Repeat</b>. An iPhone on its own records no exercise minutes, so without the If this part would stop the shortcut for everyone else.</p>
+<p><b>Part 5: cycling distance</b> (keep this last): duplicate the distance part once more. Set the type to <b>Cycling Distance</b>, call the number field <code>cycling_distance</code> and the unit field <code>cycling_unit</code>. Cycling is sent separately so it only counts where rides do: in cycling journeys, and in ordinary distance challenges (walking and cycling added together). On-foot journeys only take walking and running. Change its <b>Find Health Samples</b> filter to <b>is in the last 30 days</b> (people don't ride every day, and sending a day again just updates it), and wrap the part in an <b>If</b> with <i>Cycle</i> <b>is</b> <code>yes</code>, the same way as Part 4.</p>
+<div class="tip"><b>Why the questions and the order matter.</b> When <b>Find Health Samples</b> finds nothing it stops the whole shortcut with "No Samples Found", so every part after it is skipped. Steps and distance always have data on an iPhone, so they come first; exercise minutes and cycling only run for people who said yes, with cycling last, since many days have no ride.</div>
 <p>Tap <b>Done</b>. Then connect it: on the website on that iPhone, tap <b>Set up</b> under "Sync from your phone", then <b>Connect this iPhone</b>.</p>
 <div class="tip">If your steps look a little higher than in the Health app, check that each <b>Find Health Samples</b> has <b>Group By: Day</b>. That makes Apple Health count an Apple Watch and an iPhone together only once.</div>
 
-<h2>Share it</h2>
-<p>Your key isn't inside the shortcut (it's in a file on your iPhone), so the shortcut is safe to share as it is. Tap the <b>⌄</b> next to its name → <b>Share</b> → <b>Copy iCloud Link</b>, and send the link round, or give it to the site's administrator to put behind <b>Get the shortcut</b> on the website.</p>
+<h2 id="share">Share it</h2>
+<ol>
+<li>Set both answers back to <code>no</code> (so nobody inherits yours).</li>
+<li>Tap the <b>⌄</b> next to the shortcut's name, then the <b>ⓘ</b>, then <b>Setup</b>. Under <b>Import Questions</b>, add one for each of the two Text actions: <code>Do you wear an Apple Watch? Type yes or no</code> and <code>Do you cycle? Type yes or no</code>.</li>
+<li><b>Share</b> → <b>Copy iCloud Link</b>, and give the link to the site's administrator to put behind <b>Get the shortcut</b> on the website (or send it round). Your key isn't inside the shortcut (it's in a file on your iPhone), so it's safe to share.</li>
+</ol>
 
 </section>
 </main>

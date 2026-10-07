@@ -16,7 +16,7 @@
 <li><b>Challenge/team content:</b> challenge and team names, descriptions, and your membership/role in them.</li>
 <li><b>Follows:</b> who you follow and who follows you.</li>
 <li><b>Device sync data (Android/iOS companion apps only):</b> if you use a companion app, it reads workout duration, date, type and start/finish time, plus the distance covered during each workout if you allow it, from Health Connect or Apple Health and uploads only that. It never reads or uploads heart rate, calories, or any other health data, and never reads records beyond exercise/workout sessions, the distance recorded during them and - only if you turn it on - their routes.</li>
-<li><b>Apple Shortcuts sync (optional):</b> if you set it up, a shortcut on your iPhone sends your daily totals of steps, exercise minutes and walking and running distance from Apple Health, and nothing else. It uses a personal sync key that we store only in scrambled (hashed) form; you can remove it at any time under Set up Apple Shortcuts on the website.</li>
+<li><b>Apple Shortcuts sync (optional):</b> if you set it up, a shortcut on your iPhone sends your daily totals of steps, exercise minutes, walking and running distance and cycling distance from Apple Health, and nothing else. It uses a personal sync key that we store only in scrambled (hashed) form; you can remove it at any time under Set up Apple Shortcuts on the website.</li>
 <li><b>GPS routes (optional):</b> a workout's route - a series of map positions with times - is stored only if you upload a GPX file on the website or switch on "Include GPS routes" in the Android app. A route is precise location data and can show where you live or work, so it is off by default, it is visible only to you (never to other members, team admins, challenge owners or in exports), and it is deleted along with the last activity entry that uses it.</li>
 </ul>
 
@@ -33,6 +33,7 @@
 <p>A global admin (the person who runs this server) can access account records for user administration — creating accounts, resetting passwords, and similar housekeeping.</p>
 
 <h2>Third parties</h2>
+<p>Maps are drawn with tiles from OpenStreetMap, which your browser or app fetches directly. When someone sets up a virtual journey, the place names they search for and the start and finish points are sent from our server to OpenStreetMap's place search (Nominatim) and route planner (FOSSGIS); nothing about who is asking is included. On a journey map, everyone's position is a virtual one worked out from their total, never their real location.</p>
 <p>If reCAPTCHA is enabled on this deployment, Google receives your IP address and browser information when you register or sign in, in order to distinguish humans from bots. No other activity or account data is shared with Google or anyone else. This app sends no analytics or tracking data to any third party.</p>
 
 <h2>Data retention</h2>

@@ -46,7 +46,7 @@ class SyncPlanner(private val context: Context) {
         val workouts = health.readWorkouts(from, to, withRoutes)
         val known = api.syncedIn(workouts.map { it.sourceRef })
         return workouts.map { w ->
-            Candidate(w, open.filter { it.contains(w.day) }, known[w.sourceRef].orEmpty())
+            Candidate(w, open.filter { it.contains(w.day) && it.accepts(w.type) }, known[w.sourceRef].orEmpty())
         }.filter { it.fits.isNotEmpty() }
     }
 

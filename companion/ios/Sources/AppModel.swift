@@ -88,7 +88,7 @@ struct SyncPlanner {
         guard let from = open.map(\.startDate).min(), let to = open.map(\.endDate).max() else { return [] }
         let workouts = try await health.readWorkouts(from: from, to: min(to, Day.today), withRoutes: withRoutes)
         let known = try await api.syncedIn(workouts.map(\.sourceRef))
-        return workouts.map { w in Candidate(workout: w, fits: open.filter { $0.contains(w.day) }, alreadyIn: known[w.sourceRef] ?? []) }.filter { !$0.fits.isEmpty }
+        return workouts.map { w in Candidate(workout: w, fits: open.filter { $0.contains(w.day) && $0.accepts(w.type) }, alreadyIn: known[w.sourceRef] ?? []) }.filter { !$0.fits.isEmpty }
     }
 
     /// One workout into the chosen challenges - one record per challenge in one request; the route rides on the first only.

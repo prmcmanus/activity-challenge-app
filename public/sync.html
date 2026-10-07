@@ -28,14 +28,14 @@
 <p>Most fitness apps have a Health Connect option in their settings. Turn on writing exercise, steps and distance.</p>
 
 <h2 id="shortcuts">iPhone: Apple Shortcuts</h2>
-<p>Shortcuts is a free app from Apple, already on your iPhone (search for "Shortcuts" if you can't see it). Once set up, it sends your day's <b>steps, exercise minutes and walking and running distance</b> from Apple Health twice a day, so it counts in step, minutes and distance challenges alike. It sends daily totals, not individual workouts.</p>
+<p>Shortcuts is a free app from Apple, already on your iPhone (search for "Shortcuts" if you can't see it). Once set up, it sends your day's <b>steps, exercise minutes, walking and running distance and cycling distance</b> from Apple Health twice a day, so it counts in step, minutes and distance challenges and in virtual journeys alike. It sends daily totals, not individual workouts.</p>
 <div class="tip">Works with an Apple Watch, an iPhone on its own, or a Garmin. In Garmin Connect, go to <b>More</b> → <b>Settings</b> → <b>Connected Apps</b> → <b>Apple Health</b> and switch sharing on.</div>
 
 <h3>Set it up (about two minutes)</h3>
 <ol>
 <li>On your iPhone, open <b>activetogether.team</b> in Safari, sign in, and tap <b>Set up Apple Shortcuts</b> on the home page.</li>
 <li>Tap <b>Get the shortcut</b>, then <b>Add Shortcut</b>. Keep its name, "Active Together sync".</li>
-<li>Go back to the website and tap <b>Connect this iPhone</b>. Shortcuts opens and runs it once. Allow it to read <b>Steps</b>, <b>Exercise Minutes</b> and <b>Walking + Running Distance</b>, and choose <b>Always Allow</b> when it asks to connect to activetogether.team or to save a file.</li>
+<li>Go back to the website and tap <b>Connect this iPhone</b>. Shortcuts opens and runs it once. Allow it to read <b>Steps</b>, <b>Exercise Minutes</b>, <b>Walking + Running Distance</b> and <b>Cycling Distance</b>, and choose <b>Always Allow</b> when it asks to connect to activetogether.team or to save a file.</li>
 <li>Check <b>My activity</b> on the website: you'll see entries marked "shortcut" for yesterday and today.</li>
 <li><a href="#automate">Make it automatic</a>, below.</li>
 </ol>
@@ -77,6 +77,7 @@
 </ol>
 <p><b>Part 3: exercise minutes</b>: duplicate actions 11 to 17 (long-press each, <b>Duplicate</b>, and drag the copies below <i>End Repeat</i>). In the copy, set the type to <b>Exercise Minutes</b>, rename the field <code>steps</code> to <code>minutes</code>, and make sure <i>Repeat Item</i>, <i>Formatted Date</i> and <i>Value</i> point at actions in the copy, not the original.</p>
 <p><b>Part 4: distance</b>: duplicate actions 11 to 17 again. Set the type to <b>Walking + Running Distance</b>, call the number field <code>distance</code>, add one more <b>Get Details of Health Sample</b> inside the repeat to get the <b>Unit</b> of <i>Repeat Item</i>, and add a Text field <code>distance_unit</code> whose value is that <i>Unit</i>.</p>
+<p><b>Part 5: cycling distance</b>: duplicate the distance part once more. Set the type to <b>Cycling Distance</b>, call the number field <code>cycling_distance</code> and the unit field <code>cycling_unit</code>. Cycling is sent separately so it only counts where rides do: in cycling journeys, and in ordinary distance challenges (walking and cycling added together). On-foot journeys only take walking and running.</p>
 <p>Tap <b>Done</b>, then connect it as in step 3 of <a href="#shortcuts">Set it up</a>.</p>
 <div class="tip">If your steps look a little higher than in the Health app, check that each <b>Find Health Samples</b> has <b>Group By: Day</b>. That makes Apple Health count an Apple Watch and an iPhone together only once.</div>
 

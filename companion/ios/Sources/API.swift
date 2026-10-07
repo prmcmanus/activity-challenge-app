@@ -67,6 +67,23 @@ enum Measure: String, CaseIterable, Identifiable {
 }
 
 struct MyTeam: Hashable { let id: Int; let name: String }
+
+/// A virtual journey: teams or people travel a route on a map by what they log. target is the route length in the
+/// challenge's unit ("mi", "km") or, in a steps journey, in steps. mode is foot or cycling.
+struct Journey: Hashable {
+    let mode: String, shape: String, fromName: String, toName: String, fromLat: Double, fromLon: Double, toLat: Double, toLon: Double, target: Double, unit: String
+    var cycling: Bool { mode == "cycling" }
+    init?(_ j: J?) {
+        guard let j, let f = j.obj("from"), let t = j.obj("to") else { return nil }
+        mode = j.str("mode") ?? "foot"; shape = j.str("shape") ?? "roads"; fromName = f.string("name"); toName = t.string("name")
+        fromLat = f.double("lat"); fromLon = f.double("lon"); toLat = t.double("lat"); toLon = t.double("lon"); target = j.double("target"); unit = j.string("unit")
+    }
+}
+/// Someone (or a team) at their virtual position along a journey's route.
+struct JourneyMarker: Identifiable, Hashable { let id: Int, name: String, imageURL: String?, distance: Double, steps: Double, progress: Double, lat: Double, lon: Double, finishedOn: String? }
+struct JourneyMap { let journey: Journey; let byTeam: Bool; let route: [[Double]]; let markers: [JourneyMarker] }
+/// The same test the server uses: a cycling journey takes only rides, an on-foot one everything else.
+func isCyclingType(_ type: String) -> Bool { type.range(of: "cycl|bik(e|ing)|\\bride\\b|spin", options: [.regularExpression, .caseInsensitive]) != nil }
 struct Target: Hashable { let challengeId: Int; let teamId: Int? }
 
 /// A challenge I belong to, as the dashboard reports it.
@@ -74,7 +91,10 @@ struct Challenge: Identifiable, Hashable {
     let id: Int, name: String, descriptionHTML: String, startDate: Day, endDate: Day
     let measure: Measure, distanceUnit: String, individual: Bool, role: String
     let myTeams: [MyTeam], myMinutes: Double, myDistance: Double, mySteps: Double
+    var journey: Journey? = nil
     var measuresDistance: Bool { measure == .distance }
+    /// Whether an activity of this type counts here: journeys are either rides only or everything but rides.
+    func accepts(_ type: String) -> Bool { guard let journey else { return true }; return journey.cycling == isCyclingType(type) }
     var measuresSteps: Bool { measure == .steps }
     func contains(_ day: Day) -> Bool { day >= startDate && day <= endDate }
     /// Where my activity goes: no team if individuals-only, else my (first) team. Nil if I have no team yet.
@@ -89,9 +109,10 @@ struct ChallengeDetail: Hashable {
     let id: Int, name: String, descriptionHTML: String, startDate: Day, endDate: Day
     let measure: Measure, distanceUnit: String, individual: Bool, role: String
     let canManage: Bool, inviteCode: String, teams: [TeamInfo]
+    var journey: Journey? = nil
     var asChallenge: Challenge {
         Challenge(id: id, name: name, descriptionHTML: descriptionHTML, startDate: startDate, endDate: endDate, measure: measure, distanceUnit: distanceUnit,
-                  individual: individual, role: role, myTeams: teams.filter(\.mine).map { MyTeam(id: $0.id, name: $0.name) }, myMinutes: 0, myDistance: 0, mySteps: 0)
+                  individual: individual, role: role, myTeams: teams.filter(\.mine).map { MyTeam(id: $0.id, name: $0.name) }, myMinutes: 0, myDistance: 0, mySteps: 0, journey: journey)
     }
 }
 
@@ -100,8 +121,12 @@ struct ChallengeFields {
 }
 
 /// A leaderboard row; userId is set for people (tap to see their profile), nil for teams.
-struct Standing: Hashable { let name: String, minutes: Double, distance: Double, steps: Double, imageURL: String?, userId: Int? }
-struct Leaderboard { let teams: [Standing]; let users: [Standing] }
+struct Standing: Hashable {
+    let name: String, minutes: Double, distance: Double, steps: Double, imageURL: String?, userId: Int?
+    /// Journeys only: the share of the route covered (0...1), and the day they reached the finish.
+    var progress: Double? = nil, finishedOn: String? = nil
+}
+struct Leaderboard { let teams: [Standing]; let users: [Standing]; var journey: Journey? = nil }
 
 struct MyActivity: Identifiable, Hashable {
     let id: Int, challengeId: Int, challengeName: String, teamName: String?, type: String
@@ -204,7 +229,7 @@ final class API: @unchecked Sendable {
             Challenge(id: c.int("id"), name: c.string("name"), descriptionHTML: c.string("description"), startDate: c.day("start_date"), endDate: c.day("end_date"),
                       measure: Measure(c.str("metric")), distanceUnit: unit(c), individual: c.str("participation") == "individual", role: c.str("role") ?? "member",
                       myTeams: c.arr("teams").map { MyTeam(id: $0.int("id"), name: $0.string("name")) },
-                      myMinutes: c.double("myMinutes"), myDistance: c.double("myDistance"), mySteps: c.double("mySteps"))
+                      myMinutes: c.double("myMinutes"), myDistance: c.double("myDistance"), mySteps: c.double("mySteps"), journey: Journey(c.obj("journey")))
         }
     }
     func challengeDetail(_ id: Int) async throws -> ChallengeDetail {
@@ -213,7 +238,18 @@ final class API: @unchecked Sendable {
                                measure: Measure(c.str("metric")), distanceUnit: unit(c), individual: c.str("participation") == "individual", role: c.str("role") ?? "member",
                                canManage: c.bool("canManage"), inviteCode: c.string("invite_code"),
                                teams: c.arr("teams").map { t in TeamInfo(id: t.int("id"), name: t.string("name"), imageURL: t.str("image_url"), members: t.int("members"),
-                                                                       mine: t.bool("mine"), canManage: t.bool("canManage"), inviteCode: t.str("invite_code")) })
+                                                                       mine: t.bool("mine"), canManage: t.bool("canManage"), inviteCode: t.str("invite_code")) },
+                               journey: Journey(c.obj("journey")))
+    }
+    /// The journey map: the route line and where each team (or person) has got to along it.
+    func journey(_ id: Int) async throws -> JourneyMap {
+        let r = try await request("/api/challenges/\(id)/journey")
+        let route = (r.o["route"] as? [[Any]] ?? []).compactMap { p -> [Double]? in
+            guard p.count >= 2, let a = (p[0] as? NSNumber)?.doubleValue, let b = (p[1] as? NSNumber)?.doubleValue else { return nil }; return [a, b] }
+        let markers = r.arr("markers").map { m in JourneyMarker(id: m.int("id"), name: m.string("name"), imageURL: m.str("image_url"), distance: m.double("distance"),
+                                                               steps: m.double("steps"), progress: m.double("progress"), lat: m.double("lat"), lon: m.double("lon"), finishedOn: m.str("finished_on")) }
+        guard let j = Journey(r.obj("journey")) else { throw APIError(status: 0, message: "This challenge is not a journey") }
+        return JourneyMap(journey: j, byTeam: r.str("by") == "team", route: route, markers: markers)
     }
     private func challengeBody(_ f: ChallengeFields) -> [String: Any] {
         var b: [String: Any] = ["name": f.name, "start_date": f.startDate.description, "end_date": f.endDate.description, "metric": f.measure.rawValue,
@@ -251,9 +287,10 @@ final class API: @unchecked Sendable {
         let r = try await request("/api/challenges/\(id)/leaderboard")
         func rows(_ a: [J], people: Bool) -> [Standing] {
             a.map { x in Standing(name: x.string("name"), minutes: x.double("minutes"), distance: x.double("distance"), steps: x.double("steps"),
-                                  imageURL: x.str("image_url") ?? x.str("avatar_url"), userId: people ? x.int("id") : nil) }
+                                  imageURL: x.str("image_url") ?? x.str("avatar_url"), userId: people ? x.int("id") : nil,
+                                  progress: x.has("progress") ? x.double("progress") : nil, finishedOn: x.str("finished_on")) }
         }
-        return Leaderboard(teams: rows(r.arr("teams"), people: false), users: rows(r.arr("users"), people: true))
+        return Leaderboard(teams: rows(r.arr("teams"), people: false), users: rows(r.arr("users"), people: true), journey: Journey(r.obj("journey")))
     }
 
     // Activity

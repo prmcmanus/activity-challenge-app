@@ -37,6 +37,21 @@ ensureColumn('users','deactivated_at','TEXT');
 ensureColumn('users','sync_key_hash','TEXT');
 ensureColumn('users','sync_key_created_at','TEXT');
 const sha256hex=v=>crypto.createHash('sha256').update(String(v)).digest('hex');
+// Virtual journeys: a challenge whose teams or people travel a route on a map (London to Edinburgh...)
+// by the distance (or steps) they log. kind is standard or journey; journey_mode is foot or cycling;
+// route_shape is roads or straight; route_from/route_to are {name,lat,lon}; route is the simplified
+// line as [[lat,lon],...] and route_m its real length in metres.
+ensureColumn('challenges','kind',"TEXT NOT NULL DEFAULT 'standard'");
+ensureColumn('challenges','journey_mode','TEXT');
+ensureColumn('challenges','route_shape','TEXT');
+ensureColumn('challenges','route_from','TEXT');
+ensureColumn('challenges','route_to','TEXT');
+ensureColumn('challenges','route','TEXT');
+ensureColumn('challenges','route_m','REAL');
+// What the Apple Shortcut has sent for each day, kept per figure so that sending one figure (say,
+// cycling distance) never wipes another; the day's challenge entries are worked out from this.
+db.exec(`CREATE TABLE IF NOT EXISTS shortcut_days(user_id INTEGER NOT NULL,day TEXT NOT NULL,steps INTEGER,minutes INTEGER,walk_m REAL,cycle_m REAL,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(user_id,day),FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`);
 // Help & support: bug reports, feature requests and questions, as tickets with a conversation.
 // owner_seen_at / admin_seen_at against last_reply_at / last_user_reply_at drive the "new reply"
 // badges on each side; internal comments are admin-only notes the reporter never sees.
@@ -427,7 +442,8 @@ function requireInWindow(challenge,date){
   if(date<challenge.start_date||date>challenge.end_date)throw new Error(`This challenge runs from ${challenge.start_date} to ${challenge.end_date} - the activity date must fall within it`);
 }
 // The challenge's own measure is required; the other is optional extra detail.
-function requireMeasure(challenge,minutes,distance_m,steps){
+function requireMeasure(challenge,minutes,distance_m,steps,activityType){
+  requireJourneyMode(challenge,activityType);
   const metric=challengeMetric(challenge);
   if(metric==='distance'){if(!distance_m)throw new Error('This challenge measures distance - enter how far you went')}
   else if(metric==='steps'){if(!steps)throw new Error('This challenge counts steps - enter your step count for the day')}
@@ -439,9 +455,11 @@ function requireMeasure(challenge,minutes,distance_m,steps){
 function updateUserFields(id,{name,email,passwordHash,avatarUrl}){const sets=[],params=[];if(name!==undefined){sets.push('name=?');params.push(name)}if(email!==undefined){sets.push('email=?');params.push(email)}if(passwordHash!==undefined){sets.push('password_hash=?');params.push(passwordHash)}if(avatarUrl!==undefined){sets.push('avatar_url=?');params.push(avatarUrl)}if(!sets.length)return false;params.push(id);db.prepare(`UPDATE users SET ${sets.join(',')} WHERE id=?`).run(...params);return true}
 
 function dashboard(uid){
-  const challenges=db.prepare(`SELECT c.id,c.name,c.description,c.start_date,c.end_date,c.active,c.invite_code,c.metric,c.distance_unit,c.participation,cm.challenge_role FROM challenges c JOIN challenge_members cm ON cm.challenge_id=c.id WHERE cm.user_id=? ORDER BY c.start_date DESC`).all(uid);
+  const challenges=db.prepare(`SELECT c.id,c.name,c.description,c.start_date,c.end_date,c.active,c.invite_code,c.metric,c.distance_unit,c.participation,c.kind,c.journey_mode,c.route_shape,c.route_from,c.route_to,c.route_m,cm.challenge_role FROM challenges c JOIN challenge_members cm ON cm.challenge_id=c.id WHERE cm.user_id=? ORDER BY c.start_date DESC`).all(uid);
   for(const c of challenges){
     c.role=c.challenge_role; delete c.challenge_role;
+    c.kind=isJourney(c)?'journey':'standard';c.journey=journeyInfo(c);
+    for(const k of ['journey_mode','route_shape','route_from','route_to','route_m'])delete c[k];
     c.teams=db.prepare(`SELECT t.id,t.name,t.invite_code,tm.team_role,(SELECT COUNT(*) FROM team_members z WHERE z.team_id=t.id) members FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=? AND t.challenge_id=? ORDER BY t.name`).all(uid,c.id);
     const tot=db.prepare('SELECT COALESCE(SUM(minutes),0) m,COALESCE(SUM(distance_m),0) d,COALESCE(SUM(steps),0) s FROM activities WHERE user_id=? AND challenge_id=?').get(uid,c.id);
     c.myMinutes=tot.m;c.mySteps=tot.s;
@@ -461,6 +479,161 @@ function leaderboard(challenge){
   const users=db.prepare(`SELECT us.id,us.name,us.email,us.avatar_url,COALESCE(SUM(a.minutes),0) minutes,COALESCE(SUM(a.distance_m),0) distance_m,COALESCE(SUM(a.steps),0) steps FROM challenge_members cmem JOIN users us ON us.id=cmem.user_id LEFT JOIN activities a ON a.user_id=us.id AND a.challenge_id=cmem.challenge_id WHERE cmem.challenge_id=? GROUP BY us.id ORDER BY ${order} DESC,us.name`).all(cid);
   const shape=({distance_m,...r})=>({...r,distance:metersToUnit(distance_m,unit)});
   return {teams:teams.map(shape),users:users.map(shape)};
+}
+
+// --- Virtual journeys ----------------------------------------------------------------------------
+const STRIDE_M=0.762;                       // an average step: about 2,100 steps to the mile
+const CYCLING_RE=/cycl|bik(e|ing)|\bride\b|spin/i;
+const isJourney=c=>!!c&&c.kind==='journey';
+const isCyclingType=t=>CYCLING_RE.test(String(t||''));
+// A cycling journey takes only rides; an on-foot journey takes everything except rides.
+function requireJourneyMode(c,activityType){
+  if(!isJourney(c))return;
+  const ride=isCyclingType(activityType);
+  if(c.journey_mode==='cycling'&&!ride)throw new Error('This is a cycling journey - only rides count. Log it as Cycling.');
+  if(c.journey_mode!=='cycling'&&ride)throw new Error("This journey is on foot - rides don't count in it");
+}
+const ROUTING_BASE=(process.env.ROUTING_BASE||'https://routing.openstreetmap.de').replace(/\/$/,'');
+const GEOCODER_BASE=(process.env.GEOCODER_BASE||'https://nominatim.openstreetmap.org').replace(/\/$/,'');
+const OUTBOUND_UA=`ActiveTogether/1.0 (${ORIGIN})`;
+const toRad=d=>d*Math.PI/180;
+function haversineM(a,b){const R=6371008.8,dLat=toRad(b[0]-a[0]),dLon=toRad(b[1]-a[1]),h=Math.sin(dLat/2)**2+Math.cos(toRad(a[0]))*Math.cos(toRad(b[0]))*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.sqrt(h))}
+const lineLength=pts=>{let m=0;for(let i=1;i<pts.length;i++)m+=haversineM(pts[i-1],pts[i]);return m};
+// Points along the great circle between two places, so a long straight route still draws as the
+// shortest path on the map.
+function greatCircle(a,b,n=64){
+  const [p1,l1,p2,l2]=[toRad(a[0]),toRad(a[1]),toRad(b[0]),toRad(b[1])];
+  const d=2*Math.asin(Math.sqrt(Math.sin((p2-p1)/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin((l2-l1)/2)**2));
+  if(d<1e-9)return [a,b];
+  const out=[];
+  for(let i=0;i<=n;i++){
+    const f=i/n,A=Math.sin((1-f)*d)/Math.sin(d),B=Math.sin(f*d)/Math.sin(d);
+    const x=A*Math.cos(p1)*Math.cos(l1)+B*Math.cos(p2)*Math.cos(l2),y=A*Math.cos(p1)*Math.sin(l1)+B*Math.cos(p2)*Math.sin(l2),z=A*Math.sin(p1)+B*Math.sin(p2);
+    out.push([+(Math.atan2(z,Math.hypot(x,y))*180/Math.PI).toFixed(5),+(Math.atan2(y,x)*180/Math.PI).toFixed(5)]);
+  }
+  return out;
+}
+// Ramer-Douglas-Peucker on a local flat projection, loosened until the line fits in maxPts.
+function simplifyLine(pts,maxPts=800){
+  if(pts.length<=maxPts)return pts;
+  const lat0=toRad(pts[0][0]),xy=pts.map(p=>[toRad(p[1])*Math.cos(lat0)*6371008.8,toRad(p[0])*6371008.8]);
+  const run=eps=>{
+    const keep=new Uint8Array(pts.length);keep[0]=keep[pts.length-1]=1;
+    const stack=[[0,pts.length-1]];
+    while(stack.length){
+      const [i,j]=stack.pop();let best=-1,bi=-1;
+      const [ax,ay]=xy[i],[bx,by]=xy[j],dx=bx-ax,dy=by-ay,len2=dx*dx+dy*dy||1;
+      for(let k=i+1;k<j;k++){
+        const t=Math.max(0,Math.min(1,((xy[k][0]-ax)*dx+(xy[k][1]-ay)*dy)/len2));
+        const d=Math.hypot(xy[k][0]-(ax+t*dx),xy[k][1]-(ay+t*dy));
+        if(d>best){best=d;bi=k}
+      }
+      if(best>eps){keep[bi]=1;stack.push([i,bi],[bi,j])}
+    }
+    return pts.filter((_,k)=>keep[k]);
+  };
+  let eps=20,out=run(eps);
+  while(out.length>maxPts){eps*=1.6;out=run(eps)}
+  return out;
+}
+function parsePlace(p,label){
+  const lat=Number(p&&p.lat),lon=Number(p&&p.lon),name=String((p&&p.name)||'').trim().slice(0,120);
+  if(!Number.isFinite(lat)||!Number.isFinite(lon)||Math.abs(lat)>90||Math.abs(lon)>180)throw new Error(`Choose the ${label} on the map`);
+  return {name:name||`${lat.toFixed(4)}, ${lon.toFixed(4)}`,lat:+lat.toFixed(6),lon:+lon.toFixed(6)};
+}
+function parseJourney(b){
+  const j=b.journey||{};
+  const from=parsePlace(j.from,'start'),to=parsePlace(j.to,'finish');
+  const shape=j.shape==='straight'?'straight':'roads',mode=j.mode==='cycling'?'cycling':'foot';
+  return {from,to,shape,mode};
+}
+const routeCache=new Map();
+// The route between two places: by road (walking or cycling directions from the public OSRM servers
+// run by FOSSGIS) or as the crow flies. Cached for an hour, so previewing then creating asks once.
+async function buildRoute({from,to,shape,mode}){
+  const key=JSON.stringify([from.lat,from.lon,to.lat,to.lon,shape,mode]);
+  const hit=routeCache.get(key);if(hit&&hit.at>Date.now()-36e5)return hit.route;
+  let points,length;
+  if(shape==='straight'){points=greatCircle([from.lat,from.lon],[to.lat,to.lon]);length=haversineM([from.lat,from.lon],[to.lat,to.lon])}
+  else{
+    const url=`${ROUTING_BASE}/routed-${mode==='cycling'?'bike':'foot'}/route/v1/driving/${from.lon},${from.lat};${to.lon},${to.lat}?overview=full&geometries=geojson`;
+    let j;
+    try{const r=await fetch(url,{headers:{'User-Agent':OUTBOUND_UA},signal:AbortSignal.timeout(30000)});j=await r.json()}
+    catch(e){throw new Error("Couldn't reach the route planner just now - try again, or choose a straight line")}
+    if(j.code!=='Ok'||!j.routes||!j.routes.length)throw new Error('No route found between those places - try a straight line instead');
+    points=simplifyLine(j.routes[0].geometry.coordinates.map(([lon,lat])=>[+lat.toFixed(5),+lon.toFixed(5)]));
+    length=j.routes[0].distance;
+  }
+  if(!(length>=100))throw new Error('Those places are too close together - choose a finish further away');
+  if(length>40075e3)throw new Error('That route is longer than the way round the world');
+  const route={points,length_m:Math.round(length)};
+  routeCache.set(key,{at:Date.now(),route});
+  return route;
+}
+// What one team or person has covered, in metres along the route: their distance, or their steps at
+// an average stride in a steps journey.
+const coveredM=(c,row)=>challengeMetric(c)==='steps'?(Number(row.steps)||0)*STRIDE_M:(Number(row.distance_m)||0);
+// Where a fraction of the way along the stored line falls. The stored line is simplified, so its own
+// length stands in for the real one, proportionally.
+function pointAlong(points,fraction){
+  const f=Math.max(0,Math.min(1,fraction)),total=lineLength(points);
+  let want=f*total;
+  for(let i=1;i<points.length;i++){
+    const seg=haversineM(points[i-1],points[i]);
+    if(want<=seg||i===points.length-1){const t=seg?Math.min(1,want/seg):0;return [+(points[i-1][0]+(points[i][0]-points[i-1][0])*t).toFixed(5),+(points[i-1][1]+(points[i][1]-points[i-1][1])*t).toFixed(5)]}
+    want-=seg;
+  }
+  return points[points.length-1];
+}
+// A journey measures distance or steps (not minutes); a cycling journey measures distance.
+function checkJourneyMeasure(metric,mode){
+  if(metric!=='distance'&&metric!=='steps')throw new Error('A journey measures distance or steps');
+  if(mode==='cycling'&&metric!=='distance')throw new Error('A cycling journey measures distance, in miles or km');
+}
+function saveJourney(id,j,route){
+  db.prepare("UPDATE challenges SET kind='journey',journey_mode=?,route_shape=?,route_from=?,route_to=?,route=?,route_m=? WHERE id=?")
+    .run(j.mode,j.shape,JSON.stringify(j.from),JSON.stringify(j.to),JSON.stringify(route.points),route.length_m,id);
+}
+// The challenge record as the API shows it: the route line itself only comes from /journey.
+const publicChallenge=c=>({id:c.id,name:c.name,description:c.description,start_date:c.start_date,end_date:c.end_date,active:c.active,invite_code:c.invite_code,
+  created_by:c.created_by,metric:c.metric,distance_unit:c.distance_unit,participation:c.participation,kind:isJourney(c)?'journey':'standard',journey:journeyInfo(c)});
+// Place search for the journey map, through Nominatim (OpenStreetMap). Its usage policy allows at most
+// one request a second, so requests queue one at a time with a gap; answers are cached for a day.
+const placeCache=new Map();let geocoderQueue=Promise.resolve();
+function geocoderFetch(pathAndQuery){
+  const hit=placeCache.get(pathAndQuery);
+  if(hit&&hit.at>Date.now()-864e5)return Promise.resolve(hit.data);
+  const job=geocoderQueue.then(async()=>{
+    const r=await fetch(GEOCODER_BASE+pathAndQuery,{headers:{'User-Agent':OUTBOUND_UA,'Accept-Language':'en'},signal:AbortSignal.timeout(15000)});
+    if(!r.ok)throw new Error('Place search is unavailable just now');
+    const data=await r.json();placeCache.set(pathAndQuery,{at:Date.now(),data});return data;
+  });
+  geocoderQueue=job.catch(()=>{}).then(()=>new Promise(r=>setTimeout(r,1100)));
+  return job;
+}
+function journeyInfo(c){
+  if(!isJourney(c))return null;
+  const steps=challengeMetric(c)==='steps',length=c.route_m||0;
+  return {mode:c.journey_mode==='cycling'?'cycling':'foot',shape:c.route_shape==='straight'?'straight':'roads',
+    from:JSON.parse(c.route_from||'null'),to:JSON.parse(c.route_to||'null'),length_m:length,
+    target:steps?Math.round(length/STRIDE_M):metersToUnit(length,challengeUnit(c)),unit:steps?'steps':challengeUnit(c)};
+}
+// Progress, virtual position and finishing day for each team (team challenges) or person. A finish
+// day is the day their running total first reached the end of the route.
+function journeyStandings(c){
+  const lb=leaderboard(c),info=journeyInfo(c),points=JSON.parse(c.route||'[]');
+  if(!info||!points.length)return null;
+  const byTeam=!isIndividual(c),col=byTeam?'team_id':'user_id';
+  const days=db.prepare(`SELECT ${col} who,activity_date d,COALESCE(SUM(distance_m),0) distance_m,COALESCE(SUM(steps),0) steps FROM activities WHERE challenge_id=? AND ${col} IS NOT NULL GROUP BY ${col},activity_date ORDER BY activity_date`).all(c.id);
+  const finished={},running={};
+  for(const r of days){running[r.who]=(running[r.who]||0)+coveredM(c,r);if(!finished[r.who]&&running[r.who]>=info.length_m)finished[r.who]=r.d}
+  const shape=(rows,raw)=>rows.map(r=>{
+    const m=coveredM(c,raw.find(x=>x.id===r.id)||{}),progress=info.length_m?Math.min(1,m/info.length_m):0,[lat,lon]=pointAlong(points,progress);
+    return {...r,progress:Math.round(progress*10000)/10000,lat,lon,finished_on:finished[r.id]||null};
+  });
+  const rawTeams=db.prepare('SELECT t.id,COALESCE(SUM(a.distance_m),0) distance_m,COALESCE(SUM(a.steps),0) steps FROM teams t LEFT JOIN activities a ON a.team_id=t.id WHERE t.challenge_id=? GROUP BY t.id').all(c.id);
+  const rawUsers=db.prepare('SELECT cm.user_id id,COALESCE(SUM(a.distance_m),0) distance_m,COALESCE(SUM(a.steps),0) steps FROM challenge_members cm LEFT JOIN activities a ON a.user_id=cm.user_id AND a.challenge_id=cm.challenge_id WHERE cm.challenge_id=? GROUP BY cm.user_id').all(c.id);
+  return {info,points,teams:shape(lb.teams,rawTeams),users:shape(lb.users,rawUsers)};
 }
 
 // --- Help & support tickets ------------------------------------------------------------------
@@ -572,9 +745,22 @@ async function api(req,res,url){
  if(m==='GET'&&url.pathname==='/api/dashboard'){if(!need(res,u))return;return send(res,200,{user:u,...dashboard(u.id)})}
  if(m==='GET'&&url.pathname==='/api/mobile/bootstrap'){if(!need(res,u))return;return send(res,200,{user:u,...dashboard(u.id),health:{healthConnect:{platform:'Android',mode:'native-companion-required'},healthKit:{platform:'iOS',mode:'native-companion-required'},acceptedRecord:'exercise session duration and distance',uploadEndpoint:'/api/health/import'}})}
 
- if(m==='POST'&&url.pathname==='/api/challenges'){if(!need(res,u))return;const b=await body(req);if(!b.name||!b.start_date||!b.end_date)return send(res,400,{error:'name, start_date and end_date are required'});const description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):null;let measure;try{measure=parseChallengeMeasure(b)}catch(e){return send(res,400,{error:e.message})}const {id,invite_code}=insertChallenge(String(b.name).trim(),b.start_date,b.end_date,u.id,description,measure.metric||'minutes',measure.distance_unit||'mi',measure.participation||'teams');return send(res,201,{id,invite_code})}
- if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),ca=challengeAccess(u.id,cid)||(isAdmin(u)?{challenge_role:'admin'}:null);if(!ca)return send(res,403,{error:'You need an invite code to view this challenge'});const c=db.prepare('SELECT id,name,description,start_date,end_date,active,invite_code,created_by,metric,distance_unit,participation FROM challenges WHERE id=?').get(cid);if(!c)return send(res,404,{error:'Challenge not found'});const teams=db.prepare(`SELECT t.id,t.name,t.image_url,t.invite_code,(SELECT COUNT(*) FROM team_members z WHERE z.team_id=t.id) members,tm.team_role FROM teams t LEFT JOIN team_members tm ON tm.team_id=t.id AND tm.user_id=? WHERE t.challenge_id=? ORDER BY t.name`).all(u.id,cid).map(t=>{const mine=t.team_role!=null,canManage=u.role==='global_admin'||t.team_role==='team_admin'||ca.challenge_role==='owner';return {id:t.id,name:t.name,image_url:t.image_url,members:t.members,mine,canManage,invite_code:(mine||canManage)?t.invite_code:undefined}});return send(res,200,{...c,role:ca.challenge_role,canManage:canManageChallenge(u,cid),teams})}
- if(m==='PATCH'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner can edit this challenge'});const b=await body(req),name=b.name!==undefined?String(b.name).trim():challenge.name,start_date=b.start_date!==undefined?b.start_date:challenge.start_date,end_date=b.end_date!==undefined?b.end_date:challenge.end_date,description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):challenge.description;if(!name||!start_date||!end_date)return send(res,400,{error:'name, start_date and end_date are required'});let measure;try{measure=parseChallengeMeasure(b)}catch(e){return send(res,400,{error:e.message})}db.prepare('UPDATE challenges SET name=?,start_date=?,end_date=?,description=?,metric=?,distance_unit=?,participation=? WHERE id=?').run(name,start_date,end_date,description,measure.metric||challenge.metric,measure.distance_unit||challenge.distance_unit,measure.participation||challenge.participation,cid);return send(res,200,{ok:true})}
+ if(m==='POST'&&url.pathname==='/api/challenges'){
+   if(!need(res,u))return;
+   const b=await body(req);
+   if(!b.name||!b.start_date||!b.end_date)return send(res,400,{error:'name, start_date and end_date are required'});
+   const description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):null;
+   let measure,journey=null,route=null;
+   try{
+     measure=parseChallengeMeasure(b);
+     if(b.kind==='journey'){journey=parseJourney(b);checkJourneyMeasure(measure.metric||'minutes',journey.mode);route=await buildRoute(journey)}
+   }catch(e){return send(res,400,{error:e.message})}
+   const {id,invite_code}=insertChallenge(String(b.name).trim(),b.start_date,b.end_date,u.id,description,measure.metric||'minutes',measure.distance_unit||'mi',measure.participation||'teams');
+   if(journey)saveJourney(id,journey,route);
+   return send(res,201,{id,invite_code});
+ }
+ if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),ca=challengeAccess(u.id,cid)||(isAdmin(u)?{challenge_role:'admin'}:null);if(!ca)return send(res,403,{error:'You need an invite code to view this challenge'});const c=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!c)return send(res,404,{error:'Challenge not found'});const teams=db.prepare(`SELECT t.id,t.name,t.image_url,t.invite_code,(SELECT COUNT(*) FROM team_members z WHERE z.team_id=t.id) members,tm.team_role FROM teams t LEFT JOIN team_members tm ON tm.team_id=t.id AND tm.user_id=? WHERE t.challenge_id=? ORDER BY t.name`).all(u.id,cid).map(t=>{const mine=t.team_role!=null,canManage=u.role==='global_admin'||t.team_role==='team_admin'||ca.challenge_role==='owner';return {id:t.id,name:t.name,image_url:t.image_url,members:t.members,mine,canManage,invite_code:(mine||canManage)?t.invite_code:undefined}});return send(res,200,{...publicChallenge(c),role:ca.challenge_role,canManage:canManageChallenge(u,cid),teams})}
+ if(m==='PATCH'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner can edit this challenge'});const b=await body(req),name=b.name!==undefined?String(b.name).trim():challenge.name,start_date=b.start_date!==undefined?b.start_date:challenge.start_date,end_date=b.end_date!==undefined?b.end_date:challenge.end_date,description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):challenge.description;if(!name||!start_date||!end_date)return send(res,400,{error:'name, start_date and end_date are required'});let measure,journey=null,route=null;try{measure=parseChallengeMeasure(b);if(b.journey!==undefined||isJourney(challenge)){journey=b.journey!==undefined?parseJourney(b):{mode:challenge.journey_mode};checkJourneyMeasure(measure.metric||challenge.metric,journey.mode);if(b.journey!==undefined)route=await buildRoute(journey)}}catch(e){return send(res,400,{error:e.message})}if(route)saveJourney(cid,journey,route);db.prepare('UPDATE challenges SET name=?,start_date=?,end_date=?,description=?,metric=?,distance_unit=?,participation=? WHERE id=?').run(name,start_date,end_date,description,measure.metric||challenge.metric,measure.distance_unit||challenge.distance_unit,measure.participation||challenge.participation,cid);return send(res,200,{ok:true})}
  // Owners and global admins can delete a challenge outright: its activities first (they reference
  // teams with no cascade), then the challenge, which cascades to members, teams, team members and
  // invites. Same order the 60-day retention purge uses.
@@ -617,7 +803,49 @@ async function api(req,res,url){
    // A minutes challenge exports exactly as before; a distance challenge leads with distance and
    // keeps minutes alongside, since synced entries usually carry both.
    const valueCols=metric==='steps'?['Steps']:dist?[unitName,'Minutes']:['Minutes'],values=r=>metric==='steps'?[r.steps]:dist?[r.distance,r.minutes]:[r.minutes];let header,rows;if(type==='teams'){header=['Rank','Team',...valueCols];rows=lb.teams.map((r,i)=>[i+1,r.name,...values(r)])}else{header=['Rank','Name','Email',...valueCols];rows=lb.users.map((r,i)=>[i+1,r.name,r.email,...values(r)])}const csv=[header,...rows].map(r=>r.map(csvEscape).join(',')).join('\r\n'),safeName=challenge.name.replace(/[^a-z0-9]+/gi,'-').toLowerCase()||'challenge';res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="${safeName}-${type}.csv"`});return res.end(csv)}
- if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!challengeAccess(u.id,cid)&&!isAdmin(u))return send(res,403,{error:'You need an invite code to view this challenge'});const challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});const lb=leaderboard(challenge);return send(res,200,{metric:challengeMetric(challenge),distance_unit:challengeUnit(challenge),participation:isIndividual(challenge)?'individual':'teams',teams:lb.teams.map(({email,...t})=>t),users:lb.users.map(({email,...x})=>x)})}
+ if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!challengeAccess(u.id,cid)&&!isAdmin(u))return send(res,403,{error:'You need an invite code to view this challenge'});const challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});const lb=isJourney(challenge)?journeyStandings(challenge)||leaderboard(challenge):leaderboard(challenge),strip=({email,lat,lon,...r})=>r;return send(res,200,{metric:challengeMetric(challenge),distance_unit:challengeUnit(challenge),participation:isIndividual(challenge)?'individual':'teams',journey:journeyInfo(challenge),teams:lb.teams.map(strip),users:lb.users.map(strip)})}
+ // The journey map: the route, and where each team (or, in an individuals challenge, each person) has
+ // got to along it - a virtual position worked out from their total, never anyone's real location.
+ if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/journey$/)){
+   if(!need(res,u))return;
+   const cid=Number(url.pathname.split('/')[3]);
+   if(!challengeAccess(u.id,cid)&&!isAdmin(u))return send(res,403,{error:'You need an invite code to view this challenge'});
+   const c=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);
+   if(!c)return send(res,404,{error:'Challenge not found'});
+   const js=isJourney(c)&&journeyStandings(c);
+   if(!js)return send(res,404,{error:'This challenge is not a journey'});
+   const rows=isIndividual(c)?js.users:js.teams;
+   return send(res,200,{journey:js.info,route:js.points,by:isIndividual(c)?'person':'team',
+     markers:rows.map(r=>({id:r.id,name:r.name,image_url:r.image_url||r.avatar_url||null,distance:r.distance,steps:r.steps,progress:r.progress,lat:r.lat,lon:r.lon,finished_on:r.finished_on}))});
+ }
+ // For the journey picker: find places by name, name a tapped point, and preview a route's length.
+ if(m==='GET'&&url.pathname==='/api/places'){
+   if(!need(res,u))return;
+   const q=String(url.searchParams.get('q')||'').trim().slice(0,120);
+   if(q.length<2)return send(res,400,{error:'Type a place to search for'});
+   try{
+     const r=await geocoderFetch(`/search?format=jsonv2&limit=6&q=${encodeURIComponent(q)}`);
+     return send(res,200,{places:r.map(x=>({name:x.name||String(x.display_name).split(',')[0],detail:x.display_name,lat:+x.lat,lon:+x.lon}))});
+   }catch(e){return send(res,502,{error:e.message})}
+ }
+ if(m==='GET'&&url.pathname==='/api/places/reverse'){
+   if(!need(res,u))return;
+   const lat=Number(url.searchParams.get('lat')),lon=Number(url.searchParams.get('lon'));
+   if(!Number.isFinite(lat)||!Number.isFinite(lon))return send(res,400,{error:'lat and lon are required'});
+   try{
+     const d=await geocoderFetch(`/reverse?format=jsonv2&zoom=12&lat=${lat.toFixed(5)}&lon=${lon.toFixed(5)}`);
+     const a=d.address||{};
+     return send(res,200,{name:d.name||a.city||a.town||a.village||a.county||String(d.display_name||'').split(',')[0]||null});
+   }catch(e){return send(res,200,{name:null})}
+ }
+ if(m==='POST'&&url.pathname==='/api/journeys/preview'){
+   if(!need(res,u))return;
+   const b=await body(req);
+   try{
+     const j=parseJourney(b),route=await buildRoute(j);
+     return send(res,200,{length_m:route.length_m,miles:metersToUnit(route.length_m,'mi'),km:metersToUnit(route.length_m,'km'),steps:Math.round(route.length_m/STRIDE_M),points:route.points});
+   }catch(e){return send(res,400,{error:e.message})}
+ }
 
  // What an invite link is for, so the page (or app) can ask "join X?" first. Works signed out too:
  // anyone holding the code could join anyway, so naming the challenge reveals nothing more.
@@ -716,7 +944,7 @@ async function api(req,res,url){
      const target=activityTarget(u,challenge,t.team_id);
      if(target.error)return send(res,target.status,{error:rawTargets.length>1&&challenge?`${challenge.name}: ${target.error}`:target.error});
      let times,minutes,distance_m,steps;
-     try{requireInWindow(challenge,b.activity_date);times=validateTimes(b.start_time,b.end_time);minutes=parseMinutes(b.minutes)??null;distance_m=parseDistance(b,challengeUnit(challenge))??null;steps=parseSteps(b.steps)??null;requireMeasure(challenge,minutes,distance_m,steps)}
+     try{requireInWindow(challenge,b.activity_date);times=validateTimes(b.start_time,b.end_time);minutes=parseMinutes(b.minutes)??null;distance_m=parseDistance(b,challengeUnit(challenge))??null;steps=parseSteps(b.steps)??null;requireMeasure(challenge,minutes,distance_m,steps,b.activity_type)}
      catch(e){return send(res,400,{error:rawTargets.length>1?`${challenge.name}: ${e.message}`:e.message})}
      rows.push({challengeId,teamId:target.teamId,times,minutes,distance_m,steps});
    }
@@ -773,7 +1001,7 @@ async function api(req,res,url){
    const comment=b.comment!==undefined?(String(b.comment).trim().slice(0,500)||null):existing.comment;
    if(!activity_type||!activity_date)return send(res,400,{error:'Invalid activity fields'});
    let times;
-   try{if(b.activity_date!==undefined)requireInWindow(challenge,activity_date);times=validateTimes(start_time,end_time);requireMeasure(challenge,minutes,distance_m,steps)}catch(e){return send(res,400,{error:e.message})}
+   try{if(b.activity_date!==undefined)requireInWindow(challenge,activity_date);times=validateTimes(start_time,end_time);requireMeasure(challenge,minutes,distance_m,steps,activity_type)}catch(e){return send(res,400,{error:e.message})}
    db.prepare('UPDATE activities SET activity_type=?,minutes=?,distance_m=?,steps=?,activity_date=?,start_time=?,end_time=?,comment=? WHERE id=?').run(activity_type,minutes,distance_m,steps,activity_date,times.start_time,times.end_time,comment,id);
    return send(res,200,{ok:true});
  }
@@ -980,11 +1208,13 @@ async function api(req,res,url){
    const r=db.prepare('SELECT sync_key_created_at FROM users WHERE id=?').get(u.id);
    return send(res,200,{exists:!!r.sync_key_created_at,created_at:r.sync_key_created_at});
  }
- // One day's totals from the Apple Shortcut: steps, exercise minutes and/or distance, in one request or
- // one per figure (a figure not sent keeps what's stored). They go into every challenge I'm in that runs
- // that day, as that challenge's measure (a step challenge takes the steps, and so on), under my first
- // team in a team challenge. Sending a day again replaces its figures, so the shortcut can run as often
- // as it likes; an entry left with nothing to count is removed.
+ // One day's totals from the Apple Shortcut: steps, exercise minutes, walking and running distance and
+ // cycling distance, in one request or one per figure. Each figure is kept in shortcut_days, so one
+ // not sent keeps its last value. The day's entry in every challenge I'm in that runs that day is
+ // then worked out from them: a step challenge takes the steps, a minutes challenge the minutes, a
+ // distance challenge walking plus cycling, an on-foot journey walking only, and a cycling journey
+ // cycling only - under my first team in a team challenge. Sending a day again replaces it; an entry
+ // left with nothing to count is removed.
  if(m==='POST'&&url.pathname==='/api/shortcut/day'){
    let b;try{b=await body(req)}catch(e){return send(res,400,{error:'Send the day as JSON'})}
    const key=String(req.headers['x-sync-key']||b.key||'').trim();
@@ -993,16 +1223,20 @@ async function api(req,res,url){
    const date=String(b.date||'').trim();
    if(!DATE_RE.test(date))return send(res,400,{error:'date must be YYYY-MM-DD'});
    if(date>new Date(Date.now()+864e5).toISOString().slice(0,10))return send(res,400,{error:'That date is in the future'});
-   // Shortcuts may send numbers as text, with thousands separators or decimals, and the distance in
+   // Shortcuts may send numbers as text, with thousands separators or decimals, and distances in
    // whatever unit the Health app uses. undefined = not sent this time.
    const num=v=>{if(v===undefined)return undefined;const n=Number(String(v??'').replace(/,/g,''));return Number.isFinite(n)&&n>0?n:0};
-   const u8=String(b.distance_unit||'mi').trim().toLowerCase();
-   const unitM=/^(km|kilomet(er|re)s?)$/.test(u8)?1000:/^(m|met(er|re)s?)$/.test(u8)?1:/^(mi|miles?)$/.test(u8)?METERS_PER.mi:null;
-   if(unitM===null)return send(res,400,{error:'distance_unit must be mi, km or m'});
-   const unit=unitM===METERS_PER.mi?'mi':'km';
-   const steps=num(b.steps)===undefined?undefined:Math.round(num(b.steps)),minutes=num(b.minutes)===undefined?undefined:Math.round(num(b.minutes)),distance_m=num(b.distance)===undefined?undefined:num(b.distance)*unitM;
-   if(steps===undefined&&minutes===undefined&&distance_m===undefined)return send(res,400,{error:'Send steps, minutes or distance'});
-   if(steps>200000)return send(res,400,{error:'That is more steps than anyone walks in a day - check the shortcut'});
+   const perUnit=v=>{const t=String(v||'mi').trim().toLowerCase();return /^(km|kilomet(er|re)s?)$/.test(t)?1000:/^(m|met(er|re)s?)$/.test(t)?1:/^(mi|miles?)$/.test(t)?METERS_PER.mi:null};
+   const walkPer=perUnit(b.distance_unit),cyclePer=perUnit(b.cycling_unit||b.distance_unit);
+   if(walkPer===null||cyclePer===null)return send(res,400,{error:'distance units must be mi, km or m'});
+   const sent={steps:num(b.steps)===undefined?undefined:Math.round(num(b.steps)),minutes:num(b.minutes)===undefined?undefined:Math.round(num(b.minutes)),
+     walk_m:num(b.distance)===undefined?undefined:num(b.distance)*walkPer,cycle_m:num(b.cycling_distance)===undefined?undefined:num(b.cycling_distance)*cyclePer};
+   if(Object.values(sent).every(v=>v===undefined))return send(res,400,{error:'Send steps, minutes, distance or cycling_distance'});
+   if(sent.steps>200000)return send(res,400,{error:'That is more steps than anyone walks in a day - check the shortcut'});
+   const before=db.prepare('SELECT * FROM shortcut_days WHERE user_id=? AND day=?').get(owner.id,date)||{};
+   const day={};for(const k of ['steps','minutes','walk_m','cycle_m'])day[k]=(sent[k]!==undefined?sent[k]:before[k])||0;
+   db.prepare(`INSERT INTO shortcut_days(user_id,day,steps,minutes,walk_m,cycle_m) VALUES(?,?,?,?,?,?) ON CONFLICT(user_id,day) DO UPDATE SET
+     steps=excluded.steps,minutes=excluded.minutes,walk_m=excluded.walk_m,cycle_m=excluded.cycle_m,updated_at=datetime('now')`).run(owner.id,date,day.steps,day.minutes,day.walk_m,day.cycle_m);
    const challenges=db.prepare('SELECT c.* FROM challenges c JOIN challenge_members cm ON cm.challenge_id=c.id WHERE cm.user_id=? AND c.start_date<=? AND c.end_date>=? ORDER BY c.name').all(owner.id,date,date);
    const saved=[],skipped=[],ref='day:'+date;
    for(const c of challenges){
@@ -1013,18 +1247,21 @@ async function api(req,res,url){
        teamId=t.id;
      }
      const metric=challengeMetric(c);
-     const prev=db.prepare("SELECT id,steps,minutes,distance_m FROM activities WHERE user_id=? AND source='shortcut' AND source_ref=? AND challenge_id=?").get(owner.id,ref,c.id);
-     const pick=(sent,kept)=>(sent===undefined?kept:sent)||null;
-     const row=metric==='steps'?{type:'Steps',steps:pick(steps,prev?.steps),minutes:null,distance_m:null}
-       :{type:'Daily activity',steps:null,minutes:pick(minutes,prev?.minutes),distance_m:pick(distance_m,prev?.distance_m)};
+     const row=metric==='steps'?{type:'Steps',steps:day.steps||null,minutes:null,distance_m:null}
+       :isJourney(c)?(c.journey_mode==='cycling'?{type:'Cycling',steps:null,minutes:null,distance_m:day.cycle_m||null}:{type:'Walking & running',steps:null,minutes:null,distance_m:day.walk_m||null})
+       :{type:'Daily activity',steps:null,minutes:day.minutes||null,distance_m:(day.walk_m+day.cycle_m)||null};
      const counts=metric==='steps'?row.steps:metric==='distance'?row.distance_m:row.minutes;
+     const prev=db.prepare("SELECT id FROM activities WHERE user_id=? AND source='shortcut' AND source_ref=? AND challenge_id=?").get(owner.id,ref,c.id);
      if(!counts){if(prev)db.prepare('DELETE FROM activities WHERE id=?').run(prev.id);skipped.push(`${c.name}: nothing to count`);continue}
-     if(prev)db.prepare('UPDATE activities SET team_id=?,steps=?,minutes=?,distance_m=? WHERE id=?').run(teamId,row.steps,row.minutes,row.distance_m,prev.id);
+     if(prev)db.prepare('UPDATE activities SET team_id=?,activity_type=?,steps=?,minutes=?,distance_m=? WHERE id=?').run(teamId,row.type,row.steps,row.minutes,row.distance_m,prev.id);
      else db.prepare("INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,distance_m,steps,activity_date,source,source_ref) VALUES(?,?,?,?,?,?,?,?,'shortcut',?)")
        .run(owner.id,teamId,c.id,row.type,row.minutes,row.distance_m,row.steps,date,ref);
      saved.push(c.name);
    }
-   const figures=[steps!==undefined&&`${steps.toLocaleString('en-GB')} steps`,minutes!==undefined&&`${minutes} active min`,distance_m!==undefined&&`${(distance_m/METERS_PER[unit]).toFixed(1)} ${unit}`].filter(Boolean).join(', ');
+   // Each distance is echoed in the unit it came in (metres shown as km).
+   const shown=(m,per)=>per===METERS_PER.mi?`${(m/per).toFixed(1)} mi`:`${(m/1000).toFixed(1)} km`;
+   const figures=[sent.steps!==undefined&&`${sent.steps.toLocaleString('en-GB')} steps`,sent.minutes!==undefined&&`${sent.minutes} active min`,
+     sent.walk_m!==undefined&&`${shown(sent.walk_m,walkPer)} on foot`,sent.cycle_m!==undefined&&`${shown(sent.cycle_m,cyclePer)} cycling`].filter(Boolean).join(', ');
    const message=saved.length?`${date}: ${figures} - saved to ${saved.join(', ')}`:`${date}: ${figures} - not saved (${skipped.join('; ')||'no challenge of yours runs that day'})`;
    return send(res,200,{ok:true,date,saved,skipped,message});
  }
@@ -1050,7 +1287,7 @@ async function api(req,res,url){
        if(minutes!==null&&!Number.isInteger(minutes))throw new Error('whole minutes only');
        distance_m=x.distance_m===undefined?null:parseDistance({distance_m:x.distance_m})??null;
        steps=parseSteps(x.steps)??null;
-       requireMeasure(challenge,minutes,distance_m,steps);
+       requireMeasure(challenge,minutes,distance_m,steps,x.activity_type);
        requireInWindow(challenge,x.activity_date);
      }catch(e){skipped++;continue}
      // A day's step total keeps growing until midnight: sending the same day again replaces the

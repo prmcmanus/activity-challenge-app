@@ -2175,3 +2175,166 @@ test('Apple Shortcuts sync: a personal key sends a day of totals into every chal
   assert.equal((await send(key, { date: D1, steps: 5 })).status, 401, 'a removed key stops working');
   void team;
 });
+
+// --- virtual journeys --------------------------------------------------------------------------
+
+const LONDON = { name: 'London', lat: 51.5072, lon: -0.1276 };
+const EDINBURGH = { name: 'Edinburgh', lat: 55.9533, lon: -3.1883 };
+
+test('journeys: a straight-line journey places people along the route by distance, and records who finished when', async () => {
+  const ann = await register('Jo Walker');
+  const ben = await register('Jo Strider');
+  const c = await jsonFetch(`${origin}/api/challenges`, ann.cookie, 'POST', {
+    name: 'To Edinburgh', start_date: '2027-06-01', end_date: '2027-08-31', metric: 'distance', distance_unit: 'km', participation: 'individual',
+    kind: 'journey', journey: { from: LONDON, to: EDINBURGH, shape: 'straight', mode: 'foot' },
+  });
+  assert.equal(c.status, 201, JSON.stringify(c.body));
+  await jsonFetch(`${origin}/api/join`, ben.cookie, 'POST', { code: c.body.invite_code });
+
+  const detail = (await jsonFetch(`${origin}/api/challenges/${c.body.id}`, ann.cookie)).body;
+  assert.equal(detail.kind, 'journey');
+  assert.equal(detail.journey.mode, 'foot');
+  assert.equal(detail.journey.shape, 'straight');
+  assert.equal(detail.journey.unit, 'km');
+  assert.ok(detail.journey.target > 525 && detail.journey.target < 545, `about 534 km as the crow flies, got ${detail.journey.target}`);
+  assert.equal(detail.journey.from.name, 'London');
+  assert.equal(detail.route, undefined, 'the line itself only comes from /journey');
+
+  const log = (who, km, date, type = 'Walk') => jsonFetch(`${origin}/api/activities`, who.cookie, 'POST', { challenge_id: c.body.id, activity_type: type, distance: km, distance_unit: 'km', activity_date: date });
+  assert.equal((await log(ann, 100, '2027-06-02')).status, 201);
+  await log(ben, 300, '2027-06-02');
+  await log(ben, 300, '2027-06-05');
+  await log(ben, 50, '2027-06-09');
+  const ride = await log(ann, 40, '2027-06-03', 'Cycling');
+  assert.equal(ride.status, 400, 'rides do not count on an on-foot journey');
+  assert.match(ride.body.error, /on foot/);
+
+  const board = (await jsonFetch(`${origin}/api/challenges/${c.body.id}/leaderboard`, ann.cookie)).body;
+  assert.equal(board.journey.unit, 'km');
+  const benRow = board.users.find(x => x.name === 'Jo Strider'), annRow = board.users.find(x => x.name === 'Jo Walker');
+  assert.equal(benRow.progress, 1);
+  assert.equal(benRow.finished_on, '2027-06-05', 'the day the running total passed the finish');
+  assert.ok(annRow.progress > 0.18 && annRow.progress < 0.2);
+  assert.equal(annRow.finished_on, null);
+  assert.equal(annRow.lat, undefined, 'positions only on the map endpoint');
+
+  const map = (await jsonFetch(`${origin}/api/challenges/${c.body.id}/journey`, ann.cookie)).body;
+  assert.equal(map.by, 'person');
+  assert.ok(map.route.length > 10, 'a curved great-circle line');
+  const a = map.markers.find(x => x.name === 'Jo Walker'), b = map.markers.find(x => x.name === 'Jo Strider');
+  assert.ok(a.lat > 51.6 && a.lat < 52.6, `a fifth of the way north, got ${a.lat}`);
+  assert.ok(Math.abs(b.lat - EDINBURGH.lat) < 0.01 && Math.abs(b.lon - EDINBURGH.lon) < 0.01, 'a finisher sits at the finish');
+
+  const outsider = await register('Jo Outside');
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${c.body.id}/journey`, outsider.cookie)).status, 403);
+  const plain = await jsonFetch(`${origin}/api/challenges`, ann.cookie, 'POST', { name: 'Plain', start_date: '2027-06-01', end_date: '2027-06-30' });
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${plain.body.id}/journey`, ann.cookie)).status, 404, 'only journeys have a map');
+});
+
+test('journeys: cycling journeys take only rides and measure distance; steps journeys convert at an average stride; teams travel on their total', async () => {
+  const owner = await register('Cy Owner');
+  const make = extra => jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', {
+    name: 'J', start_date: '2027-06-01', end_date: '2027-08-31', kind: 'journey', journey: { from: LONDON, to: EDINBURGH, shape: 'straight', mode: 'foot' }, ...extra });
+  assert.equal((await make({ metric: 'minutes' })).status, 400, 'a journey measures distance or steps');
+  assert.equal((await make({ metric: 'steps', journey: { from: LONDON, to: EDINBURGH, shape: 'straight', mode: 'cycling' } })).status, 400, 'cycling measures distance');
+  assert.equal((await make({ metric: 'distance', journey: { from: LONDON, shape: 'straight' } })).status, 400, 'needs a finish');
+
+  const cyc = await make({ metric: 'distance', distance_unit: 'mi', participation: 'individual', journey: { from: LONDON, to: EDINBURGH, shape: 'straight', mode: 'cycling' } });
+  assert.equal(cyc.status, 201);
+  const logCyc = type => jsonFetch(`${origin}/api/activities`, owner.cookie, 'POST', { challenge_id: cyc.body.id, activity_type: type, distance: 20, distance_unit: 'mi', activity_date: '2027-06-02' });
+  assert.equal((await logCyc('Run')).status, 400);
+  assert.equal((await logCyc('Cycling')).status, 201);
+  assert.equal((await logCyc('Bike ride')).status, 201);
+
+  const steps = await make({ metric: 'steps' });
+  const info = (await jsonFetch(`${origin}/api/challenges/${steps.body.id}`, owner.cookie)).body.journey;
+  assert.equal(info.unit, 'steps');
+  const km = (await jsonFetch(`${origin}/api/challenges/${cyc.body.id}`, owner.cookie)).body.journey.target * 1.609344;
+  assert.ok(Math.abs(info.target - km * 1000 / 0.762) < 1500, 'route length over a 0.762 m stride');
+
+  // A team journey: teams move on their members' combined total.
+  const mate = await register('Cy Mate');
+  const team = await jsonFetch(`${origin}/api/teams`, owner.cookie, 'POST', { challenge_id: steps.body.id, name: 'Striders' });
+  await jsonFetch(`${origin}/api/join`, mate.cookie, 'POST', { code: team.body.invite_code });
+  const half = Math.round(info.target / 4);
+  for (const who of [owner, mate]) {
+    assert.equal((await jsonFetch(`${origin}/api/activities`, who.cookie, 'POST', { challenge_id: steps.body.id, team_id: team.body.id, activity_type: 'Steps', steps: Math.min(half, 200000), activity_date: '2027-06-03' })).status, 201);
+  }
+  const map = (await jsonFetch(`${origin}/api/challenges/${steps.body.id}/journey`, owner.cookie)).body;
+  assert.equal(map.by, 'team');
+  const striders = map.markers.find(x => x.name === 'Striders');
+  assert.ok(striders.steps === Math.min(half, 200000) * 2);
+  assert.ok(Math.abs(striders.progress - (striders.steps / info.target)) < 0.001);
+});
+
+test('journeys: road routes come from the route planner, are simplified, and can be previewed; places are searched by name', async () => {
+  const http = require('node:http');
+  // Stand-ins for the OSRM route planner and Nominatim.
+  const line = Array.from({ length: 3000 }, (_, i) => [-0.1276 + i * (-3.0607 / 2999) + Math.sin(i / 40) * 0.01, 51.5072 + i * (4.4461 / 2999)]);
+  let lastPath = '';
+  const stub = http.createServer((req, res) => {
+    lastPath = req.url;
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url.startsWith('/routed-')) return res.end(JSON.stringify({ code: 'Ok', routes: [{ distance: 663000, geometry: { type: 'LineString', coordinates: line } }] }));
+    if (req.url.startsWith('/search')) return res.end(JSON.stringify([{ name: 'Edinburgh', display_name: 'Edinburgh, City of Edinburgh, Scotland, United Kingdom', lat: '55.9533', lon: '-3.1883' }]));
+    if (req.url.startsWith('/reverse')) return res.end(JSON.stringify({ name: '', address: { city: 'York' }, display_name: 'York, England' }));
+    res.statusCode = 404; res.end('{}');
+  });
+  await new Promise(r => stub.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${stub.address().port}`;
+  const srv = await spawnServer({ ROUTING_BASE: base, GEOCODER_BASE: base });
+  try {
+    const reg = await fetch(`${srv.origin}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Rhona Road', email: 'rhona@example.com', password: 'SuperSecret123!' }) });
+    const cookie = reg.headers.get('set-cookie').split(';')[0];
+    const call = (path, method = 'GET', payload) => jsonFetch(`${srv.origin}${path}`, cookie, method, payload);
+
+    const places = await call('/api/places?q=edinburgh');
+    assert.equal(places.status, 200);
+    assert.deepEqual(places.body.places[0], { name: 'Edinburgh', detail: 'Edinburgh, City of Edinburgh, Scotland, United Kingdom', lat: 55.9533, lon: -3.1883 });
+    assert.equal((await call('/api/places/reverse?lat=53.96&lon=-1.08')).body.name, 'York');
+
+    const preview = await call('/api/journeys/preview', 'POST', { journey: { from: LONDON, to: EDINBURGH, shape: 'roads', mode: 'cycling' } });
+    assert.equal(preview.status, 200);
+    assert.match(lastPath, /^\/routed-bike\/route\/v1\/driving\/-0\.1276,51\.5072;-3\.1883,55\.9533/);
+    assert.equal(preview.body.km, 663);
+    assert.ok(preview.body.points.length <= 800 && preview.body.points.length > 10, `simplified, got ${preview.body.points.length}`);
+
+    const c = await call('/api/challenges', 'POST', { name: 'Road trip', start_date: '2027-06-01', end_date: '2027-06-30', metric: 'distance', distance_unit: 'km', participation: 'individual',
+      kind: 'journey', journey: { from: LONDON, to: EDINBURGH, shape: 'roads', mode: 'foot' } });
+    assert.equal(c.status, 201);
+    const info = (await call(`/api/challenges/${c.body.id}`)).body.journey;
+    assert.equal(info.target, 663);
+    assert.equal(info.shape, 'roads');
+
+    // The owner can move the finish; the route is planned again.
+    const moved = await call(`/api/challenges/${c.body.id}`, 'PATCH', { journey: { from: LONDON, to: { name: 'Glasgow', lat: 55.8642, lon: -4.2518 }, shape: 'straight', mode: 'foot' } });
+    assert.equal(moved.status, 200);
+    assert.equal((await call(`/api/challenges/${c.body.id}`)).body.journey.to.name, 'Glasgow');
+  } finally {
+    await srv.stop();
+    stub.close();
+  }
+});
+
+test('Apple Shortcuts sync: walking and cycling distance are kept apart, and each journey takes the kind it counts', async () => {
+  const sal = await register('Sal Cyclist');
+  const day = n => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+  const D = day(-1), win = { start_date: day(-10), end_date: day(20), participation: 'individual' };
+  const mk = extra => jsonFetch(`${origin}/api/challenges`, sal.cookie, 'POST', { start_date: win.start_date, end_date: win.end_date, participation: 'individual', ...extra });
+  const foot = await mk({ name: 'SJ Foot', metric: 'distance', distance_unit: 'km', kind: 'journey', journey: { from: LONDON, to: EDINBURGH, shape: 'straight', mode: 'foot' } });
+  const bike = await mk({ name: 'SJ Bike', metric: 'distance', distance_unit: 'km', kind: 'journey', journey: { from: LONDON, to: EDINBURGH, shape: 'straight', mode: 'cycling' } });
+  const any = await mk({ name: 'SJ Any distance', metric: 'distance', distance_unit: 'km' });
+  const key = (await jsonFetch(`${origin}/api/me/sync-key`, sal.cookie, 'POST')).body.key;
+  const send = payload => fetch(`${origin}/api/shortcut/day`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sync-Key': key }, body: JSON.stringify(payload) }).then(r => r.json());
+
+  await send({ date: D, distance: 4, distance_unit: 'km' });
+  const r = await send({ date: D, cycling_distance: 15, cycling_unit: 'km' });
+  assert.match(r.message, /15\.0 km cycling/);
+  const rows = (await jsonFetch(`${origin}/api/me/activities?limit=50`, sal.cookie)).body.activities.filter(a => a.source === 'shortcut');
+  const of = c => rows.find(a => a.challenge_id === c.body.id);
+  assert.equal(of(foot).distance, 4, 'walking only on foot');
+  assert.equal(of(foot).activity_type, 'Walking & running');
+  assert.equal(of(bike).distance, 15, 'cycling only on the bike');
+  assert.equal(of(bike).activity_type, 'Cycling');
+  assert.equal(of(any).distance, 19, 'both in an ordinary distance challenge');
+});

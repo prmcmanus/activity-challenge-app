@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -62,6 +63,18 @@ import com.activetogether.companion.asChallenge
 import com.activetogether.companion.SERVER_URL
 import java.time.LocalDate
 
+/** "London → Edinburgh · 412 miles by road · on foot", as on the website. */
+fun journeyLine(j: com.activetogether.companion.Journey): String {
+    val length = if (j.unit == "steps") "${fmtSteps(Math.round(j.target / 1000.0) * 1000)} steps" else "${fmtNum(if (j.target >= 100) Math.round(j.target).toDouble() else j.target)} ${if (j.unit == "km") "km" else "miles"}"
+    return "${j.fromName} → ${j.toName} · $length ${if (j.shape == "straight") "as the crow flies" else "by road"} · ${if (j.cycling) "cycling" else "on foot"}"
+}
+/** A journey leaderboard's extra: how far along the route, or a chequered flag once finished. */
+private fun progressText(s: com.activetogether.companion.Standing) = when {
+    s.finishedOn != null -> " 🏁"
+    s.progress != null -> " · ${Math.round(s.progress * 100)}%"
+    else -> ""
+}
+
 private fun measureLabel(c: Challenge) = if (c.measuresSteps) "Steps" else if (c.measuresDistance) (if (c.distanceUnit == "km") "Kilometres" else "Miles") else "Active minutes"
 private fun myTotal(c: Challenge) = fmtMeasure(c.measuresDistance, c.myMinutes, c.myDistance, c.distanceUnit, c.measuresSteps, c.mySteps)
 
@@ -111,7 +124,7 @@ fun ChallengesScreen(vm: AppViewModel, newChallenge: () -> Unit, join: () -> Uni
                         Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        AssistChip(onClick = { open(c) }, label = { Text(measureLabel(c), maxLines = 1) },
+                        AssistChip(onClick = { open(c) }, label = { Text(if (c.journey != null) "Journey · ${measureLabel(c)}" else measureLabel(c), maxLines = 1) },
                             leadingIcon = { Icon(if (c.measuresSteps) Icons.AutoMirrored.Filled.DirectionsWalk else if (c.measuresDistance) Icons.Default.Straighten else Icons.Default.Timer, null, Modifier.padding(0.dp)) })
                         AssistChip(onClick = { open(c) }, label = { Text(if (c.individual) "Individual" else c.myTeams.firstOrNull()?.name ?: "No team yet", maxLines = 1) },
                             leadingIcon = { Icon(if (c.individual) Icons.Default.Person else Icons.Default.Groups, null) })
@@ -149,7 +162,26 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                 below = {
                     Text(listOfNotNull(measureLabel(c), if (c.individual) "Individuals" else c.myTeams.joinToString { it.name }.ifBlank { null }, "Role: ${c.role}").joinToString(" · "),
                         color = Color.White.copy(alpha = 0.9f), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
+                    c.journey?.let { Text("🗺 " + journeyLine(it), color = Color.White, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp)) }
                 })
+        }
+        // A virtual journey: the map of where everyone has got to. Reloaded with the leaderboard.
+        if (c.journey != null) item {
+            var map by remember(challengeId) { mutableStateOf<com.activetogether.companion.JourneyMap?>(null) }
+            LaunchedEffect(challengeId, board) { vm.call { it.journey(challengeId) }?.let { map = it } }
+            SectionCard("Journey map", action = {
+                map?.let { m -> Text("${m.markers.count { it.finishedOn != null }} of ${m.markers.size} finished", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }) {
+                val m = map
+                if (m == null) Loading(Modifier.padding(8.dp))
+                else JourneyMapView(m, describe = { mk ->
+                    val total = if (c.measuresSteps) "${fmtSteps(mk.steps)} steps" else "${fmtNum(mk.distance)} ${if (c.distanceUnit == "km") "km" else "mi"}"
+                    "$total · ${Math.round(mk.progress * 100)}%" + (mk.finishedOn?.let { " · finished $it" } ?: "")
+                }, modifier = Modifier.fillMaxWidth().height(320.dp))
+                Text(if (c.journey.cycling) "A cycling journey: only rides count. Positions are virtual, never anyone's real location."
+                    else "A journey on foot: rides don't count. Positions are virtual, never anyone's real location.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         if (c.descriptionHtml.isNotBlank()) {
             item { SectionCard("About") { Text(htmlToText(c.descriptionHtml), style = MaterialTheme.typography.bodyMedium) } }
@@ -215,7 +247,7 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                                 Avatar(s.imageUrl, s.name)
                                 Spacer(Modifier.width(10.dp))
                                 Text(s.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                                Text(fmtMeasure(c.measuresDistance, s.minutes, s.distance, c.distanceUnit, c.measuresSteps, s.steps), style = MaterialTheme.typography.titleMedium)
+                                Text(fmtMeasure(c.measuresDistance, s.minutes, s.distance, c.distanceUnit, c.measuresSteps, s.steps) + progressText(s), style = MaterialTheme.typography.titleMedium)
                                 if (person != null) Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             if (i < rows.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

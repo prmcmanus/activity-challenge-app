@@ -127,6 +127,8 @@ private fun ChallengeForm(vm: AppViewModel, existing: ChallengeDetail?, done: (I
                 DateButton("Ends", end, Modifier.weight(1f)) { end = it }
             }
         }
+        if (existing == null) Text("Virtual journeys (a route on a map, like London to Edinburgh) are set up on the website, then show here with their map.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         SectionCard("How it works") {
             Dropdown("Measure", listOf("minutes", "distance", "steps"), measure, { when (it) { "distance" -> "Distance"; "steps" -> "Steps"; else -> "Active minutes" } }, { measure = it })
             if (measure == "steps") Text("Everyone's daily step total counts. The app fills it in from the phone, or people enter it by hand.",

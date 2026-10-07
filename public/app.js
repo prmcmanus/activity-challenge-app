@@ -143,7 +143,7 @@ function showView(id){['#homeView','#challengeView','#helpView','#adminView'].fo
 function showHome(){challengeBack='home';setUrl('/');showView('#homeView');renderHome()}
 function renderHome(){
   $('#hello').textContent=`Welcome, ${me.name}`;
-  $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${isIndividual(c)?'individuals':`${c.teams.length} of your team(s)`} · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance,c.mySteps))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
+  $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${c.kind==='journey'?'journey · ':''}${isIndividual(c)?'individuals':`${c.teams.length} of your team(s)`} · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance,c.mySteps))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
   $all('[data-open]').forEach(b=>b.onclick=()=>openChallenge(Number(b.dataset.open)));
   loadMyActivity().catch(()=>{});
   loadAndroidCard();
@@ -191,6 +191,15 @@ function renderChallenge(){
   // The server already sanitized this on write (POST/PATCH /api/challenges) - safe to render as-is.
   $('#challengeDescription').innerHTML=c.description||'';
   $('#challengeDescription').classList.toggle('hidden',!c.description);
+  // A virtual journey: the route under the title, the map card, and which activities count.
+  const jr=c.kind==='journey'&&c.journey;
+  $('#journeyLine').classList.toggle('hidden',!jr);
+  if(jr)$('#journeyLine').textContent='🗺 '+fmtJourney(jr);
+  $('#journeyCard').classList.toggle('hidden',!jr);
+  if(jr)renderJourneyMap(c);
+  const hint=jr&&!isSteps(c)?(jr.mode==='cycling'?'A cycling journey: only rides count.':"A journey on foot: rides don't count."):'';
+  $('#journeyHint').textContent=hint;$('#journeyHint').classList.toggle('hidden',!hint);
+  if(jr&&jr.mode==='cycling'&&!$('#activityType').value)$('#activityType').value='Cycling';
   $('#challengeCode').innerHTML=`<span class="invite-box"><span class="invite-label">Invite people</span><span class="linkrow"><code>${esc(inviteUrl(c.invite_code))}</code><button type="button" data-copylink="${esc(c.invite_code)}">Copy link</button></span><span class="invite-note">Or share the code <b>${esc(c.invite_code)}</b>. Anyone with the link or code can join this challenge.</span></span>`;
   $('#challengeActions').innerHTML=(c.canManage?'<button class="ghost" data-editchallenge="1">Edit challenge</button>':'')+(c.role!=='admin'?'<button class="ghost" data-leavechallenge="1">Leave challenge</button>':'');
   if(c.canManage)$('[data-editchallenge]').onclick=()=>openEditChallenge(c);
@@ -242,8 +251,8 @@ function renderChallenge(){
     if(!confirm(`Leave team "${b.dataset.name}"? What you've logged under it stays on the team's total.`))return;
     try{await api(`/api/teams/${b.dataset.leaveteam}/leave`,{method:'POST'});await refreshChallenge()}catch(e){alert(e.message)}
   });
-  $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${esc(fmtTotal(c,t.minutes,t.distance,t.steps))}</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
-  $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader" data-profile="${x.id}" title="See ${esc(x.name)}'s profile"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b></span><span>${esc(fmtTotal(c,x.minutes,x.distance,x.steps))}</span></div>`).join('')||'<p class="muted">No members yet.</p>';
+  $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${esc(fmtTotal(c,t.minutes,t.distance,t.steps))}${journeyProgress(c,t)}</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
+  $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader" data-profile="${x.id}" title="See ${esc(x.name)}'s profile"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b></span><span>${esc(fmtTotal(c,x.minutes,x.distance,x.steps))}${journeyProgress(c,x)}</span></div>`).join('')||'<p class="muted">No members yet.</p>';
   const recent=dash.mine.filter(a=>a.challenge_id===c.id);
   $('#recent').innerHTML=recent.map(x=>{
     const timeBit=x.start_time&&x.end_time?` · ${x.start_time}–${x.end_time}`:'';
@@ -268,6 +277,7 @@ async function openEditChallenge(c,after=refreshChallenge){
       <div class="two"><label>Start<input id="ecStart" type="date" value="${c.start_date}" required></label><label>End<input id="ecEnd" type="date" value="${c.end_date}" required></label></div>
       <div class="two"><label>Measure<select id="ecMetric" data-metric><option value="minutes"${isDistance(c)||isSteps(c)?'':' selected'}>Active minutes</option><option value="distance"${isDistance(c)?' selected':''}>Distance</option><option value="steps"${isSteps(c)?' selected':''}>Steps</option></select></label><label data-unitwrap>Distance unit<select id="ecUnit"><option value="mi"${unitShort(c)==='mi'?' selected':''}>Miles</option><option value="km"${unitShort(c)==='km'?' selected':''}>Kilometres</option></select></label></div>
       <p class="muted">Changing what the challenge measures re-ranks the leaderboards. Entries logged without that measure count as zero toward it.</p>
+      ${c.kind==='journey'?`<div><p><b>Journey:</b> ${esc(fmtJourney(c.journey))} <button type="button" class="ghost" id="ecRoute">Change route</button></p><div id="ecPicker" class="hidden"></div></div>`:''}
       <label>Who takes part<select id="ecParticipation"><option value="teams"${isIndividual(c)?'':' selected'}>Teams</option><option value="individual"${isIndividual(c)?' selected':''}>Individuals only</option></select></label>
       <p class="muted">Individuals only hides teams: everyone logs straight to the challenge. Activity already logged with a team still counts on the individual leaderboard.</p>
       <button>Save changes</button>
@@ -281,10 +291,23 @@ async function openEditChallenge(c,after=refreshChallenge){
   $('#modal').showModal();
   initRichTextEditor($('[data-rte]'));
   wireMeasureFields($('#editChallengeForm'));
+  let routePicker=null;
+  if(c.kind==='journey'){
+    $('#ecMetric option[value="minutes"]').disabled=true;
+    if(c.journey.mode==='cycling')$('#ecMetric option[value="steps"]').disabled=true;
+    $('#ecRoute').onclick=()=>{
+      $('#ecRoute').remove();$('#ecPicker').classList.remove('hidden');
+      $('#modal').classList.add('wide');$('#modal').addEventListener('close',()=>$('#modal').classList.remove('wide'),{once:true});
+      routePicker=journeyPicker($('#ecPicker'),c.journey,()=>{if(routePicker.mode()==='cycling')$('#ecMetric').value='distance';$('#ecMetric option[value="steps"]').disabled=routePicker.mode()==='cycling'});
+      routePicker.show();
+    };
+  }
   $('#editChallengeForm').onsubmit=async e=>{
     e.preventDefault();
     try{
-      await api(`/api/challenges/${c.id}`,{method:'PATCH',body:JSON.stringify({name:$('#ecName').value.trim(),description:$('#ecDescription').innerHTML,start_date:$('#ecStart').value,end_date:$('#ecEnd').value,metric:$('#ecMetric').value,distance_unit:$('#ecUnit').value,participation:$('#ecParticipation').value})});
+      const payload={name:$('#ecName').value.trim(),description:$('#ecDescription').innerHTML,start_date:$('#ecStart').value,end_date:$('#ecEnd').value,metric:$('#ecMetric').value,distance_unit:$('#ecUnit').value,participation:$('#ecParticipation').value};
+      if(routePicker&&routePicker.changed()){payload.journey=routePicker.value();if(!payload.journey)throw Error('Choose a start and a finish for the journey.')}
+      await api(`/api/challenges/${c.id}`,{method:'PATCH',body:JSON.stringify(payload)});
       $('#modal').close();
       await after();
     }catch(x){$('#ecMsg').textContent=x.message}
@@ -509,6 +532,124 @@ async function openShortcutSetup(){
   };
 }
 $('#shortcutSetup').onclick=openShortcutSetup;
+
+// --- Virtual journeys: the route picker (create and edit) and the journey map --------------------
+const MODE_LABEL={foot:'on foot',cycling:'cycling'},SHAPE_LABEL={roads:'by road',straight:'as the crow flies'};
+// Journey lengths read better whole: 412 miles, about 870,000 steps.
+const fmtLen=n=>Number(n)>=100?Math.round(n).toLocaleString():fmtNum(n),fmtSteps=n=>(Math.round(n/1000)*1000).toLocaleString();
+const fmtJourney=j=>`${j.from.name} → ${j.to.name} · ${j.unit==='steps'?`${fmtSteps(j.target)} steps`:`${fmtLen(j.target)} ${j.unit==='km'?'km':'miles'}`} ${SHAPE_LABEL[j.shape]} · ${MODE_LABEL[j.mode]}`;
+const journeyProgress=(c,r)=>c.kind!=='journey'||r.progress==null?'':r.finished_on?`<span class="pct" title="Finished on ${esc(r.finished_on)}">🏁</span>`:`<span class="pct">${Math.round(r.progress*100)}%</span>`;
+// The start is a ring and the finish a chequered flag, so neither looks like someone's photo.
+const flagIcon=(L,which)=>which==='start'?L.divIcon({className:'jm-icon',html:'<div class="jm-start" title="Start"></div>',iconSize:[18,18],iconAnchor:[9,9]})
+  :L.divIcon({className:'jm-icon',html:'<div class="jm-flag">🏁</div>',iconSize:[24,24],iconAnchor:[6,22]});
+const osmTiles=L=>L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; OpenStreetMap contributors'});
+// Start and finish come from a place search or a tap on the map (pins can be dragged); the route and
+// its length are previewed as they change. Returns {show, value, mode, changed, reset}.
+function journeyPicker(root,initial,onChange=()=>{}){
+  const st={from:initial?.from||null,to:initial?.to||null,shape:initial?.shape||'roads',mode:initial?.mode||'foot'};
+  const start=JSON.stringify([st.from,st.to,st.shape,st.mode]);
+  let L=null,map=null,line=null,pins={},timer=null,ask=0;
+  root.innerHTML=`<div class="two"><label>Getting there<select data-jmode><option value="foot">On foot: walking and running</option><option value="cycling">Cycling only</option></select></label><label>Route<select data-jshape><option value="roads">Along roads and paths</option><option value="straight">Straight line</option></select></label></div>
+    <div class="two">${['from','to'].map(k=>`<div><label>${k==='from'?'Start':'Finish'}<span class="with-unit"><input data-jq="${k}" placeholder="Search for a place" autocomplete="off"><button type="button" class="secondary" data-jfind="${k}">Find</button></span></label><div class="jp-results" data-jres="${k}"></div></div>`).join('')}</div>
+    <p class="muted">Or tap the map: the first tap sets the start, the next the finish. Drag a marker to move it, and edit a name to rename the place.</p>
+    <div class="jp-map"></div><p class="jp-summary" data-jsummary>Choose a start and a finish.</p>`;
+  const q=sel=>root.querySelector(sel);
+  q('[data-jmode]').value=st.mode;q('[data-jshape]').value=st.shape;
+  for(const k of ['from','to'])if(st[k])q(`[data-jq="${k}"]`).value=st[k].name;
+  const say=(text,isError)=>{q('[data-jsummary]').textContent=text;q('[data-jsummary]').classList.toggle('error',!!isError)};
+  const drawPin=k=>{
+    if(!map||!st[k])return;
+    if(pins[k]){pins[k].setLatLng([st[k].lat,st[k].lon]);return}
+    pins[k]=L.marker([st[k].lat,st[k].lon],{draggable:true,icon:flagIcon(L,k==='from'?'start':'finish')}).addTo(map)
+      .on('dragend',e=>{const ll=e.target.getLatLng();setPoint(k,ll.lat,ll.lng)});
+  };
+  async function setPoint(k,lat,lon,name){
+    st[k]={name:name||'',lat:+lat.toFixed(6),lon:+lon.toFixed(6)};
+    drawPin(k);
+    const input=q(`[data-jq="${k}"]`);
+    if(!name){
+      input.value='Finding the place name…';
+      try{const r=await api(`/api/places/reverse?lat=${lat}&lon=${lon}`);st[k].name=r.name||''}catch(e){}
+      if(!st[k].name)st[k].name=`${lat.toFixed(3)}, ${lon.toFixed(3)}`;
+    }
+    input.value=st[k].name;
+    preview();
+  }
+  function preview(){
+    clearTimeout(timer);onChange();
+    if(!st.from||!st.to){say('Choose a start and a finish.');return}
+    say('Planning the route…');
+    timer=setTimeout(async()=>{
+      const my=++ask;
+      try{
+        const r=await api('/api/journeys/preview',{method:'POST',body:JSON.stringify({journey:value()})});
+        if(my!==ask)return;
+        if(map){if(line)line.remove();line=L.polyline(r.points,{color:'#d40511',weight:4}).addTo(map);map.fitBounds(line.getBounds(),{padding:[24,24]})}
+        say(`${st.from.name} → ${st.to.name}: ${fmtLen(r.miles)} miles (${fmtLen(r.km)} km) ${SHAPE_LABEL[st.shape]}, about ${fmtSteps(r.steps)} steps`);
+      }catch(e){if(my===ask){if(line){line.remove();line=null}say(e.message,true)}}
+    },350);
+  }
+  async function find(k){
+    const text=q(`[data-jq="${k}"]`).value.trim(),out=q(`[data-jres="${k}"]`);
+    if(text.length<2)return;
+    out.innerHTML='<span class="muted">Searching…</span>';
+    try{
+      const {places}=await api(`/api/places?q=${encodeURIComponent(text)}`);
+      out.innerHTML=places.map((p,i)=>`<button type="button" data-i="${i}">${esc(p.detail)}</button>`).join('')||'<span class="muted">Nothing found - try another name, or tap the map.</span>';
+      out.querySelectorAll('button').forEach(b=>b.onclick=()=>{const p=places[Number(b.dataset.i)];out.innerHTML='';setPoint(k,p.lat,p.lon,p.name);if(map)map.setView([p.lat,p.lon],Math.max(map.getZoom(),9))});
+    }catch(e){out.innerHTML=`<span class="error">${esc(e.message)}</span>`}
+  }
+  for(const k of ['from','to']){
+    q(`[data-jfind="${k}"]`).onclick=()=>find(k);
+    q(`[data-jq="${k}"]`).addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();find(k)}});
+    // Once a place is chosen, the box renames it ("Greater London" -> "London") without moving it.
+    q(`[data-jq="${k}"]`).addEventListener('change',e=>{const v=e.target.value.trim();if(st[k]&&v&&!q(`[data-jres="${k}"]`).children.length){st[k].name=v.slice(0,120);preview()}});
+  }
+  q('[data-jmode]').onchange=e=>{st.mode=e.target.value;preview()};
+  q('[data-jshape]').onchange=e=>{st.shape=e.target.value;preview()};
+  const value=()=>st.from&&st.to?{from:st.from,to:st.to,shape:st.shape,mode:st.mode}:null;
+  return {
+    async show(){
+      if(map){map.invalidateSize();return}
+      try{L=await loadLeaflet()}catch(e){say(e.message,true);return}
+      map=L.map(q('.jp-map')).setView([54.5,-3],5);osmTiles(L).addTo(map);
+      map.on('click',e=>setPoint(st.from?'to':'from',e.latlng.lat,e.latlng.lng));
+      drawPin('from');drawPin('to');
+      if(st.from&&st.to)preview();
+    },
+    value,mode:()=>st.mode,
+    changed:()=>JSON.stringify([st.from,st.to,st.shape,st.mode])!==start,
+    reset(){st.from=st.to=null;for(const k of ['from','to']){if(pins[k])pins[k].remove();q(`[data-jq="${k}"]`).value='';q(`[data-jres="${k}"]`).innerHTML=''}pins={};if(line){line.remove();line=null}say('Choose a start and a finish.')},
+  };
+}
+// The journey map on a challenge page: the route, start and finish flags, and each team's logo or
+// person's photo at their virtual position. Pins sharing a spot fan out round it.
+let journeyMap=null;
+async function renderJourneyMap(c){
+  const el=$('#journeyMap');
+  try{
+    const [L,j]=await Promise.all([loadLeaflet(),api(`/api/challenges/${c.id}/journey`)]);
+    if(!curChallenge||curChallenge.id!==c.id)return;
+    if(journeyMap){journeyMap.remove();journeyMap=null}
+    el.innerHTML='';
+    journeyMap=L.map(el,{scrollWheelZoom:false});osmTiles(L).addTo(journeyMap);
+    const line=L.polyline(j.route,{color:'#d40511',weight:4,opacity:.85}).addTo(journeyMap);
+    L.marker([j.journey.from.lat,j.journey.from.lon],{icon:flagIcon(L,'start')}).addTo(journeyMap).bindTooltip(`Start: ${esc(j.journey.from.name)}`);
+    L.marker([j.journey.to.lat,j.journey.to.lon],{icon:flagIcon(L,'finish')}).addTo(journeyMap).bindTooltip(`Finish: ${esc(j.journey.to.name)}`);
+    const groups={};
+    for(const mk of j.markers)(groups[`${mk.lat.toFixed(3)},${mk.lon.toFixed(3)}`]??=[]).push(mk);
+    for(const g of Object.values(groups))g.forEach((mk,i)=>{
+      const r=g.length>1?20+g.length*2:0,a=2*Math.PI*i/g.length,dx=Math.round(r*Math.cos(a)),dy=Math.round(r*Math.sin(a));
+      const face=mk.image_url?`<img src="${esc(mk.image_url)}" alt="">`:esc((mk.name||'?')[0].toUpperCase());
+      L.marker([mk.lat,mk.lon],{icon:L.divIcon({className:'jm-icon',html:`<div class="jm-pin${mk.finished_on?' done':''}">${face}</div>`,iconSize:[38,38],iconAnchor:[19-dx,19-dy],popupAnchor:[dx,dy-18]}),zIndexOffset:Math.round(mk.progress*1000),title:mk.name})
+        .addTo(journeyMap)
+        .bindPopup(`<b>${esc(mk.name)}</b><br>${esc(fmtTotal(c,0,mk.distance,mk.steps))} · ${Math.round(mk.progress*100)}%${mk.finished_on?`<br>🏁 Finished on ${esc(mk.finished_on)}`:''}`);
+    });
+    journeyMap.fitBounds(line.getBounds(),{padding:[30,30]});
+    const done=j.markers.filter(m=>m.finished_on).length;
+    $('#journeyMeta').textContent=`${done} of ${j.markers.length} ${j.by==='team'?'teams':'people'} finished`;
+  }catch(e){el.innerHTML=`<p class="error">${esc(e.message)}</p>`}
+}
 
 // --- Administration (global admins) ---------------------------------------------------------
 let challengeBack='home',adminTab='users',adminUsers=[],adminChallenges=[];
@@ -743,13 +884,33 @@ $('#joinForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/join',{
 const newChallengeRte=document.querySelector('#newChallengeForm [data-rte]');
 initRichTextEditor(newChallengeRte);
 const syncNewChallengeMeasure=wireMeasureFields($('#newChallengeForm'));
-$('#newChallengeForm').onsubmit=async e=>{
+// A journey measures distance or steps (a cycling journey, distance), and shows the route picker.
+const newChallengeForm=$('#newChallengeForm');
+const newJourney=journeyPicker(newChallengeForm.querySelector('[data-journeypicker]'),null,()=>syncNewChallengeKind());
+function syncNewChallengeKind(){
+  const journey=newChallengeForm.kind.value==='journey',metric=newChallengeForm.querySelector('[data-metric]'),cycling=journey&&newJourney.mode()==='cycling';
+  newChallengeForm.querySelector('[data-journeywrap]').classList.toggle('hidden',!journey);
+  metric.querySelector('option[value="minutes"]').disabled=journey;
+  metric.querySelector('option[value="steps"]').disabled=cycling;
+  if((journey&&metric.value==='minutes')||(cycling&&metric.value==='steps'))metric.value='distance';
+  syncNewChallengeMeasure();
+  if(journey)newJourney.show();
+}
+newChallengeForm.querySelector('[data-kind]').addEventListener('change',syncNewChallengeKind);
+newChallengeForm.onsubmit=async e=>{
   e.preventDefault();
+  $('#newChallengeMsg').textContent='';
   const fields=Object.fromEntries(new FormData(e.target));
   fields.description=newChallengeRte.querySelector('.rte-editor').innerHTML;
-  const created=await api('/api/challenges',{method:'POST',body:JSON.stringify(fields)});
+  if(fields.kind==='journey'){
+    fields.journey=newJourney.value();
+    if(!fields.journey){$('#newChallengeMsg').textContent='Choose a start and a finish for the journey.';return}
+  }
+  let created;
+  try{created=await api('/api/challenges',{method:'POST',body:JSON.stringify(fields)})}catch(err){$('#newChallengeMsg').textContent=err.message;return}
   e.target.reset();
-  syncNewChallengeMeasure();
+  newJourney.reset();
+  syncNewChallengeKind();
   newChallengeRte.querySelector('.rte-editor').innerHTML='';
   await loadDashboard();
   challengeBack='home';

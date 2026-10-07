@@ -1,4 +1,18 @@
 import SwiftUI
+import MapKit
+
+/// "London → Edinburgh · 412 miles by road · on foot", as on the website.
+func journeyLine(_ j: Journey) -> String {
+    let length = j.unit == "steps" ? "\(fmtSteps(Double((j.target / 1000).rounded() * 1000))) steps"
+        : "\(fmtNum(j.target >= 100 ? j.target.rounded() : j.target)) \(j.unit == "km" ? "km" : "miles")"
+    return "\(j.fromName) → \(j.toName) · \(length) \(j.shape == "straight" ? "as the crow flies" : "by road") · \(j.cycling ? "cycling" : "on foot")"
+}
+/// A journey leaderboard's extra: how far along the route, or a chequered flag once finished.
+private func progressText(_ s: Standing) -> String {
+    if s.finishedOn != nil { return " 🏁" }
+    if let p = s.progress { return " · \(Int((p * 100).rounded()))%" }
+    return ""
+}
 
 private func myTotal(_ c: Challenge) -> String { fmtMeasure(c.measure, minutes: c.myMinutes, distance: c.myDistance, steps: c.mySteps, unit: c.distanceUnit) }
 private func measureIcon(_ m: Measure) -> String { switch m { case .steps: "shoeprints.fill"; case .distance: "ruler"; case .minutes: "timer" } }
@@ -46,7 +60,7 @@ private struct ChallengeCard: View {
                 Image(systemName: "chevron.right").foregroundStyle(.secondary)
             }
             HStack(spacing: 6) {
-                Pill(text: measureLabel(c.measure, unit: c.distanceUnit), background: Color(.tertiarySystemFill), foreground: .primary)
+                Pill(text: (c.journey != nil ? "Journey · " : "") + measureLabel(c.measure, unit: c.distanceUnit), background: Color(.tertiarySystemFill), foreground: .primary)
                 Pill(text: c.individual ? "Individual" : c.myTeams.first?.name ?? "No team yet", background: Color(.tertiarySystemFill), foreground: .primary)
                 Pill(text: stateLabel(c.startDate, c.endDate), background: c.isActive ? Color.brandYellow.opacity(0.35) : Color(.tertiarySystemFill), foreground: .primary)
             }
@@ -79,9 +93,13 @@ struct ChallengeDetailView: View {
                 HeroStat(value: c.measuresSteps ? fmtSteps(c.mySteps) : c.measuresDistance ? fmtNum(c.myDistance) : fmtNum(c.myMinutes),
                          label: c.measuresSteps ? "my steps" : c.measuresDistance ? "my \(unitLong(c.distanceUnit))" : "my minutes")
             }, below: {
-                Text([measureLabel(c.measure, unit: c.distanceUnit), c.individual ? "Individuals" : c.myTeams.map(\.name).joined(separator: ", "), "Role: \(c.role)"]
-                    .filter { !$0.isEmpty }.joined(separator: " · ")).font(.subheadline).foregroundStyle(.white.opacity(0.9))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text([measureLabel(c.measure, unit: c.distanceUnit), c.individual ? "Individuals" : c.myTeams.map(\.name).joined(separator: ", "), "Role: \(c.role)"]
+                        .filter { !$0.isEmpty }.joined(separator: " · ")).font(.subheadline).foregroundStyle(.white.opacity(0.9))
+                    if let j = c.journey { Text("🗺 " + journeyLine(j)).font(.subheadline.weight(.semibold)).foregroundStyle(.white) }
+                }
             })
+            if c.journey != nil { JourneyCard(challenge: c) }
             if !c.descriptionHTML.isEmpty { SectionCard("About") { Text(htmlToText(c.descriptionHTML)).font(.body) } }
             if let d = detail {
                 SectionCard(title: "Invite people", action: {
@@ -115,7 +133,7 @@ struct ChallengeDetailView: View {
                                 Avatar(url: s.imageURL, name: s.name)
                                 Text(s.name).font(.headline).foregroundStyle(.primary)
                                 Spacer()
-                                Text(fmtMeasure(c.measure, minutes: s.minutes, distance: s.distance, steps: s.steps, unit: c.distanceUnit)).font(.headline).foregroundStyle(.primary)
+                                Text(fmtMeasure(c.measure, minutes: s.minutes, distance: s.distance, steps: s.steps, unit: c.distanceUnit) + progressText(s)).font(.headline).foregroundStyle(.primary)
                                 if s.userId != nil { Image(systemName: "chevron.right").foregroundStyle(.secondary) }
                             }.padding(.vertical, 4)
                         }.buttonStyle(.plain).disabled(s.userId == nil)
@@ -216,6 +234,9 @@ private struct ChallengeForm: View {
                 }
                 DatePicker("Starts", selection: $start, displayedComponents: .date)
                 DatePicker("Ends", selection: $end, in: start..., displayedComponents: .date)
+            }
+            if existing == nil {
+                Section { Text("Virtual journeys (a route on a map, like London to Edinburgh) are set up on the website, then show here with their map.").font(.caption).foregroundStyle(.secondary) }
             }
             Section("How it works") {
                 Picker("Measure", selection: $measure) { ForEach(Measure.allCases) { Text($0.label).tag($0) } }
@@ -388,5 +409,79 @@ struct UpdateBanner: View {
             .padding(16).frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.brandYellow.opacity(0.3), in: RoundedRectangle(cornerRadius: 20))
         }
+    }
+}
+
+/// A virtual journey: the route, a ring at the start and a chequered flag at the finish, and each team's logo or
+/// person's photo at their virtual position. Pins sharing a spot fan out; tap one to see how they're doing.
+struct JourneyCard: View {
+    @Environment(AppModel.self) private var model
+    let challenge: Challenge
+    @State private var map: JourneyMap?
+    @State private var selected: Int?
+
+    var body: some View {
+        SectionCard("Journey map") {
+            if let m = map {
+                Text("\(m.markers.filter { $0.finishedOn != nil }.count) of \(m.markers.count) finished").font(.caption).foregroundStyle(.secondary)
+                let offsets = fanOut(m.markers)
+                Map(initialPosition: .automatic) {
+                    MapPolyline(coordinates: m.route.map { CLLocationCoordinate2D(latitude: $0[0], longitude: $0[1]) }).stroke(Color.brandRed, lineWidth: 4)
+                    Annotation("Start: \(m.journey.fromName)", coordinate: CLLocationCoordinate2D(latitude: m.journey.fromLat, longitude: m.journey.fromLon)) {
+                        Circle().fill(.white).frame(width: 12, height: 12).overlay(Circle().stroke(.black, lineWidth: 4)).shadow(radius: 1)
+                    }
+                    Annotation("Finish: \(m.journey.toName)", coordinate: CLLocationCoordinate2D(latitude: m.journey.toLat, longitude: m.journey.toLon), anchor: .bottomLeading) {
+                        Text("🏁").font(.title2)
+                    }
+                    ForEach(m.markers) { mk in
+                        Annotation(mk.name, coordinate: CLLocationCoordinate2D(latitude: mk.lat, longitude: mk.lon)) {
+                            Avatar(url: mk.imageURL, name: mk.name, size: 36)
+                                .overlay(Circle().stroke(mk.finishedOn != nil ? Color.brandYellow : .white, lineWidth: 3))
+                                .shadow(radius: 2)
+                                .offset(offsets[mk.id] ?? .zero)
+                                .onTapGesture { selected = mk.id }
+                        }
+                    }
+                }
+                .mapStyle(.standard(pointsOfInterest: .excludingAll))
+                .annotationTitles(.hidden)
+                .frame(height: 300).clipShape(RoundedRectangle(cornerRadius: 12))
+                if let s = m.markers.first(where: { $0.id == selected }) {
+                    HStack {
+                        Avatar(url: s.imageURL, name: s.name)
+                        VStack(alignment: .leading) {
+                            Text(s.name).font(.headline)
+                            Text(describe(s)).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    Text("Tap a photo to see how they're doing.").font(.caption).foregroundStyle(.secondary)
+                }
+                Text(m.journey.cycling ? "A cycling journey: only rides count. Positions are virtual, never anyone's real location."
+                     : "A journey on foot: rides don't count. Positions are virtual, never anyone's real location.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ProgressView().frame(maxWidth: .infinity)
+            }
+        }
+        // Reloaded whenever the challenge's figures change (pull to refresh, a new entry).
+        .task(id: challenge) { if let m = await model.call({ try await $0.journey(challenge.id) }) { map = m } }
+    }
+
+    private func describe(_ s: JourneyMarker) -> String {
+        let total = challenge.measuresSteps ? "\(fmtSteps(s.steps)) steps" : "\(fmtNum(s.distance)) \(challenge.distanceUnit == "km" ? "km" : "mi")"
+        return "\(total) · \(Int((s.progress * 100).rounded()))%" + (s.finishedOn.map { " · finished \($0)" } ?? "")
+    }
+
+    /// Markers at the same spot (everyone on day one) spread round it in a ring.
+    private func fanOut(_ markers: [JourneyMarker]) -> [Int: CGSize] {
+        var out: [Int: CGSize] = [:]
+        for group in Dictionary(grouping: markers, by: { String(format: "%.3f,%.3f", $0.lat, $0.lon) }).values where group.count > 1 {
+            let r = 20.0 + Double(group.count) * 2
+            for (i, mk) in group.enumerated() {
+                let a = 2 * Double.pi * Double(i) / Double(group.count)
+                out[mk.id] = CGSize(width: r * cos(a), height: r * sin(a))
+            }
+        }
+        return out
     }
 }

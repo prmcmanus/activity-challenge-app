@@ -39,6 +39,27 @@ data class Profile(val id: Int, val name: String, val avatarUrl: String?, val bi
 
 data class MyTeam(val id: Int, val name: String)
 
+/** A virtual journey: teams or people travel a route on a map by what they log. target is the route length
+ *  in the challenge's unit ("mi", "km") or, in a steps journey, in steps. mode is foot or cycling. */
+data class Journey(val mode: String, val shape: String, val fromName: String, val toName: String, val fromLat: Double, val fromLon: Double,
+    val toLat: Double, val toLon: Double, val target: Double, val unit: String) {
+    val cycling: Boolean get() = mode == "cycling"
+}
+/** Someone (or a team) at their virtual position along a journey's route. */
+data class JourneyMarker(val id: Int, val name: String, val imageUrl: String?, val distance: Double, val steps: Double, val progress: Double,
+    val lat: Double, val lon: Double, val finishedOn: String?)
+data class JourneyMap(val journey: Journey, val byTeam: Boolean, val route: List<RoutePoint>, val markers: List<JourneyMarker>)
+
+private val CYCLING = Regex("cycl|bik(e|ing)|\\bride\\b|spin", RegexOption.IGNORE_CASE)
+/** The same test the server uses: a cycling journey takes only rides, an on-foot one everything else. */
+fun isCyclingType(type: String) = CYCLING.containsMatchIn(type)
+
+internal fun parseJourney(o: JSONObject?): Journey? = o?.let { j ->
+    val f = j.getJSONObject("from"); val t = j.getJSONObject("to")
+    Journey(j.optString("mode", "foot"), j.optString("shape", "roads"), f.optString("name"), t.optString("name"),
+        f.getDouble("lat"), f.getDouble("lon"), t.getDouble("lat"), t.getDouble("lon"), j.optDouble("target", 0.0), j.optString("unit"))
+}
+
 /** A challenge I belong to, as the dashboard reports it. */
 data class Challenge(
     val id: Int,
@@ -56,8 +77,11 @@ data class Challenge(
     /** A step challenge: one entry per day, counted in steps. */
     val measuresSteps: Boolean = false,
     val mySteps: Double = 0.0,
+    val journey: Journey? = null,
 ) {
     fun contains(day: LocalDate) = !day.isBefore(startDate) && !day.isAfter(endDate)
+    /** Whether an activity of this type counts here: journeys are either rides only or everything but rides. */
+    fun accepts(type: String) = journey?.let { if (it.cycling) isCyclingType(type) else !isCyclingType(type) } ?: true
     /** Where my activity goes in this challenge: no team if individuals-only, else my (first) team. Null if I have no team yet. */
     val target: Target? get() = if (individual) Target(id, null) else myTeams.firstOrNull()?.let { Target(id, it.id) }
     val isActive: Boolean get() = !LocalDate.now().isAfter(endDate)
@@ -74,11 +98,12 @@ data class ChallengeDetail(
     val measuresDistance: Boolean, val distanceUnit: String, val individual: Boolean, val role: String,
     val canManage: Boolean, val inviteCode: String, val teams: List<TeamInfo>,
     val measuresSteps: Boolean = false,
+    val journey: Journey? = null,
 )
 
 /** A challenge record as a [Challenge], for opening one I'm not in (a global admin): no team of mine, nothing logged by me. */
 fun ChallengeDetail.asChallenge() = Challenge(id, name, descriptionHtml, startDate, endDate, measuresDistance, distanceUnit, individual, role,
-    teams.filter { it.mine }.map { MyTeam(it.id, it.name) }, 0.0, 0.0, measuresSteps)
+    teams.filter { it.mine }.map { MyTeam(it.id, it.name) }, 0.0, 0.0, measuresSteps, journey = journey)
 
 /** What an invite link is for. member/inTeam are only known when signed in. */
 data class InvitePreview(val code: String, val isTeam: Boolean, val challengeId: Int, val challengeName: String, val startDate: LocalDate, val endDate: LocalDate,
@@ -118,8 +143,10 @@ data class ChallengeFields(val name: String, val description: String?, val start
     val measuresDistance: Boolean, val distanceUnit: String, val individual: Boolean, val measuresSteps: Boolean = false)
 
 /** A leaderboard row; userId is set for people (tap to see their profile), null for teams. */
-data class Standing(val name: String, val minutes: Double, val distance: Double, val imageUrl: String?, val userId: Int? = null, val steps: Double = 0.0)
-data class Leaderboard(val teams: List<Standing>, val users: List<Standing>)
+data class Standing(val name: String, val minutes: Double, val distance: Double, val imageUrl: String?, val userId: Int? = null, val steps: Double = 0.0,
+    /** Journeys only: the share of the route covered (0..1), and the day they reached the finish. */
+    val progress: Double? = null, val finishedOn: String? = null)
+data class Leaderboard(val teams: List<Standing>, val users: List<Standing>, val journey: Journey? = null)
 
 data class MyActivity(
     val id: Int,
@@ -203,6 +230,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
                 myDistance = c.optDouble("myDistance", 0.0),
                 measuresSteps = c.optString("metric") == "steps",
                 mySteps = c.optDouble("mySteps", 0.0),
+                journey = parseJourney(c.optJSONObject("journey")),
             )
         }
     }
@@ -221,7 +249,20 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
                 TeamInfo(t.getInt("id"), t.getString("name"), str(t, "image_url"), t.optInt("members"), t.optBoolean("mine"), t.optBoolean("canManage"), str(t, "invite_code"))
             } },
             measuresSteps = c.optString("metric") == "steps",
+            journey = parseJourney(c.optJSONObject("journey")),
         )
+    }
+
+    /** The journey map: the route line and where each team (or person) has got to along it. */
+    fun journey(challengeId: Int): JourneyMap {
+        val r = request("/api/challenges/$challengeId/journey")
+        val route = r.getJSONArray("route").let { a -> (0 until a.length()).map { i -> a.getJSONArray(i).let { p -> RoutePoint(p.getDouble(0), p.getDouble(1)) } } }
+        val markers = r.getJSONArray("markers").let { a -> (0 until a.length()).map { i -> a.getJSONObject(i).let { m ->
+            JourneyMarker(m.getInt("id"), m.getString("name"), if (m.isNull("image_url")) null else m.optString("image_url").takeIf { it.isNotBlank() },
+                m.optDouble("distance", 0.0), m.optDouble("steps", 0.0), m.optDouble("progress", 0.0), m.getDouble("lat"), m.getDouble("lon"),
+                if (m.isNull("finished_on")) null else m.optString("finished_on").takeIf { it.isNotBlank() })
+        } } }
+        return JourneyMap(parseJourney(r.getJSONObject("journey"))!!, r.optString("by") == "team", route, markers)
     }
 
     private fun challengeBody(f: ChallengeFields) = JSONObject()
@@ -314,9 +355,11 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
             val x = a.getJSONObject(i)
             Standing(x.getString("name"), x.optDouble("minutes", 0.0), x.optDouble("distance", 0.0),
                 (x.optString("image_url").ifBlank { x.optString("avatar_url") }).takeIf { it.isNotBlank() && it != "null" },
-                if (people) x.optInt("id") else null, x.optDouble("steps", 0.0))
+                if (people) x.optInt("id") else null, x.optDouble("steps", 0.0),
+                if (x.has("progress") && !x.isNull("progress")) x.getDouble("progress") else null,
+                if (x.has("finished_on") && !x.isNull("finished_on")) x.optString("finished_on") else null)
         }
-        return Leaderboard(list(r.getJSONArray("teams"), false), list(r.getJSONArray("users"), true))
+        return Leaderboard(list(r.getJSONArray("teams"), false), list(r.getJSONArray("users"), true), parseJourney(r.optJSONObject("journey")))
     }
 
     fun profile(userId: Int): Profile {

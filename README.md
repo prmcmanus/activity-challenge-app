@@ -54,8 +54,13 @@ A dependency-free Node.js MVP for time-based team activity challenges.
 - SQLite persistence, password hashing, HTTP-only sessions and duplicate-safe health imports
 - Native Android (Health Connect) and iOS (HealthKit) companion apps that sync workout minutes and distance in.
   Fitbit, Garmin and other watches come through the phone's health store (see public/sync.html)
+- Virtual journeys: a challenge whose teams or people travel a route on a map (say London to Edinburgh),
+  picked by place search or by tapping the map, along roads (OSRM foot/bike routing) or as a straight
+  line. Measured in miles, km or steps (an average 0.762 m stride); on foot (rides don't count) or
+  cycling (only rides count). Leaderboards add progress and finishing days; a journey map shows each
+  team's logo or person's photo at their virtual position, on the web and in both apps
 - Apple Shortcuts sync for iPhone with no app install: a personal sync key (stored hashed) lets a
-  shortcut POST a day's steps, exercise minutes and distance to `/api/shortcut/day`; resending a day
+  shortcut POST a day's steps, exercise minutes, walking distance and cycling distance to `/api/shortcut/day`; resending a day
   updates it. Step-by-step setup: https://activetogether.team/sync.html#shortcuts
 - Optional reCAPTCHA on registration/sign-in, plus per-IP rate limiting everywhere, against bots
 

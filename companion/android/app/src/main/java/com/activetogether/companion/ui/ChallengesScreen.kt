@@ -66,7 +66,9 @@ import java.time.LocalDate
 /** "London → Edinburgh · 412 miles by road · on foot", as on the website. */
 fun journeyLine(j: com.activetogether.companion.Journey): String {
     val length = if (j.unit == "steps") "${fmtSteps(Math.round(j.target / 1000.0) * 1000)} steps" else "${fmtNum(if (j.target >= 100) Math.round(j.target).toDouble() else j.target)} ${if (j.unit == "km") "km" else "miles"}"
-    return "${j.fromName} → ${j.toName} · $length ${if (j.shape == "straight") "as the crow flies" else "by road"} · ${if (j.cycling) "cycling" else "on foot"}"
+    val places = if (j.via.size <= 2) (listOf(j.fromName) + j.via.map { it.name } + j.toName).joinToString(" → ")
+        else "${j.fromName} → ${j.toName} (via ${j.via.size} stops)"
+    return "$places · $length ${if (j.shape == "straight") "as the crow flies" else "by road"} · ${if (j.cycling) "cycling" else "on foot"}"
 }
 /** A journey leaderboard's extra: how far along the route, or a chequered flag once finished. */
 private fun progressText(s: com.activetogether.companion.Standing) = when {
@@ -176,7 +178,9 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                 if (m == null) Loading(Modifier.padding(8.dp))
                 else JourneyMapView(m, describe = { mk ->
                     val total = if (c.measuresSteps) "${fmtSteps(mk.steps)} steps" else "${fmtNum(mk.distance)} ${if (c.distanceUnit == "km") "km" else "mi"}"
-                    "$total · ${Math.round(mk.progress * 100)}%" + (mk.finishedOn?.let { " · finished $it" } ?: "")
+                    val unitWord = if (c.measuresSteps) "steps" else if (c.distanceUnit == "km") "km" else "mi"
+                    "$total · ${Math.round(mk.progress * 100)}%" + (mk.finishedOn?.let { " · finished $it" }
+                        ?: mk.nextName?.let { n -> " · next: $n, ${mk.nextRemaining?.let { r -> if (r >= 10) Math.round(r).toString() else fmtNum(r) } ?: ""} $unitWord to go" } ?: "")
                 }, modifier = Modifier.fillMaxWidth().height(320.dp))
                 Text(if (c.journey.cycling) "A cycling journey: only rides count. Positions are virtual, never anyone's real location."
                     else "A journey on foot: rides don't count. Positions are virtual, never anyone's real location.",

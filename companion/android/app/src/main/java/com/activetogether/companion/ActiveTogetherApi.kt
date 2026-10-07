@@ -42,12 +42,14 @@ data class MyTeam(val id: Int, val name: String)
 /** A virtual journey: teams or people travel a route on a map by what they log. target is the route length
  *  in the challenge's unit ("mi", "km") or, in a steps journey, in steps. mode is foot or cycling. */
 data class Journey(val mode: String, val shape: String, val fromName: String, val toName: String, val fromLat: Double, val fromLon: Double,
-    val toLat: Double, val toLon: Double, val target: Double, val unit: String) {
+    val toLat: Double, val toLon: Double, val target: Double, val unit: String, val via: List<JourneyStop> = emptyList()) {
     val cycling: Boolean get() = mode == "cycling"
 }
-/** Someone (or a team) at their virtual position along a journey's route. */
+/** A stop on the way, and how far along the route it is (in the journey's unit). */
+data class JourneyStop(val name: String, val lat: Double, val lon: Double, val at: Double)
+/** Someone (or a team) at their virtual position along a journey's route, and the next place they'll reach. */
 data class JourneyMarker(val id: Int, val name: String, val imageUrl: String?, val distance: Double, val steps: Double, val progress: Double,
-    val lat: Double, val lon: Double, val finishedOn: String?)
+    val lat: Double, val lon: Double, val finishedOn: String?, val nextName: String? = null, val nextRemaining: Double? = null)
 data class JourneyMap(val journey: Journey, val byTeam: Boolean, val route: List<RoutePoint>, val markers: List<JourneyMarker>)
 
 private val CYCLING = Regex("cycl|bik(e|ing)|\\bride\\b|spin", RegexOption.IGNORE_CASE)
@@ -57,7 +59,8 @@ fun isCyclingType(type: String) = CYCLING.containsMatchIn(type)
 internal fun parseJourney(o: JSONObject?): Journey? = o?.let { j ->
     val f = j.getJSONObject("from"); val t = j.getJSONObject("to")
     Journey(j.optString("mode", "foot"), j.optString("shape", "roads"), f.optString("name"), t.optString("name"),
-        f.getDouble("lat"), f.getDouble("lon"), t.getDouble("lat"), t.getDouble("lon"), j.optDouble("target", 0.0), j.optString("unit"))
+        f.getDouble("lat"), f.getDouble("lon"), t.getDouble("lat"), t.getDouble("lon"), j.optDouble("target", 0.0), j.optString("unit"),
+        j.optJSONArray("via")?.let { a -> (0 until a.length()).map { i -> a.getJSONObject(i).let { v -> JourneyStop(v.optString("name"), v.getDouble("lat"), v.getDouble("lon"), v.optDouble("at", 0.0)) } } }.orEmpty())
 }
 
 /** A challenge I belong to, as the dashboard reports it. */
@@ -260,7 +263,8 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         val markers = r.getJSONArray("markers").let { a -> (0 until a.length()).map { i -> a.getJSONObject(i).let { m ->
             JourneyMarker(m.getInt("id"), m.getString("name"), if (m.isNull("image_url")) null else m.optString("image_url").takeIf { it.isNotBlank() },
                 m.optDouble("distance", 0.0), m.optDouble("steps", 0.0), m.optDouble("progress", 0.0), m.getDouble("lat"), m.getDouble("lon"),
-                if (m.isNull("finished_on")) null else m.optString("finished_on").takeIf { it.isNotBlank() })
+                if (m.isNull("finished_on")) null else m.optString("finished_on").takeIf { it.isNotBlank() },
+                m.optJSONObject("next")?.optString("name"), m.optJSONObject("next")?.optDouble("remaining"))
         } } }
         return JourneyMap(parseJourney(r.getJSONObject("journey"))!!, r.optString("by") == "team", route, markers)
     }

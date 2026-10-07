@@ -153,6 +153,22 @@ fun JourneyMapView(journey: com.activetogether.companion.JourneyMap, describe: (
             icon = android.graphics.drawable.BitmapDrawable(context.resources, flag)
             setAnchor(0.2f, 0.95f)
         })
+        // Stops on the way: numbered dark dots.
+        j.via.forEachIndexed { i, s ->
+            val size = (22 * density).toInt()
+            val dot = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+            android.graphics.Canvas(dot).apply {
+                val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+                p.color = AColor.WHITE; drawCircle(size / 2f, size / 2f, size / 2f, p)
+                p.color = AColor.rgb(0x17, 0x17, 0x17); drawCircle(size / 2f, size / 2f, size / 2f - 2 * density, p)
+                p.color = AColor.WHITE; p.textSize = size * 0.55f; p.textAlign = android.graphics.Paint.Align.CENTER; p.isFakeBoldText = true
+                drawText("${i + 1}", size / 2f, size / 2f - (p.descent() + p.ascent()) / 2, p)
+            }
+            view.overlays.add(Marker(view).apply {
+                position = GeoPoint(s.lat, s.lon); title = "Stop ${i + 1}: ${s.name}"
+                icon = android.graphics.drawable.BitmapDrawable(context.resources, dot); setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+            })
+        }
         val face = (40 * density).toInt()
         journey.markers.groupBy { "%.3f,%.3f".format(it.lat, it.lon) }.values.forEach { group ->
             group.forEachIndexed { i, m ->

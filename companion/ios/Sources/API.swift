@@ -72,15 +72,22 @@ struct MyTeam: Hashable { let id: Int; let name: String }
 /// challenge's unit ("mi", "km") or, in a steps journey, in steps. mode is foot or cycling.
 struct Journey: Hashable {
     let mode: String, shape: String, fromName: String, toName: String, fromLat: Double, fromLon: Double, toLat: Double, toLon: Double, target: Double, unit: String
+    /// Stops on the way, in order, with how far along the route each is (in the journey's unit).
+    let via: [JourneyStop]
     var cycling: Bool { mode == "cycling" }
     init?(_ j: J?) {
         guard let j, let f = j.obj("from"), let t = j.obj("to") else { return nil }
         mode = j.str("mode") ?? "foot"; shape = j.str("shape") ?? "roads"; fromName = f.string("name"); toName = t.string("name")
         fromLat = f.double("lat"); fromLon = f.double("lon"); toLat = t.double("lat"); toLon = t.double("lon"); target = j.double("target"); unit = j.string("unit")
+        via = j.arr("via").map { JourneyStop(name: $0.string("name"), lat: $0.double("lat"), lon: $0.double("lon"), at: $0.double("at")) }
     }
 }
-/// Someone (or a team) at their virtual position along a journey's route.
-struct JourneyMarker: Identifiable, Hashable { let id: Int, name: String, imageURL: String?, distance: Double, steps: Double, progress: Double, lat: Double, lon: Double, finishedOn: String? }
+struct JourneyStop: Hashable { let name: String, lat: Double, lon: Double, at: Double }
+/// Someone (or a team) at their virtual position along a journey's route, and the next place they'll reach.
+struct JourneyMarker: Identifiable, Hashable {
+    let id: Int, name: String, imageURL: String?, distance: Double, steps: Double, progress: Double, lat: Double, lon: Double, finishedOn: String?
+    var nextName: String? = nil, nextRemaining: Double? = nil
+}
 struct JourneyMap { let journey: Journey; let byTeam: Bool; let route: [[Double]]; let markers: [JourneyMarker] }
 /// The same test the server uses: a cycling journey takes only rides, an on-foot one everything else.
 func isCyclingType(_ type: String) -> Bool { type.range(of: "cycl|bik(e|ing)|\\bride\\b|spin", options: [.regularExpression, .caseInsensitive]) != nil }
@@ -247,7 +254,8 @@ final class API: @unchecked Sendable {
         let route = (r.o["route"] as? [[Any]] ?? []).compactMap { p -> [Double]? in
             guard p.count >= 2, let a = (p[0] as? NSNumber)?.doubleValue, let b = (p[1] as? NSNumber)?.doubleValue else { return nil }; return [a, b] }
         let markers = r.arr("markers").map { m in JourneyMarker(id: m.int("id"), name: m.string("name"), imageURL: m.str("image_url"), distance: m.double("distance"),
-                                                               steps: m.double("steps"), progress: m.double("progress"), lat: m.double("lat"), lon: m.double("lon"), finishedOn: m.str("finished_on")) }
+                                                               steps: m.double("steps"), progress: m.double("progress"), lat: m.double("lat"), lon: m.double("lon"), finishedOn: m.str("finished_on"),
+                                                               nextName: m.obj("next")?.str("name"), nextRemaining: m.obj("next").map { $0.double("remaining") }) }
         guard let j = Journey(r.obj("journey")) else { throw APIError(status: 0, message: "This challenge is not a journey") }
         return JourneyMap(journey: j, byTeam: r.str("by") == "team", route: route, markers: markers)
     }

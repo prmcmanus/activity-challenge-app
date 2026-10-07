@@ -2338,3 +2338,62 @@ test('Apple Shortcuts sync: walking and cycling distance are kept apart, and eac
   assert.equal(of(bike).activity_type, 'Cycling');
   assert.equal(of(any).distance, 19, 'both in an ordinary distance challenge');
 });
+
+test('journeys: optional stops on the way bend the route, and each person sees their next stop', async () => {
+  const YORK = { name: 'York', lat: 53.959, lon: -1.0815 };
+  const viv = await register('Viv Via');
+  const c = await jsonFetch(`${origin}/api/challenges`, viv.cookie, 'POST', {
+    name: 'Via York', start_date: '2027-06-01', end_date: '2027-08-31', metric: 'distance', distance_unit: 'km', participation: 'individual',
+    kind: 'journey', journey: { from: LONDON, to: EDINBURGH, via: [YORK], shape: 'straight', mode: 'foot' },
+  });
+  assert.equal(c.status, 201, JSON.stringify(c.body));
+  const info = (await jsonFetch(`${origin}/api/challenges/${c.body.id}`, viv.cookie)).body.journey;
+  assert.equal(info.via.length, 1);
+  assert.equal(info.via[0].name, 'York');
+  const dash = (await jsonFetch(`${origin}/api/dashboard`, viv.cookie)).body.challenges.find(x => x.id === c.body.id);
+  assert.deepEqual(dash.journey.via.map(v => v.name), ['York'], 'the apps read journeys from the dashboard');
+  assert.ok(info.via[0].at > 270 && info.via[0].at < 290, `London to York is about 280 km, got ${info.via[0].at}`);
+  assert.ok(info.target > 535 && info.target < 560, `via York is a little longer than the 534 km direct, got ${info.target}`);
+
+  await jsonFetch(`${origin}/api/activities`, viv.cookie, 'POST', { challenge_id: c.body.id, activity_type: 'Walk', distance: 100, distance_unit: 'km', activity_date: '2027-06-02' });
+  const map = (await jsonFetch(`${origin}/api/challenges/${c.body.id}/journey`, viv.cookie)).body;
+  const me = map.markers[0];
+  assert.equal(me.next.name, 'York');
+  assert.equal(me.next.finish, false);
+  assert.ok(Math.abs(me.next.remaining - (info.via[0].at - 100)) < 1);
+  // Past York, the next place is the finish.
+  await jsonFetch(`${origin}/api/activities`, viv.cookie, 'POST', { challenge_id: c.body.id, activity_type: 'Walk', distance: 200, distance_unit: 'km', activity_date: '2027-06-03' });
+  const later = (await jsonFetch(`${origin}/api/challenges/${c.body.id}/journey`, viv.cookie)).body.markers[0];
+  assert.equal(later.next.name, 'Edinburgh');
+  assert.equal(later.next.finish, true);
+  assert.ok(later.lat > YORK.lat - 0.3, 'past York on the map');
+
+  const tooMany = Array.from({ length: 11 }, (_, i) => ({ name: `S${i}`, lat: 52 + i * 0.1, lon: -1 }));
+  assert.equal((await jsonFetch(`${origin}/api/challenges`, viv.cookie, 'POST', { name: 'X', start_date: '2027-06-01', end_date: '2027-06-30', metric: 'distance',
+    kind: 'journey', journey: { from: LONDON, to: EDINBURGH, via: tooMany, shape: 'straight' } })).status, 400);
+});
+
+test('journeys: a road route through stops asks the planner for every point in order and uses its legs', async () => {
+  const http = require('node:http');
+  let lastPath = '';
+  const stub = http.createServer((req, res) => {
+    lastPath = req.url;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ code: 'Ok', routes: [{ distance: 700000, legs: [{ distance: 300000 }, { distance: 400000 }],
+      geometry: { type: 'LineString', coordinates: [[-0.1276, 51.5072], [-1.0815, 53.959], [-3.1883, 55.9533]] } }] }));
+  });
+  await new Promise(r => stub.listen(0, '127.0.0.1', r));
+  const srv = await spawnServer({ ROUTING_BASE: `http://127.0.0.1:${stub.address().port}` });
+  try {
+    const reg = await fetch(`${srv.origin}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Rory Road', email: 'rory@example.com', password: 'SuperSecret123!' }) });
+    const cookie = reg.headers.get('set-cookie').split(';')[0];
+    const pv = await jsonFetch(`${srv.origin}/api/journeys/preview`, cookie, 'POST', { journey: { from: LONDON, to: EDINBURGH, via: [{ name: 'York', lat: 53.959, lon: -1.0815 }], shape: 'roads' } });
+    assert.equal(pv.status, 200);
+    assert.match(lastPath, /\/routed-foot\/route\/v1\/driving\/-0\.1276,51\.5072;-1\.0815,53\.959;-3\.1883,55\.9533\?/);
+    assert.equal(pv.body.km, 700);
+    assert.deepEqual(pv.body.stops.map(s => [s.name, s.km]), [['York', 300]]);
+  } finally {
+    await srv.stop();
+    stub.close();
+  }
+});

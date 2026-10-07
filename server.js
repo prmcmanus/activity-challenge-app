@@ -48,6 +48,8 @@ ensureColumn('challenges','route_from','TEXT');
 ensureColumn('challenges','route_to','TEXT');
 ensureColumn('challenges','route','TEXT');
 ensureColumn('challenges','route_m','REAL');
+// Optional stops on the way, in order: [{name,lat,lon,at_m}], at_m being how far along the route each is.
+ensureColumn('challenges','route_via','TEXT');
 // What the Apple Shortcut has sent for each day, kept per figure so that sending one figure (say,
 // cycling distance) never wipes another; the day's challenge entries are worked out from this.
 db.exec(`CREATE TABLE IF NOT EXISTS shortcut_days(user_id INTEGER NOT NULL,day TEXT NOT NULL,steps INTEGER,minutes INTEGER,walk_m REAL,cycle_m REAL,
@@ -455,11 +457,11 @@ function requireMeasure(challenge,minutes,distance_m,steps,activityType){
 function updateUserFields(id,{name,email,passwordHash,avatarUrl}){const sets=[],params=[];if(name!==undefined){sets.push('name=?');params.push(name)}if(email!==undefined){sets.push('email=?');params.push(email)}if(passwordHash!==undefined){sets.push('password_hash=?');params.push(passwordHash)}if(avatarUrl!==undefined){sets.push('avatar_url=?');params.push(avatarUrl)}if(!sets.length)return false;params.push(id);db.prepare(`UPDATE users SET ${sets.join(',')} WHERE id=?`).run(...params);return true}
 
 function dashboard(uid){
-  const challenges=db.prepare(`SELECT c.id,c.name,c.description,c.start_date,c.end_date,c.active,c.invite_code,c.metric,c.distance_unit,c.participation,c.kind,c.journey_mode,c.route_shape,c.route_from,c.route_to,c.route_m,cm.challenge_role FROM challenges c JOIN challenge_members cm ON cm.challenge_id=c.id WHERE cm.user_id=? ORDER BY c.start_date DESC`).all(uid);
+  const challenges=db.prepare(`SELECT c.id,c.name,c.description,c.start_date,c.end_date,c.active,c.invite_code,c.metric,c.distance_unit,c.participation,c.kind,c.journey_mode,c.route_shape,c.route_from,c.route_to,c.route_via,c.route_m,cm.challenge_role FROM challenges c JOIN challenge_members cm ON cm.challenge_id=c.id WHERE cm.user_id=? ORDER BY c.start_date DESC`).all(uid);
   for(const c of challenges){
     c.role=c.challenge_role; delete c.challenge_role;
     c.kind=isJourney(c)?'journey':'standard';c.journey=journeyInfo(c);
-    for(const k of ['journey_mode','route_shape','route_from','route_to','route_m'])delete c[k];
+    for(const k of ['journey_mode','route_shape','route_from','route_to','route_via','route_m'])delete c[k];
     c.teams=db.prepare(`SELECT t.id,t.name,t.invite_code,tm.team_role,(SELECT COUNT(*) FROM team_members z WHERE z.team_id=t.id) members FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=? AND t.challenge_id=? ORDER BY t.name`).all(uid,c.id);
     const tot=db.prepare('SELECT COALESCE(SUM(minutes),0) m,COALESCE(SUM(distance_m),0) d,COALESCE(SUM(steps),0) s FROM activities WHERE user_id=? AND challenge_id=?').get(uid,c.id);
     c.myMinutes=tot.m;c.mySteps=tot.s;
@@ -541,32 +543,49 @@ function parsePlace(p,label){
   if(!Number.isFinite(lat)||!Number.isFinite(lon)||Math.abs(lat)>90||Math.abs(lon)>180)throw new Error(`Choose the ${label} on the map`);
   return {name:name||`${lat.toFixed(4)}, ${lon.toFixed(4)}`,lat:+lat.toFixed(6),lon:+lon.toFixed(6)};
 }
+const MAX_STOPS=10;
 function parseJourney(b){
   const j=b.journey||{};
   const from=parsePlace(j.from,'start'),to=parsePlace(j.to,'finish');
+  const rawVia=Array.isArray(j.via)?j.via:[];
+  if(rawVia.length>MAX_STOPS)throw new Error(`A journey can have up to ${MAX_STOPS} stops on the way`);
+  const via=rawVia.map((p,i)=>parsePlace(p,`stop ${i+1}`));
   const shape=j.shape==='straight'?'straight':'roads',mode=j.mode==='cycling'?'cycling':'foot';
-  return {from,to,shape,mode};
+  return {from,to,via,shape,mode};
 }
 const routeCache=new Map();
 // The route between two places: by road (walking or cycling directions from the public OSRM servers
 // run by FOSSGIS) or as the crow flies. Cached for an hour, so previewing then creating asks once.
-async function buildRoute({from,to,shape,mode}){
-  const key=JSON.stringify([from.lat,from.lon,to.lat,to.lon,shape,mode]);
+async function buildRoute({from,to,via=[],shape,mode}){
+  const places=[from,...via,to];
+  const key=JSON.stringify([places.map(p=>[p.lat,p.lon]),shape,mode]);
   const hit=routeCache.get(key);if(hit&&hit.at>Date.now()-36e5)return hit.route;
-  let points,length;
-  if(shape==='straight'){points=greatCircle([from.lat,from.lon],[to.lat,to.lon]);length=haversineM([from.lat,from.lon],[to.lat,to.lon])}
-  else{
-    const url=`${ROUTING_BASE}/routed-${mode==='cycling'?'bike':'foot'}/route/v1/driving/${from.lon},${from.lat};${to.lon},${to.lat}?overview=full&geometries=geojson`;
+  let points,legs;
+  if(shape==='straight'){
+    // One great-circle arc per leg, joined end to end.
+    points=[];legs=[];
+    for(let i=1;i<places.length;i++){
+      const a=[places[i-1].lat,places[i-1].lon],b=[places[i].lat,places[i].lon];
+      points.push(...greatCircle(a,b,places.length>2?32:64).slice(i>1?1:0));
+      legs.push(haversineM(a,b));
+    }
+  }else{
+    const coords=places.map(p=>`${p.lon},${p.lat}`).join(';');
+    const url=`${ROUTING_BASE}/routed-${mode==='cycling'?'bike':'foot'}/route/v1/driving/${coords}?overview=full&geometries=geojson`;
     let j;
     try{const r=await fetch(url,{headers:{'User-Agent':OUTBOUND_UA},signal:AbortSignal.timeout(30000)});j=await r.json()}
     catch(e){throw new Error("Couldn't reach the route planner just now - try again, or choose a straight line")}
     if(j.code!=='Ok'||!j.routes||!j.routes.length)throw new Error('No route found between those places - try a straight line instead');
     points=simplifyLine(j.routes[0].geometry.coordinates.map(([lon,lat])=>[+lat.toFixed(5),+lon.toFixed(5)]));
-    length=j.routes[0].distance;
+    legs=(j.routes[0].legs||[]).map(l=>l.distance);
+    if(legs.length!==places.length-1)legs=[j.routes[0].distance];
   }
+  const length=legs.reduce((a,b)=>a+b,0);
   if(!(length>=100))throw new Error('Those places are too close together - choose a finish further away');
   if(length>40075e3)throw new Error('That route is longer than the way round the world');
-  const route={points,length_m:Math.round(length)};
+  // How far along the route each stop on the way is.
+  let run=0;const stops=via.map((p,i)=>({...p,at_m:Math.round(run+=legs[i]||0)}));
+  const route={points,length_m:Math.round(length),stops};
   routeCache.set(key,{at:Date.now(),route});
   return route;
 }
@@ -591,8 +610,8 @@ function checkJourneyMeasure(metric,mode){
   if(mode==='cycling'&&metric!=='distance')throw new Error('A cycling journey measures distance, in miles or km');
 }
 function saveJourney(id,j,route){
-  db.prepare("UPDATE challenges SET kind='journey',journey_mode=?,route_shape=?,route_from=?,route_to=?,route=?,route_m=? WHERE id=?")
-    .run(j.mode,j.shape,JSON.stringify(j.from),JSON.stringify(j.to),JSON.stringify(route.points),route.length_m,id);
+  db.prepare("UPDATE challenges SET kind='journey',journey_mode=?,route_shape=?,route_from=?,route_to=?,route_via=?,route=?,route_m=? WHERE id=?")
+    .run(j.mode,j.shape,JSON.stringify(j.from),JSON.stringify(j.to),JSON.stringify(route.stops||[]),JSON.stringify(route.points),route.length_m,id);
 }
 // The challenge record as the API shows it: the route line itself only comes from /journey.
 const publicChallenge=c=>({id:c.id,name:c.name,description:c.description,start_date:c.start_date,end_date:c.end_date,active:c.active,invite_code:c.invite_code,
@@ -614,9 +633,20 @@ function geocoderFetch(pathAndQuery){
 function journeyInfo(c){
   if(!isJourney(c))return null;
   const steps=challengeMetric(c)==='steps',length=c.route_m||0;
+  // Lengths in what the challenge counts: its distance unit, or steps at an average stride.
+  const inUnit=m=>steps?Math.round(m/STRIDE_M):metersToUnit(m,challengeUnit(c));
   return {mode:c.journey_mode==='cycling'?'cycling':'foot',shape:c.route_shape==='straight'?'straight':'roads',
-    from:JSON.parse(c.route_from||'null'),to:JSON.parse(c.route_to||'null'),length_m:length,
-    target:steps?Math.round(length/STRIDE_M):metersToUnit(length,challengeUnit(c)),unit:steps?'steps':challengeUnit(c)};
+    from:JSON.parse(c.route_from||'null'),to:JSON.parse(c.route_to||'null'),
+    via:JSON.parse(c.route_via||'[]').map(({at_m,...p})=>({...p,at_m,at:inUnit(at_m)})),length_m:length,
+    target:inUnit(length),unit:steps?'steps':challengeUnit(c)};
+}
+// The next place someone reaches - a stop on the way, or the finish - and how far off it is, in the
+// challenge's unit. Null once they've finished.
+function nextStop(info,coveredMeters){
+  if(coveredMeters>=info.length_m)return null;
+  const s=info.via.find(v=>v.at_m>coveredMeters),at=s?s.at_m:info.length_m,steps=info.unit==='steps';
+  const left=at-coveredMeters;
+  return {name:s?s.name:info.to.name,finish:!s,remaining:steps?Math.round(left/STRIDE_M):metersToUnit(left,info.unit)};
 }
 // Progress, virtual position and finishing day for each team (team challenges) or person. A finish
 // day is the day their running total first reached the end of the route.
@@ -629,7 +659,7 @@ function journeyStandings(c){
   for(const r of days){running[r.who]=(running[r.who]||0)+coveredM(c,r);if(!finished[r.who]&&running[r.who]>=info.length_m)finished[r.who]=r.d}
   const shape=(rows,raw)=>rows.map(r=>{
     const m=coveredM(c,raw.find(x=>x.id===r.id)||{}),progress=info.length_m?Math.min(1,m/info.length_m):0,[lat,lon]=pointAlong(points,progress);
-    return {...r,progress:Math.round(progress*10000)/10000,lat,lon,finished_on:finished[r.id]||null};
+    return {...r,progress:Math.round(progress*10000)/10000,lat,lon,finished_on:finished[r.id]||null,next:nextStop(info,m)};
   });
   const rawTeams=db.prepare('SELECT t.id,COALESCE(SUM(a.distance_m),0) distance_m,COALESCE(SUM(a.steps),0) steps FROM teams t LEFT JOIN activities a ON a.team_id=t.id WHERE t.challenge_id=? GROUP BY t.id').all(c.id);
   const rawUsers=db.prepare('SELECT cm.user_id id,COALESCE(SUM(a.distance_m),0) distance_m,COALESCE(SUM(a.steps),0) steps FROM challenge_members cm LEFT JOIN activities a ON a.user_id=cm.user_id AND a.challenge_id=cm.challenge_id WHERE cm.challenge_id=? GROUP BY cm.user_id').all(c.id);
@@ -816,7 +846,7 @@ async function api(req,res,url){
    if(!js)return send(res,404,{error:'This challenge is not a journey'});
    const rows=isIndividual(c)?js.users:js.teams;
    return send(res,200,{journey:js.info,route:js.points,by:isIndividual(c)?'person':'team',
-     markers:rows.map(r=>({id:r.id,name:r.name,image_url:r.image_url||r.avatar_url||null,distance:r.distance,steps:r.steps,progress:r.progress,lat:r.lat,lon:r.lon,finished_on:r.finished_on}))});
+     markers:rows.map(r=>({id:r.id,name:r.name,image_url:r.image_url||r.avatar_url||null,distance:r.distance,steps:r.steps,progress:r.progress,lat:r.lat,lon:r.lon,finished_on:r.finished_on,next:r.next}))});
  }
  // For the journey picker: find places by name, name a tapped point, and preview a route's length.
  if(m==='GET'&&url.pathname==='/api/places'){
@@ -843,7 +873,8 @@ async function api(req,res,url){
    const b=await body(req);
    try{
      const j=parseJourney(b),route=await buildRoute(j);
-     return send(res,200,{length_m:route.length_m,miles:metersToUnit(route.length_m,'mi'),km:metersToUnit(route.length_m,'km'),steps:Math.round(route.length_m/STRIDE_M),points:route.points});
+     return send(res,200,{length_m:route.length_m,miles:metersToUnit(route.length_m,'mi'),km:metersToUnit(route.length_m,'km'),steps:Math.round(route.length_m/STRIDE_M),points:route.points,
+       stops:route.stops.map(s=>({name:s.name,lat:s.lat,lon:s.lon,miles:metersToUnit(s.at_m,'mi'),km:metersToUnit(s.at_m,'km')}))});
    }catch(e){return send(res,400,{error:e.message})}
  }
 

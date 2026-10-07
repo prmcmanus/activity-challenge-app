@@ -5,7 +5,9 @@ import MapKit
 func journeyLine(_ j: Journey) -> String {
     let length = j.unit == "steps" ? "\(fmtSteps(Double((j.target / 1000).rounded() * 1000))) steps"
         : "\(fmtNum(j.target >= 100 ? j.target.rounded() : j.target)) \(j.unit == "km" ? "km" : "miles")"
-    return "\(j.fromName) → \(j.toName) · \(length) \(j.shape == "straight" ? "as the crow flies" : "by road") · \(j.cycling ? "cycling" : "on foot")"
+    let places = j.via.count <= 2 ? ([j.fromName] + j.via.map(\.name) + [j.toName]).joined(separator: " → ")
+        : "\(j.fromName) → \(j.toName) (via \(j.via.count) stops)"
+    return "\(places) · \(length) \(j.shape == "straight" ? "as the crow flies" : "by road") · \(j.cycling ? "cycling" : "on foot")"
 }
 /// A journey leaderboard's extra: how far along the route, or a chequered flag once finished.
 private func progressText(_ s: Standing) -> String {
@@ -430,6 +432,12 @@ struct JourneyCard: View {
                     Annotation("Start: \(m.journey.fromName)", coordinate: CLLocationCoordinate2D(latitude: m.journey.fromLat, longitude: m.journey.fromLon)) {
                         Circle().fill(.white).frame(width: 12, height: 12).overlay(Circle().stroke(.black, lineWidth: 4)).shadow(radius: 1)
                     }
+                    ForEach(Array(m.journey.via.enumerated()), id: \.offset) { i, s in
+                        Annotation("Stop \(i + 1): \(s.name)", coordinate: CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)) {
+                            Text("\(i + 1)").font(.caption2.bold()).foregroundStyle(.white).frame(width: 20, height: 20)
+                                .background(Circle().fill(.black)).overlay(Circle().stroke(.white, lineWidth: 2))
+                        }
+                    }
                     Annotation("Finish: \(m.journey.toName)", coordinate: CLLocationCoordinate2D(latitude: m.journey.toLat, longitude: m.journey.toLon), anchor: .bottomLeading) {
                         Text("🏁").font(.title2)
                     }
@@ -469,7 +477,9 @@ struct JourneyCard: View {
 
     private func describe(_ s: JourneyMarker) -> String {
         let total = challenge.measuresSteps ? "\(fmtSteps(s.steps)) steps" : "\(fmtNum(s.distance)) \(challenge.distanceUnit == "km" ? "km" : "mi")"
-        return "\(total) · \(Int((s.progress * 100).rounded()))%" + (s.finishedOn.map { " · finished \($0)" } ?? "")
+        let unitWord = challenge.measuresSteps ? "steps" : challenge.distanceUnit == "km" ? "km" : "mi"
+        let next = s.nextName.map { n in " · next: \(n), \(s.nextRemaining.map { $0 >= 10 ? "\(Int($0.rounded()))" : fmtNum($0) } ?? "") \(unitWord) to go" } ?? ""
+        return "\(total) · \(Int((s.progress * 100).rounded()))%" + (s.finishedOn.map { " · finished \($0)" } ?? next)
     }
 
     /// Markers at the same spot (everyone on day one) spread round it in a ring.

@@ -2413,3 +2413,34 @@ test('journeys: a road route through stops asks the planner for every point in o
     stub.close();
   }
 });
+
+test('invite only: a global admin can require an invite to create an account; codes and emailed invites both count', async () => {
+  const login = await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }) });
+  const admin = login.headers.get('set-cookie').split(';')[0];
+  const owner = await register('Ida Inviter');
+  const c = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Invite only test', start_date: '2027-09-01', end_date: '2027-09-30' });
+  const t = await jsonFetch(`${origin}/api/teams`, owner.cookie, 'POST', { challenge_id: c.body.id, name: 'Invited' });
+  const emailed = await jsonFetch(`${origin}/api/teams/${t.body.id}/invite`, owner.cookie, 'POST', { email: 'emailed@example.com' });
+  const token = new URL(emailed.body.inviteUrl).searchParams.get('invite');
+  const signUp = (email, extra = {}) => fetch(`${origin}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New Person', email, password: 'SuperSecret123!', ...extra }) })
+    .then(async r => ({ status: r.status, body: await r.json() }));
+
+  assert.equal((await jsonFetch(`${origin}/api/admin/settings`, owner.cookie, 'PATCH', { inviteOnly: true })).status, 403, 'only global admins');
+  assert.equal((await jsonFetch(`${origin}/api/config`)).body.inviteOnly, false);
+  try {
+    assert.equal((await jsonFetch(`${origin}/api/admin/settings`, admin, 'PATCH', { inviteOnly: true })).body.inviteOnly, true);
+    assert.equal((await jsonFetch(`${origin}/api/config`)).body.inviteOnly, true);
+    const none = await signUp('no.invite@example.com');
+    assert.equal(none.status, 403);
+    assert.equal(none.body.inviteRequired, true);
+    assert.equal((await signUp('bad.code@example.com', { invite_code: 'NOPE1234' })).status, 403);
+    assert.equal((await signUp('challenge.code@example.com', { invite_code: c.body.invite_code.toLowerCase() })).status, 201, 'a challenge code, any case');
+    assert.equal((await signUp('team.code@example.com', { invite_code: t.body.invite_code })).status, 201, 'a team code');
+    assert.equal((await signUp('emailed@example.com', { invite_token: token })).status, 201, 'an emailed invite');
+    // Signing in is unaffected.
+    assert.equal((await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: owner.email, password: 'SuperSecret123!' }) })).status, 200);
+  } finally {
+    await jsonFetch(`${origin}/api/admin/settings`, admin, 'PATCH', { inviteOnly: false });
+  }
+  assert.equal((await signUp('open.again@example.com')).status, 201, 'open again once switched off');
+});

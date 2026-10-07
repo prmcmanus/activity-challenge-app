@@ -3,7 +3,7 @@
 <main>
 <section class="card policy">
 <h1>Privacy Policy</h1>
-<p class="muted">Last updated 2026-10-06.</p>
+<p class="muted">Last updated 2026-10-07.</p>
 
 <p>Active Together is a small, self-hosted app for running team activity challenges. This page explains what data it holds, who can see it, and how long it keeps it. It's written in plain language rather than legal boilerplate, because that's a better match for what this app actually is: a tool a small group of people use together, not a commercial product.</p>
 
@@ -33,6 +33,7 @@
 <p>A global admin (the person who runs this server) can access account records for user administration — creating accounts, resetting passwords, and similar housekeeping.</p>
 
 <h2>Third parties</h2>
+<p>Cloudflare carries the site's traffic (its network sits between your browser or app and our server) and stores our backups (see <a href="#backups">Backups</a>). It processes that data on our behalf and doesn't use it for anything else.</p>
 <p>Maps are drawn with tiles from OpenStreetMap, which your browser or app fetches directly. When someone sets up a virtual journey, the place names they search for and the start and finish points are sent from our server to OpenStreetMap's place search (Nominatim) and route planner (FOSSGIS); nothing about who is asking is included. On a journey map, everyone's position is a virtual one worked out from their total, never their real location.</p>
 <p>If reCAPTCHA is enabled on this deployment, Google receives your IP address and browser information when you register or sign in, in order to distinguish humans from bots. No other activity or account data is shared with Google or anyone else. This app sends no analytics or tracking data to any third party.</p>
 
@@ -43,8 +44,18 @@
 <p>Your account itself is not deleted when a challenge is purged — only the challenge-specific data is. Your account, and any other challenges you belong to, are unaffected.</p>
 <p>Images you've uploaded (avatars, team logos, description images) are not automatically cleaned up when a challenge is purged — this is a known gap, not a promise that they're removed. If you want an uploaded image removed, ask the server administrator.</p>
 
+<h2 id="backups">Backups</h2>
+<p>So that the site can be restored if a server fails, or moved to our standby server, we keep backup copies:</p>
+<ul>
+<li><b>What:</b> the whole database (accounts, challenges, teams, activity entries, routes, follows, support tickets and settings), and uploaded images.</li>
+<li><b>Where:</b> in Cloudflare's R2 storage, encrypted when stored, and on our own servers. Only the person running this site can get at them.</li>
+<li><b>How long:</b> the database backup holds the last 7 days of changes. Copies we take on our server before each update, copies set aside when the site moves between servers, and older backup sets are deleted automatically after 30 days.</li>
+<li><b>What for:</b> only to get the site running again after a failure or a move. We don't use them to look up or recover individual entries.</li>
+</ul>
+<p>This means that when something is deleted (an entry, a challenge, or your account), it disappears from the site straight away but can remain in backups for up to 30 days, after which it's gone for good.</p>
+
 <h2 id="delete-account">Account deletion</h2>
-<p>You can delete your account yourself at any time: on the website under <b>My account</b>, or in the Android or iPhone app under <b>Me</b>, then <b>Edit</b>. It needs your password, and it immediately and permanently deletes your account, everything you've logged, your routes, your follows and your support tickets. A challenge you own on your own passes to its longest-standing member, or is deleted if nobody else is in it. If you can't sign in any more, ask the person administering this server and they'll delete it for you.</p>
+<p>You can delete your account yourself at any time: on the website under <b>My account</b>, or in the Android or iPhone app under <b>Me</b>, then <b>Edit</b>. It needs your password, and it immediately and permanently deletes your account, everything you've logged, your routes, your follows and your support tickets (copies in our <a href="#backups">backups</a> are gone within 30 days). A challenge you own on your own passes to its longest-standing member, or is deleted if nobody else is in it. If you can't sign in any more, ask the person administering this server and they'll delete it for you.</p>
 
 <h2>Security</h2>
 <p>Passwords are hashed (never stored in plain text), sessions are HTTP-only cookies, and rich-text challenge descriptions are filtered server-side to strip anything that could run as code. This is a small, self-hosted app run in good faith, not an audited enterprise product — treat it accordingly and don't put anything genuinely sensitive into it.</p>

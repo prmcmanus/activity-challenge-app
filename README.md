@@ -61,8 +61,13 @@ A dependency-free Node.js MVP for time-based team activity challenges.
   team's logo or person's photo at their virtual position, on the web and in both apps
 - Apple Shortcuts sync for iPhone with no app install: a personal sync key (stored hashed) lets a
   shortcut POST a day's steps, exercise minutes, walking distance and cycling distance to `/api/shortcut/day`; resending a day
-  updates it. Step-by-step setup: https://activetogether.team/sync.html#shortcuts
+  updates it. Setup for users: /sync.html; building the shared shortcut: /shortcut-build.html
 - Optional reCAPTCHA on registration/sign-in, plus per-IP rate limiting everywhere, against bots
+- Invite only (optional, for global admins on the Admin page): new accounts then need a challenge or
+  team invite code, or an emailed invite. Invite links pass the code along automatically, including
+  the apps' "Create an account" links
+- Backups: Litestream keeps 7 days of database history in R2; a daily job (tools/standby/prune.sh)
+  deletes pre-update copies, switch-over leftovers and old backup sets after 30 days
 
 ## How the data model fits together
 

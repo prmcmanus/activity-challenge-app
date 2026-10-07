@@ -92,7 +92,7 @@ else if(pendingInviteToken)history.replaceState({},'',location.pathname);
 // reCAPTCHA is optional: /api/config only returns a site key once the server has one
 // configured, so a deployment with no Google keys set just skips rendering the widget and the
 // server-side check becomes a no-op too.
-let recaptchaSiteKey=null, recaptchaWidgetId=null;
+let recaptchaSiteKey=null, recaptchaWidgetId=null, siteInviteOnly=false;
 function renderRecaptchaIfReady(){
   const el=document.getElementById('recaptcha-auth');
   if(!el||!recaptchaSiteKey||!window.grecaptcha||!grecaptcha.render)return;
@@ -102,7 +102,9 @@ function renderRecaptchaIfReady(){
 function getRecaptchaToken(){return (recaptchaSiteKey&&window.grecaptcha&&recaptchaWidgetId!==null)?grecaptcha.getResponse(recaptchaWidgetId):''}
 function resetRecaptcha(){if(recaptchaSiteKey&&window.grecaptcha&&recaptchaWidgetId!==null)grecaptcha.reset(recaptchaWidgetId)}
 async function initRecaptcha(){
-  try{const cfg=await api('/api/config');recaptchaSiteKey=cfg.recaptchaSiteKey||null}catch(e){recaptchaSiteKey=null}
+  try{const cfg=await api('/api/config');recaptchaSiteKey=cfg.recaptchaSiteKey||null;siteInviteOnly=!!cfg.inviteOnly}catch(e){recaptchaSiteKey=null}
+  // The sign-up form depends on whether the site is invite only, which is only known now.
+  if(!me&&authTab==='register'&&!$('#authSection').classList.contains('hidden'))renderAuth();
   if(!recaptchaSiteKey)return;
   window.onRecaptchaLoad=renderRecaptchaIfReady;
   const s=document.createElement('script');
@@ -129,8 +131,14 @@ function renderAuth(){
     $('#authPanel').innerHTML=`<h1>Welcome back</h1><p>Sign in to log activity and support your team.</p><form id="loginForm"><label>Email<input id="email" type="email" required></label><label>Password<input id="password" type="password" required></label><div id="recaptcha-auth"></div><button>Sign in</button></form><p id="authMsg" class="error"></p>`;
     $('#loginForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{method:'POST',body:JSON.stringify({email:$('#email').value,password:$('#password').value,recaptchaToken:getRecaptchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;resetRecaptcha()}};
   }else{
-    $('#authPanel').innerHTML=`<h1>Create your account</h1><p>Then create a challenge or join one with an invite code.</p><form id="registerForm"><label>Name<input id="rname" required></label><label>Email<input id="remail" type="email" required></label><label>Password<input id="rpassword" type="password" required minlength="8"></label><div id="recaptcha-auth"></div><button>Create account</button></form><p class="muted">By creating an account you agree to our <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</p><p id="authMsg" class="error"></p>`;
-    $('#registerForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/register',{method:'POST',body:JSON.stringify({name:$('#rname').value,email:$('#remail').value,password:$('#rpassword').value,recaptchaToken:getRecaptchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;resetRecaptcha()}};
+    // An invite link (/join/CODE) or emailed invite (?invite=) is passed along automatically; on an invite-only
+    // site without one, the form asks for the code.
+    const linkCode=inviteCodeFromPath(),invited=!!(linkCode||pendingInviteToken);
+    const inviteBit=!siteInviteOnly?'':invited?'<p class="muted">You have an invite, so you can create an account.</p>'
+      :'<label>Invite code<input id="rinvite" required autocomplete="off" placeholder="From the invite someone sent you" style="text-transform:uppercase"></label><p class="muted">Active Together is invite only: you need the invite link or code someone sent you.</p>';
+    $('#authPanel').innerHTML=`<h1>Create your account</h1><p>Then create a challenge or join one with an invite code.</p><form id="registerForm"><label>Name<input id="rname" required></label><label>Email<input id="remail" type="email" required></label><label>Password<input id="rpassword" type="password" required minlength="8"></label>${inviteBit}<div id="recaptcha-auth"></div><button>Create account</button></form><p class="muted">By creating an account you agree to our <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</p><p id="authMsg" class="error"></p>`;
+    $('#registerForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/register',{method:'POST',body:JSON.stringify({name:$('#rname').value,email:$('#remail').value,password:$('#rpassword').value,
+      invite_code:linkCode||($('#rinvite')?$('#rinvite').value.trim():undefined),invite_token:pendingInviteToken||undefined,recaptchaToken:getRecaptchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;resetRecaptcha()}};
   }
   renderRecaptchaIfReady();
 }
@@ -152,17 +160,16 @@ function renderHome(){
 async function loadIosCard(){
   try{
     const a=await api('/api/app/ios');
-    $('#iosCard').classList.toggle('hidden',!a.available);
-    if(a.available)$('#iosMeta').textContent=`Version ${a.version} · ${(a.size/1048576).toFixed(1)} MB`;
-  }catch(e){$('#iosCard').classList.add('hidden')}
+    $('#iosAppLine').classList.toggle('hidden',!a.available);
+  }catch(e){$('#iosAppLine').classList.add('hidden')}
 }
 // Offer the Android app once it's published; shown on phones and computers alike (people often download on one and install on the other).
 async function loadAndroidCard(){
   try{
     const a=await api('/api/app/android');
-    $('#androidCard').classList.toggle('hidden',!a.available);
-    if(a.available)$('#androidMeta').textContent=`Version ${a.version} · ${(a.size/1048576).toFixed(1)} MB`;
-  }catch(e){$('#androidCard').classList.add('hidden')}
+    $('#androidDownload').classList.toggle('hidden',!a.available);
+    $('#androidMeta').textContent=a.available?`Version ${a.version}.`:'Coming soon.';
+  }catch(e){$('#androidDownload').classList.add('hidden')}
 }
 
 async function openChallenge(id){
@@ -498,15 +505,15 @@ async function openShortcutSetup(){
   try{[st,cfg]=await Promise.all([api('/api/me/sync-key'),api('/api/config')])}catch(e){alert(e.message);return}
   const ios=onIPhone();
   $('#modalBody').innerHTML=`<h2>Apple Shortcuts sync</h2>
-    <p>Sends your daily steps, exercise minutes and distance from Apple Health, automatically. Set it up on your iPhone, once.</p>
+    <p>Sends your day's steps, exercise minutes and distance from Apple Health, twice a day. Do this on your iPhone, once.</p>
     <h3>1. Get the shortcut</h3>
     ${cfg.shortcutUrl?`<p><a class="button" href="${esc(cfg.shortcutUrl)}">Get the shortcut</a></p><p class="muted">${ios?'':'Open this page on your iPhone to do this. '}Tap <b>Add Shortcut</b> and keep its name, "${SHORTCUT_NAME}".</p>`
-      :`<p class="muted">Build it with the <a href="/sync.html#build" target="_blank" rel="noopener">step-by-step guide</a>, and call it "${SHORTCUT_NAME}".</p>`}
+      :`<p class="muted">The shared shortcut isn't available yet. To make it yourself, follow <a href="/shortcut-build.html" target="_blank" rel="noopener">how to build it</a>.</p>`}
     <h3>2. Connect it to your account</h3>
     ${ios?`<p><button id="connectIPhone">Connect this iPhone</button></p><p class="muted">Opens Shortcuts and runs it once. Allow it to read Apple Health and to connect to activetogether.team when asked. ${st.exists?'This replaces your current key, so connect each of your iPhones again.':''}</p>`
       :`<p class="muted">Open activetogether.team on your iPhone, tap <b>Set up Apple Shortcuts</b>, then <b>Connect this iPhone</b>.</p>`}
     <h3>3. Make it automatic</h3>
-    <p class="muted">Add two automations in Shortcuts, at 21:00 and 08:00. See <a href="/sync.html#automate" target="_blank" rel="noopener">how</a>.</p>
+    <p class="muted">In Shortcuts, tap <b>Automation</b>, <b>+</b>, <b>Time of Day</b>: <b>21:00</b>, <b>Daily</b>, <b>Run Immediately</b>, and pick "${SHORTCUT_NAME}". Add another for <b>08:00</b>.</p>
     <div id="keyBox"></div>
     <p class="muted">${st.exists?`Connected since ${esc(fmtWhen(st.created_at))}. `:''}<a href="#" id="showKey">Show a key to paste instead</a>${st.exists?' · <a href="#" id="dropKey">Disconnect</a>':''}</p>
     <p id="keyMsg" class="error"></p>`;
@@ -722,8 +729,13 @@ const plural=(n,one,many)=>`${n} ${n===1?one:many}`;
 async function showAdmin(){
   if(me.role!=='global_admin')return showHome();
   showView('#adminView');
+  api('/api/admin/settings').then(s=>{$('#inviteOnly').checked=s.inviteOnly}).catch(()=>{});
   await renderAdmin();
 }
+$('#inviteOnly').onchange=async e=>{
+  try{const s=await api('/api/admin/settings',{method:'PATCH',body:JSON.stringify({inviteOnly:e.target.checked})});e.target.checked=s.inviteOnly;siteInviteOnly=s.inviteOnly;$('#inviteOnlyMsg').textContent=s.inviteOnly?'Saved: new accounts now need an invite.':'Saved: anyone can create an account.'}
+  catch(x){e.target.checked=!e.target.checked;$('#inviteOnlyMsg').textContent=x.message}
+};
 function setAdminTab(t){
   adminTab=t;
   setUrl(t==='challenges'?'/admin/challenges':'/admin',true);
@@ -1103,7 +1115,6 @@ async function openRouteMap(x,cc=curChallenge){
     map.fitBounds(poly.getBounds(),{padding:[20,20]});
   }catch(err){$('#routeMap').outerHTML=`<p class="error">${esc(err.message)}</p>`}
 }
-$('#health').onclick=()=>{$('#modalBody').innerHTML='<h2>Phone activity sync</h2><p><b>Android:</b> use the native companion app to read exercise sessions from Health Connect after the user grants permission.</p><p><b>iPhone:</b> use the native iOS companion app to read workouts from Apple Health through HealthKit.</p><p>This web app already includes the authenticated <code>/api/health/import</code> endpoint and duplicate protection. Native projects, store declarations and explicit user consent are still required.</p>';$('#modal').showModal()};
 
 load();
 

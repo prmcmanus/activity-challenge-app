@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install guard.sh as a systemd user timer that runs every minute, including after a reboot.
+# Install guard.sh as a systemd user timer that runs every minute, including after a reboot, and
+# prune.sh as a daily one.
 # Run once on each machine, from the deployment directory: tools/standby/install-guard.sh
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -25,7 +26,27 @@ OnUnitActiveSec=60s
 [Install]
 WantedBy=timers.target
 EOF
+# And once a day: delete backup copies older than 30 days (see prune.sh).
+cat > "$UNITS/activetogether-prune.service" <<EOF
+[Unit]
+Description=Delete Active Together backup copies older than 30 days
+
+[Service]
+Type=oneshot
+ExecStart=$DIR/tools/standby/prune.sh
+EOF
+cat > "$UNITS/activetogether-prune.timer" <<EOF
+[Unit]
+Description=Daily clean-up of old Active Together backups
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
 systemctl --user daemon-reload
-systemctl --user enable --now activetogether-guard.timer
+systemctl --user enable --now activetogether-guard.timer activetogether-prune.timer
 [ "$(loginctl show-user "$USER" -p Linger --value)" = yes ] || echo "Note: run 'loginctl enable-linger $USER' so the timer runs without you logged in."
-echo "Guard installed. Logs: journalctl --user -u activetogether-guard"
+echo "Guard and daily clean-up installed. Logs: journalctl --user -u activetogether-guard -u activetogether-prune"

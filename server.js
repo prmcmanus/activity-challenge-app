@@ -37,6 +37,17 @@ ensureColumn('users','deactivated_at','TEXT');
 ensureColumn('users','sync_key_hash','TEXT');
 ensureColumn('users','sync_key_created_at','TEXT');
 const sha256hex=v=>crypto.createHash('sha256').update(String(v)).digest('hex');
+// Site-wide settings a global admin can change. invite_only: '1' when creating an account needs an invite.
+db.exec('CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT)');
+const getSetting=k=>db.prepare('SELECT value FROM settings WHERE key=?').get(k)?.value??null;
+const setSetting=(k,v)=>db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k,String(v));
+const inviteOnly=()=>getSetting('invite_only')==='1';
+// What counts as an invite: a challenge or team invite code, or an emailed team invite that is still open.
+function validInvite(code,token){
+  const c=String(code||'').trim().toUpperCase();
+  if(c&&(db.prepare('SELECT 1 FROM challenges WHERE invite_code=?').get(c)||db.prepare('SELECT 1 FROM teams WHERE invite_code=?').get(c)))return true;
+  return !!(token&&db.prepare("SELECT 1 FROM invites WHERE token=? AND accepted_at IS NULL AND expires_at>datetime('now')").get(String(token)));
+}
 // Virtual journeys: a challenge whose teams or people travel a route on a map (London to Edinburgh...)
 // by the distance (or steps) they log. kind is standard or journey; journey_mode is foot or cycling;
 // route_shape is roads or straight; route_from/route_to are {name,lat,lon}; route is the simplified
@@ -710,11 +721,19 @@ async function api(req,res,url){
  const ip=clientIp(req);
  if(hitRateLimit('all:'+ip,API_RATE_LIMIT_MAX,API_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many requests. Please slow down and try again shortly.'});
  const u=auth(req), m=req.method;
- if(m==='GET'&&url.pathname==='/api/config')return send(res,200,{recaptchaSiteKey:RECAPTCHA_SITE_KEY||null,shortcutUrl:SHORTCUT_URL||null});
+ if(m==='GET'&&url.pathname==='/api/config')return send(res,200,{recaptchaSiteKey:RECAPTCHA_SITE_KEY||null,shortcutUrl:SHORTCUT_URL||null,inviteOnly:inviteOnly()});
+ // Global admins: site settings (for now, whether new accounts need an invite).
+ if(url.pathname==='/api/admin/settings'&&(m==='GET'||m==='PATCH')){
+   if(!need(res,u,['global_admin']))return;
+   if(m==='PATCH'){const b=await body(req);if(b.inviteOnly!==undefined)setSetting('invite_only',b.inviteOnly?'1':'0')}
+   return send(res,200,{inviteOnly:inviteOnly()});
+ }
  if(m==='POST'&&url.pathname==='/api/register'){
    if(hitRateLimit('register:'+ip,AUTH_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many registration attempts from this network. Please try again later.'});
    const b=await body(req),email=String(b.email||'').toLowerCase().trim(),name=String(b.name||'').trim();
    if(!name||!email||!b.password||String(b.password).length<8)return send(res,400,{error:'Name, email and a password of at least 8 characters are required'});
+   // Invite only: a new account needs the invite code (or emailed invite) someone shared.
+   if(inviteOnly()&&!validInvite(b.invite_code,b.invite_token))return send(res,403,{error:b.invite_code?"That invite code wasn't recognised. Check it, or ask for a new invite link.":'Active Together is invite only. Use the invite link or code someone sent you to create an account.',inviteRequired:true});
    if(!(await verifyRecaptcha(b.recaptchaToken,ip)))return send(res,400,{error:'Captcha verification failed. Please try again.'});
    try{const r=db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'member')").run(email,name,hash(b.password));const uid=Number(r.lastInsertRowid),t=startSession(uid);return send(res,201,{ok:true,sessionToken:t,user:{id:uid,email,name,role:'member'}},setSessionCookie(t))}catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
  }

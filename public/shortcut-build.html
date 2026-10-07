@@ -20,12 +20,17 @@
 <li>After both End Ifs, <b>Get File from Folder</b> again: folder <b>Shortcuts</b>, path <code>ActiveTogether-key.txt</code>.</li>
 <li><b>Get Text from Input</b> (the file), then <b>Set Variable</b>: name it <code>Key</code>.</li>
 </ol>
-<p><b>Your answers</b> (two yes/no questions, so one shortcut suits everyone)</p>
+<p><b>Your answers</b> (asked once, then remembered on the iPhone, so one shortcut suits everyone)</p>
 <ol type="a">
-<li><b>Text</b>: type <code>no</code> (or <code>yes</code> if you wear an Apple Watch). Then <b>Set Variable</b>: name it <code>Watch</code>.</li>
-<li><b>Text</b>: type <code>no</code> (or <code>yes</code> if you cycle). Then <b>Set Variable</b>: name it <code>Cycle</code>.</li>
+<li><b>Get File from Folder</b>: folder <b>Shortcuts</b>, path <code>ActiveTogether-watch.txt</code>, <b>Error If Not Found</b> off.</li>
+<li><b>If</b>: <i>File</i> <b>does not have any value</b>.</li>
+<li><b>Choose from Menu</b> (inside the If): prompt <code>Do you wear an Apple Watch?</code>, options <code>Yes</code> and <code>No</code>.</li>
+<li>Under <b>Yes</b>: a <b>Text</b> action with <code>yes</code>. Under <b>No</b>: a <b>Text</b> action with <code>no</code>.</li>
+<li>After <b>End Menu</b>, still inside the If: <b>Save File</b>, saving the <i>Menu Result</i>; <b>Ask Where to Save</b> off, path <code>ActiveTogether-watch.txt</code>, <b>Overwrite If File Exists</b> on.</li>
+<li>After <b>End If</b>: <b>Get File from Folder</b> again (same path), then <b>Get Text from Input</b>, then <b>Set Variable</b>: name it <code>Watch</code>.</li>
+<li>Repeat a&ndash;f for cycling: path <code>ActiveTogether-cycle.txt</code>, prompt <code>Do you cycle?</code>, and name the variable <code>Cycle</code>.</li>
 </ol>
-<p>When you share the shortcut, iPhone asks each person these two questions (see <a href="#share">Share it</a>), and the parts for exercise minutes and cycling only run for people who answered yes.</p>
+<p>The first run asks both questions (that's the run <b>Connect this iPhone</b> starts); after that the answers are read from the files, so the automations never ask. To change an answer, delete the file in the <b>Files</b> app (<b>iCloud Drive</b> &rsaquo; <b>Shortcuts</b>) and run the shortcut once.</p>
 <p><b>Part 2: steps</b> (actions 11 to 17)</p>
 <ol start="11">
 <li><b>Find Health Samples</b>: <i>Type</i> <b>Steps</b>. Tap <i>Add Filter</i> and set <b>Start Date</b> <b>is in the last</b> <b>2</b> <b>days</b>. Tap <i>Show More</i>: <b>Group By</b> <b>Day</b>.</li>
@@ -44,11 +49,7 @@
 <div class="tip">If your steps look a little higher than in the Health app, check that each <b>Find Health Samples</b> has <b>Group By: Day</b>. That makes Apple Health count an Apple Watch and an iPhone together only once.</div>
 
 <h2 id="share">Share it</h2>
-<ol>
-<li>Set both answers back to <code>no</code> (so nobody inherits yours).</li>
-<li>Tap the <b>⌄</b> next to the shortcut's name, then the <b>ⓘ</b>, then <b>Setup</b>. Under <b>Import Questions</b>, add one for each of the two Text actions: <code>Do you wear an Apple Watch? Type yes or no</code> and <code>Do you cycle? Type yes or no</code>.</li>
-<li><b>Share</b> → <b>Copy iCloud Link</b>, and give the link to the site's administrator to put behind <b>Get the shortcut</b> on the website (or send it round). Your key isn't inside the shortcut (it's in a file on your iPhone), so it's safe to share.</li>
-</ol>
+<p>Your key and your answers aren't inside the shortcut (they're in files on your iPhone), so it's safe to share as it is. Tap the <b>⌄</b> next to its name &rarr; <b>Share</b> &rarr; <b>Copy iCloud Link</b>, and give the link to the site's administrator to put behind <b>Get the shortcut</b> on the website (or send it round). Each person is asked the two questions on their first run.</p>
 
 </section>
 </main>

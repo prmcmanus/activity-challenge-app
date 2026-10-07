@@ -1328,6 +1328,8 @@ async function api(req,res,url){
      walk_m:num(b.distance)===undefined?undefined:num(b.distance)*walkPer,cycle_m:num(b.cycling_distance)===undefined?undefined:num(b.cycling_distance)*cyclePer};
    if(Object.values(sent).every(v=>v===undefined))return reject(`Nothing to save: send steps, minutes, distance or cycling_distance (got ${Object.keys(b).filter(k=>k!=='key').join(', ')||'no fields'})`);
    if(sent.steps>200000)return reject(`That is more steps than anyone walks in a day (got ${sent.steps}) - check the shortcut`);
+   // One line per accepted day too (fields and values, never the key), to help when setting up a shortcut.
+   console.log(`Shortcut sync for user ${owner.id}: ${Object.entries(b).filter(([k])=>k!=='key').map(([k,v])=>`${k}=${JSON.stringify(v)}`.slice(0,60)).join(' ')}`);
    const before=db.prepare('SELECT * FROM shortcut_days WHERE user_id=? AND day=?').get(owner.id,date)||{};
    const day={};for(const k of ['steps','minutes','walk_m','cycle_m'])day[k]=(sent[k]!==undefined?sent[k]:before[k])||0;
    db.prepare(`INSERT INTO shortcut_days(user_id,day,steps,minutes,walk_m,cycle_m) VALUES(?,?,?,?,?,?) ON CONFLICT(user_id,day) DO UPDATE SET

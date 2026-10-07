@@ -1295,7 +1295,10 @@ async function api(req,res,url){
    try{raw=await bodyText(req);b=raw.trim().startsWith('{')?JSON.parse(raw):Object.fromEntries(new URLSearchParams(raw))}catch(e){b=null}
    const key=String(req.headers['x-sync-key']||b?.key||'').trim();
    const owner=key&&db.prepare('SELECT id,name FROM users WHERE sync_key_hash=? AND deactivated_at IS NULL').get(sha256hex(key));
-   if(!owner)return send(res,401,{error:'That sync key is not recognised. Make a new one with Set up Apple Shortcuts on the activetogether.team home page.'});
+   if(!owner){
+     console.log(`Shortcut sync: key not recognised (${key?`${key.length} characters, starting ${key.slice(0,3)}`:'no key sent'}; ${req.headers['x-sync-key']?'in the header':'in the body'})`);
+     return send(res,401,{error:'That sync key is not recognised. Make a new one with Set up Apple Shortcuts on the activetogether.team home page.'});
+   }
    // A rejected day is logged (field names and values, never the key) and the reply says what arrived,
    // so a mistake in someone's shortcut can be found.
    const reject=error=>{

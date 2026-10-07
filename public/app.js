@@ -645,7 +645,7 @@ async function renderJourneyMap(c){
         .addTo(journeyMap)
         .bindPopup(`<b>${esc(mk.name)}</b><br>${esc(fmtTotal(c,0,mk.distance,mk.steps))} · ${Math.round(mk.progress*100)}%${mk.finished_on?`<br>🏁 Finished on ${esc(mk.finished_on)}`:''}`);
     });
-    journeyMap.fitBounds(line.getBounds(),{padding:[30,30]});
+    journeyMap.fitBounds(line.getBounds(),{paddingTopLeft:[56,40],paddingBottomRight:[40,40]});
     const done=j.markers.filter(m=>m.finished_on).length;
     $('#journeyMeta').textContent=`${done} of ${j.markers.length} ${j.by==='team'?'teams':'people'} finished`;
   }catch(e){el.innerHTML=`<p class="error">${esc(e.message)}</p>`}

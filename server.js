@@ -306,7 +306,7 @@ const send=(res,status,data,headers={})=>{res.writeHead(status,{'Content-Type':'
 // rather than throwing mid-stream and abandoning the rest on the socket - an early throw here
 // used to leave an oversized request's tail undrained on a kept-alive connection, which then
 // corrupted whatever request the client's next fetch() reused that same socket for.
-const body=async(req,maxBytes=1e6)=>{
+const bodyText=async(req,maxBytes=1e6)=>{
   let s='',tooLarge=false;
   for await(const c of req){
     if(tooLarge)continue;
@@ -314,8 +314,22 @@ const body=async(req,maxBytes=1e6)=>{
     if(s.length>maxBytes)tooLarge=true;
   }
   if(tooLarge)throw Error('Too large');
-  return s?JSON.parse(s):{};
+  return s;
 };
+const body=async(req,maxBytes)=>{const s=await bodyText(req,maxBytes);return s?JSON.parse(s):{}};
+// The Apple Shortcut's date, however Shortcuts wrote it: 2026-10-07, 2026-10-07T00:00:00+01:00,
+// "7 Oct 2026", "7 October 2026 at 00:00" or "Oct 7, 2026". Null if it can't be read (numbers-only
+// forms like 07/10/2026 are left out: day and month could be either way round).
+const MONTHS=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+function shortcutDate(v){
+  const t=String(v??'').trim();
+  let m=t.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(m)return `${m[1]}-${m[2]}-${m[3]}`;
+  const ymd=(d,mon,y)=>{const i=MONTHS.indexOf(mon.slice(0,3).toLowerCase());return i<0?null:`${y}-${String(i+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`};
+  if((m=t.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,})\.?,?\s+(\d{4})\b/)))return ymd(m[1],m[2],m[3]);
+  if((m=t.match(/\b([A-Za-z]{3,})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b/)))return ymd(m[2],m[1],m[3]);
+  return null;
+}
 const csvEscape=v=>{const s=String(v??'');return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
 const cookies=req=>Object.fromEntries((req.headers.cookie||'').split(';').filter(Boolean).map(x=>x.trim().split('=')));
 function sessionToken(req){const bearer=(req.headers.authorization||'').match(/^Bearer (.+)$/i);return bearer?.[1]||cookies(req).session||null}
@@ -1276,23 +1290,33 @@ async function api(req,res,url){
  // cycling only - under my first team in a team challenge. Sending a day again replaces it; an entry
  // left with nothing to count is removed.
  if(m==='POST'&&url.pathname==='/api/shortcut/day'){
-   let b;try{b=await body(req)}catch(e){return send(res,400,{error:'Send the day as JSON'})}
-   const key=String(req.headers['x-sync-key']||b.key||'').trim();
+   // JSON as the guide says, or a form if the shortcut's Request Body was left on Form.
+   let b,raw;
+   try{raw=await bodyText(req);b=raw.trim().startsWith('{')?JSON.parse(raw):Object.fromEntries(new URLSearchParams(raw))}catch(e){b=null}
+   const key=String(req.headers['x-sync-key']||b?.key||'').trim();
    const owner=key&&db.prepare('SELECT id,name FROM users WHERE sync_key_hash=? AND deactivated_at IS NULL').get(sha256hex(key));
    if(!owner)return send(res,401,{error:'That sync key is not recognised. Make a new one with Set up Apple Shortcuts on the activetogether.team home page.'});
-   const date=String(b.date||'').trim();
-   if(!DATE_RE.test(date))return send(res,400,{error:'date must be YYYY-MM-DD'});
-   if(date>new Date(Date.now()+864e5).toISOString().slice(0,10))return send(res,400,{error:'That date is in the future'});
-   // Shortcuts may send numbers as text, with thousands separators or decimals, and distances in
-   // whatever unit the Health app uses. undefined = not sent this time.
-   const num=v=>{if(v===undefined)return undefined;const n=Number(String(v??'').replace(/,/g,''));return Number.isFinite(n)&&n>0?n:0};
+   // A rejected day is logged (field names and values, never the key) and the reply says what arrived,
+   // so a mistake in someone's shortcut can be found.
+   const reject=error=>{
+     const seen=b?Object.entries(b).filter(([k])=>k!=='key').map(([k,v])=>`${k}=${JSON.stringify(v)}`.slice(0,80)).join(' '):`unreadable body ${JSON.stringify(String(raw||'').slice(0,80))}`;
+     console.log(`Shortcut sync rejected for user ${owner.id}: ${error} | ${req.headers['content-type']||'no content type'} | ${seen}`);
+     return send(res,400,{error});
+   };
+   if(!b)return reject('The shortcut must send JSON: in Get Contents of URL, set Request Body to JSON');
+   const date=shortcutDate(b.date);
+   if(!date)return reject(`date must look like 2026-10-07 (got ${JSON.stringify(b.date??null)}). In Format Date, choose Custom and type yyyy-MM-dd`);
+   if(date>new Date(Date.now()+864e5).toISOString().slice(0,10))return reject(`That date (${date}) is in the future`);
+   // Shortcuts may send numbers as text, with thousands separators, decimals or a unit ("8,412 steps"),
+   // and distances in whatever unit the Health app uses. undefined = not sent this time.
+   const num=v=>{if(v===undefined)return undefined;if(typeof v==='number')return v>0?v:0;const m=String(v??'').replace(/,/g,'').match(/\d+(\.\d+)?/);return m&&Number(m[0])>0?Number(m[0]):0};
    const perUnit=v=>{const t=String(v||'mi').trim().toLowerCase();return /^(km|kilomet(er|re)s?)$/.test(t)?1000:/^(m|met(er|re)s?)$/.test(t)?1:/^(mi|miles?)$/.test(t)?METERS_PER.mi:null};
    const walkPer=perUnit(b.distance_unit),cyclePer=perUnit(b.cycling_unit||b.distance_unit);
-   if(walkPer===null||cyclePer===null)return send(res,400,{error:'distance units must be mi, km or m'});
+   if(walkPer===null||cyclePer===null)return reject(`distance units must be mi, km or m (got ${JSON.stringify(b.distance_unit??b.cycling_unit)})`);
    const sent={steps:num(b.steps)===undefined?undefined:Math.round(num(b.steps)),minutes:num(b.minutes)===undefined?undefined:Math.round(num(b.minutes)),
      walk_m:num(b.distance)===undefined?undefined:num(b.distance)*walkPer,cycle_m:num(b.cycling_distance)===undefined?undefined:num(b.cycling_distance)*cyclePer};
-   if(Object.values(sent).every(v=>v===undefined))return send(res,400,{error:'Send steps, minutes, distance or cycling_distance'});
-   if(sent.steps>200000)return send(res,400,{error:'That is more steps than anyone walks in a day - check the shortcut'});
+   if(Object.values(sent).every(v=>v===undefined))return reject(`Nothing to save: send steps, minutes, distance or cycling_distance (got ${Object.keys(b).filter(k=>k!=='key').join(', ')||'no fields'})`);
+   if(sent.steps>200000)return reject(`That is more steps than anyone walks in a day (got ${sent.steps}) - check the shortcut`);
    const before=db.prepare('SELECT * FROM shortcut_days WHERE user_id=? AND day=?').get(owner.id,date)||{};
    const day={};for(const k of ['steps','minutes','walk_m','cycle_m'])day[k]=(sent[k]!==undefined?sent[k]:before[k])||0;
    db.prepare(`INSERT INTO shortcut_days(user_id,day,steps,minutes,walk_m,cycle_m) VALUES(?,?,?,?,?,?) ON CONFLICT(user_id,day) DO UPDATE SET

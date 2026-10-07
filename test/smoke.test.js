@@ -2169,7 +2169,18 @@ test('Apple Shortcuts sync: a personal key sends a day of totals into every chal
   assert.equal((await mine()).find(a => a.challenge_id === teams.body.id).team_name, 'Shortcutters');
 
   assert.equal((await send(key, { date: '2099-01-01', steps: 5 })).status, 400, 'no future days');
-  assert.equal((await send(key, { date: 'yesterday', steps: 5 })).status, 400);
+  const bad = await send(key, { date: 'yesterday', steps: 5 });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /got "yesterday"/, 'the reply says what arrived');
+  // What Shortcuts may produce: a date with a time, a written-out date, a number with a unit, or a form.
+  const longDate = new Date(Date.now() - 864e5 * 2);
+  const written = `${longDate.getUTCDate()} ${['January','February','March','April','May','June','July','August','September','October','November','December'][longDate.getUTCMonth()]} ${longDate.getUTCFullYear()} at 00:00`;
+  assert.equal((await send(key, { date: `${D1}T00:00:00+01:00`, steps: '9,001 steps' })).status, 200);
+  assert.equal((await mine()).find(a => a.challenge_id === steps.body.id && a.activity_date === D1).steps, 9001);
+  assert.equal((await send(key, { date: written, steps: 9002 })).status, 200, `written-out date ${written}`);
+  const form = await fetch(`${origin}/api/shortcut/day`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Sync-Key': key }, body: `date=${D1}&steps=9003` });
+  assert.equal(form.status, 200, 'a form body works too');
+  assert.equal((await mine()).find(a => a.challenge_id === steps.body.id && a.activity_date === D1).steps, 9003);
   assert.equal((await send('at_nope', { date: D1, steps: 5 })).status, 401);
   await jsonFetch(`${origin}/api/me/sync-key`, sam.cookie, 'DELETE');
   assert.equal((await send(key, { date: D1, steps: 5 })).status, 401, 'a removed key stops working');

@@ -147,11 +147,11 @@ $all('[data-authtab]').forEach(b=>b.onclick=()=>{authTab=b.dataset.authtab;rende
 async function loadDashboard(){dash=await api('/api/dashboard')}
 
 // One view at a time: home, a challenge, help, or (global admins) the admin page.
-function showView(id){['#homeView','#challengeView','#helpView','#adminView'].forEach(v=>$(v).classList.toggle('hidden',v!==id));window.scrollTo(0,0)}
+function showView(id){['#homeView','#newChallengeView','#challengeView','#helpView','#adminView'].forEach(v=>$(v).classList.toggle('hidden',v!==id));window.scrollTo(0,0)}
 function showHome(){challengeBack='home';setUrl('/');showView('#homeView');renderHome()}
 function renderHome(){
   $('#hello').textContent=`Welcome, ${me.name}`;
-  $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${c.kind==='journey'?'journey · ':''}${isIndividual(c)?'individuals':`${c.teams.length} of your team(s)`} · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance,c.mySteps))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Create one or enter an invite code above.</p>';
+  $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${c.kind==='journey'?'journey · ':''}${isIndividual(c)?'individuals':`${c.teams.length} of your team(s)`} · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance,c.mySteps))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Use <b>+ New challenge</b> or <b>Join with a code</b> above.</p>';
   $all('[data-open]').forEach(b=>b.onclick=()=>openChallenge(Number(b.dataset.open)));
   loadMyActivity().catch(()=>{});
   loadAndroidCard();
@@ -946,7 +946,9 @@ $('#ticketForm').onsubmit=async e=>{
     if(file)payload.image_url=await uploadImageFile(file,1600,0.85);
     const r=await api('/api/tickets',{method:'POST',body:JSON.stringify(payload)});
     e.target.reset();
-    $('#ticketMsg').textContent=`Thanks - ticket #${r.id} sent. Replies will appear under My tickets.`;
+    $('#ticketMsg').textContent='';
+    $('#modal').close();
+    $('#ticketDone').textContent=`Thanks - ticket #${r.id} sent. Replies will appear here.`;
     renderHelp();
   }catch(x){$('#ticketMsg').textContent=x.message}
 };
@@ -955,7 +957,21 @@ setInterval(()=>{if(me)refreshHelpBadge()},120000);
 
 $('#logout').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload()};
 $('#backHome').onclick=()=>challengeBack==='admin'?showAdmin():showHome();
-$('#joinForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/join',{method:'POST',body:JSON.stringify({code:$('#joinCode').value})});$('#joinMsg').textContent='';e.target.reset();await loadDashboard();renderHome()}catch(x){$('#joinMsg').textContent=x.message}};
+// Forms used now and then (join with a code, new team, a support ticket) live in a hidden holder and are
+// moved into the dialog when their button is pressed, and back when it closes - so their handlers stay put.
+function showFormDialog(id){
+  $('#modalBody').innerHTML='';
+  $('#modalBody').append($('#'+id));
+  $('#modal').showModal();
+  $('#'+id).querySelector('input:not([type=file]),textarea,select')?.focus();
+}
+$('#modal').addEventListener('close',()=>{for(const el of $('#modalBody').querySelectorAll('[data-stash]'))$('#dialogStash').append(el)});
+$('#joinBtn').onclick=()=>{$('#joinMsg').textContent='';showFormDialog('joinDialog')};
+$('#joinForm').onsubmit=async e=>{e.preventDefault();try{const r=await api('/api/join',{method:'POST',body:JSON.stringify({code:$('#joinCode').value})});$('#joinMsg').textContent='';e.target.reset();$('#modal').close();await loadDashboard();challengeBack='home';await openChallenge(r.challengeId)}catch(x){$('#joinMsg').textContent=x.message}};
+// Creating a challenge has a page of its own: a long form (with a map for journeys) that suits phones better than a dialog.
+function showNewChallenge(){setUrl('/challenges/new');showView('#newChallengeView');syncNewChallengeKind()}
+$('#newChallengeBtn').onclick=showNewChallenge;
+$('#newChallengeBack').onclick=()=>showHome();
 const newChallengeRte=document.querySelector('#newChallengeForm [data-rte]');
 initRichTextEditor(newChallengeRte);
 const syncNewChallengeMeasure=wireMeasureFields($('#newChallengeForm'));
@@ -989,6 +1005,8 @@ newChallengeForm.onsubmit=async e=>{
   newChallengeRte.querySelector('.rte-editor').innerHTML='';
   await loadDashboard();
   challengeBack='home';
+  // Back from the new challenge goes home, not to an empty form.
+  setUrl('/',true);
   await openChallenge(created.id);
 };
 $('#newTeamImage').addEventListener('change',()=>{
@@ -997,6 +1015,8 @@ $('#newTeamImage').addEventListener('change',()=>{
   $('#newTeamImagePreview').src=URL.createObjectURL(f);
   $('#newTeamImagePreview').classList.remove('hidden');
 });
+$('#newTeamBtn').onclick=()=>showFormDialog('newTeamDialog');
+$('#newTicketBtn').onclick=()=>{$('#ticketMsg').textContent='';showFormDialog('ticketDialog')};
 $('#newTeamForm').onsubmit=async e=>{
   e.preventDefault();
   const file=$('#newTeamImage').files[0];
@@ -1006,6 +1026,7 @@ $('#newTeamForm').onsubmit=async e=>{
     await api('/api/teams',{method:'POST',body:JSON.stringify(payload)});
     e.target.reset();
     $('#newTeamImagePreview').classList.add('hidden');
+    $('#modal').close();
     await refreshChallenge();
   }catch(err){alert(err.message)}
 };
@@ -1131,6 +1152,7 @@ async function route(){
   const p=location.pathname;let m;
   routing=true;
   try{
+    if(/^\/challenges\/new\/?$/.test(p))return showNewChallenge();
     if((m=p.match(/^\/challenges\/(\d+)\/?$/)))return await openChallenge(Number(m[1]));
     if((m=p.match(/^\/help\/tickets\/(\d+)\/?$/))){showHelp();setUrl(p,true);return await openTicket(Number(m[1]))}
     if(/^\/help\/?$/.test(p))return showHelp();

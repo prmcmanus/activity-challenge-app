@@ -2392,6 +2392,22 @@ test('journeys: a road route through stops asks the planner for every point in o
     assert.match(lastPath, /\/routed-foot\/route\/v1\/driving\/-0\.1276,51\.5072;-1\.0815,53\.959;-3\.1883,55\.9533\?/);
     assert.equal(pv.body.km, 700);
     assert.deepEqual(pv.body.stops.map(s => [s.name, s.km]), [['York', 300]]);
+
+    // Relabelling places keeps the planned route: the planner isn't asked again.
+    const way = { from: LONDON, to: EDINBURGH, via: [{ name: 'York', lat: 53.959, lon: -1.0815 }], shape: 'roads', mode: 'foot' };
+    const c = await jsonFetch(`${srv.origin}/api/challenges`, cookie, 'POST', { name: 'Relabel', start_date: '2027-06-01', end_date: '2027-06-30', metric: 'distance', distance_unit: 'km', kind: 'journey', journey: way });
+    assert.equal(c.status, 201);
+    lastPath = '';
+    const relabelled = { ...way, from: { ...LONDON, name: 'The Office' }, to: { ...EDINBURGH, name: 'Team Retreat' }, via: [{ name: 'Halfway Pub', lat: 53.959, lon: -1.0815 }] };
+    assert.equal((await jsonFetch(`${srv.origin}/api/challenges/${c.body.id}`, cookie, 'PATCH', { journey: relabelled })).status, 200);
+    assert.equal(lastPath, '', 'no new route was planned');
+    const info = (await jsonFetch(`${srv.origin}/api/challenges/${c.body.id}`, cookie)).body.journey;
+    assert.deepEqual([info.from.name, info.via[0].name, info.to.name], ['The Office', 'Halfway Pub', 'Team Retreat']);
+    assert.equal(info.via[0].at, 300, 'the stop keeps its place along the route');
+    assert.equal(info.target, 700);
+    // Moving a place does plan it again.
+    await jsonFetch(`${srv.origin}/api/challenges/${c.body.id}`, cookie, 'PATCH', { journey: { ...relabelled, via: [] } });
+    assert.match(lastPath, /^\/routed-foot/);
   } finally {
     await srv.stop();
     stub.close();

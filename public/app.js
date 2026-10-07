@@ -277,7 +277,7 @@ async function openEditChallenge(c,after=refreshChallenge){
       <div class="two"><label>Start<input id="ecStart" type="date" value="${c.start_date}" required></label><label>End<input id="ecEnd" type="date" value="${c.end_date}" required></label></div>
       <div class="two"><label>Measure<select id="ecMetric" data-metric><option value="minutes"${isDistance(c)||isSteps(c)?'':' selected'}>Active minutes</option><option value="distance"${isDistance(c)?' selected':''}>Distance</option><option value="steps"${isSteps(c)?' selected':''}>Steps</option></select></label><label data-unitwrap>Distance unit<select id="ecUnit"><option value="mi"${unitShort(c)==='mi'?' selected':''}>Miles</option><option value="km"${unitShort(c)==='km'?' selected':''}>Kilometres</option></select></label></div>
       <p class="muted">Changing what the challenge measures re-ranks the leaderboards. Entries logged without that measure count as zero toward it.</p>
-      ${c.kind==='journey'?`<div><p><b>Journey:</b> ${esc(fmtJourney(c.journey))} <button type="button" class="ghost" id="ecRoute">Change route</button></p><div id="ecPicker" class="hidden"></div></div>`:''}
+      ${c.kind==='journey'?`<div><p><b>Journey:</b> ${esc(fmtJourney(c.journey))} <button type="button" class="ghost" id="ecRoute">Change route or labels</button></p><div id="ecPicker" class="hidden"></div></div>`:''}
       <label>Who takes part<select id="ecParticipation"><option value="teams"${isIndividual(c)?'':' selected'}>Teams</option><option value="individual"${isIndividual(c)?' selected':''}>Individuals only</option></select></label>
       <p class="muted">Individuals only hides teams: everyone logs straight to the challenge. Activity already logged with a team still counts on the individual leaderboard.</p>
       <button>Save changes</button>
@@ -548,16 +548,19 @@ const osmTiles=L=>L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
 // dragged. Once start and finish are set, a tap adds a stop where it makes the least detour. The route and
 // its length are previewed as they change. Returns {show, value, mode, changed, reset}.
 function journeyPicker(root,initial,onChange=()=>{}){
-  const pick=p=>p?{name:p.name,lat:p.lat,lon:p.lon}:null;
+  // Places already saved count as labelled, so moving one keeps its name.
+  const pick=p=>p?{name:p.name,lat:p.lat,lon:p.lon,custom:true}:null;
   const st={from:pick(initial?.from),to:pick(initial?.to),via:(initial?.via||[]).map(pick),shape:initial?.shape||'roads',mode:initial?.mode||'foot'};
-  const snapshot=()=>JSON.stringify([st.from,st.to,st.via.filter(Boolean),st.shape,st.mode]);
+  const snapshot=()=>JSON.stringify([st.from&&[st.from.name,st.from.lat,st.from.lon],st.to&&[st.to.name,st.to.lat,st.to.lon],st.via.filter(Boolean).map(p=>[p.name,p.lat,p.lon]),st.shape,st.mode]);
   const start=snapshot();
   let L=null,map=null,line=null,pins={},stopPins=[],timer=null,ask=0;
-  const placeRow=(key,label)=>`<div><label>${label}<span class="with-unit"><input data-jq="${key}" placeholder="Search for a place" autocomplete="off"><button type="button" class="secondary" data-jfind="${key}">Find</button></span></label><div class="jp-results" data-jres="${key}"></div></div>`;
+  // Each place: a search box (showing the place picked), its results, and the label the challenge shows for it.
+  const labelBox=(key,p)=>`<label class="jp-label">Shown as<input data-jl="${key}" maxlength="120" value="${esc(p?.name||'')}" placeholder="Pick a place first"${p?'':' disabled'}></label>`;
+  const placeRow=(key,label)=>`<div><label>${label}<span class="with-unit"><input data-jq="${key}" placeholder="Search for a place" autocomplete="off"><button type="button" class="secondary" data-jfind="${key}">Find</button></span></label><div class="jp-results" data-jres="${key}"></div>${labelBox(key,st[key])}</div>`;
   root.innerHTML=`<div class="two"><label>Getting there<select data-jmode><option value="foot">On foot: walking and running</option><option value="cycling">Cycling only</option></select></label><label>Route<select data-jshape><option value="roads">Along roads and paths</option><option value="straight">Straight line</option></select></label></div>
     <div class="two">${placeRow('from','Start')}${placeRow('to','Finish')}</div>
     <div data-jstops></div><button type="button" class="ghost" data-jaddstop>+ Add a stop on the way</button>
-    <p class="muted">Or tap the map: the first tap sets the start, the next the finish, and any more add stops. Drag a marker to move it, and edit a name to rename the place.</p>
+    <p class="muted">Or tap the map: the first tap sets the start, the next the finish, and any more add stops. Drag a marker to move it. Change what a place is called in its "Shown as" box (say, "The Office" instead of a postcode).</p>
     <div class="jp-map"></div><p class="jp-summary" data-jsummary>Choose a start and a finish.</p>`;
   const q=sel=>root.querySelector(sel);
   q('[data-jmode]').value=st.mode;q('[data-jshape]').value=st.shape;
@@ -580,19 +583,24 @@ function journeyPicker(root,initial,onChange=()=>{}){
       .on('dragend',e=>{const ll=e.target.getLatLng();setPoint('via'+i,ll.lat,ll.lng)})).filter(Boolean);
   }
   function renderStops(){
-    q('[data-jstops]').innerHTML=st.via.map((p,i)=>`<div class="jp-stop"><label>Stop ${i+1}<span class="with-unit"><input data-jq="via${i}" placeholder="Search for a place" autocomplete="off" value="${esc(p?.name||'')}"><button type="button" class="secondary" data-jfind="via${i}">Find</button><button type="button" class="ghost" data-jmove="${i}:-1" title="Earlier"${i?'':' disabled'}>↑</button><button type="button" class="ghost" data-jmove="${i}:1" title="Later"${i<st.via.length-1?'':' disabled'}>↓</button><button type="button" class="ghost" data-jdel="${i}" title="Remove this stop">✕</button></span></label><div class="jp-results" data-jres="via${i}"></div></div>`).join('');
+    q('[data-jstops]').innerHTML=st.via.map((p,i)=>`<div class="jp-stop"><label>Stop ${i+1}<span class="with-unit"><input data-jq="via${i}" placeholder="Search for a place" autocomplete="off" value="${esc(p?.name||'')}"><button type="button" class="secondary" data-jfind="via${i}">Find</button><button type="button" class="ghost" data-jmove="${i}:-1" title="Earlier"${i?'':' disabled'}>↑</button><button type="button" class="ghost" data-jmove="${i}:1" title="Later"${i<st.via.length-1?'':' disabled'}>↓</button><button type="button" class="ghost" data-jdel="${i}" title="Remove this stop">✕</button></span></label><div class="jp-results" data-jres="via${i}"></div>${labelBox('via'+i,p)}</div>`).join('');
     wireRows();drawPins();
   }
-  async function setPoint(k,lat,lon,name){
-    put(k,{name:name||'',lat:+lat.toFixed(6),lon:+lon.toFixed(6)});
+  // A place picked from the search (name and its full description) or by a tap or drag (named by reverse
+  // lookup). A label the owner typed survives the place being moved.
+  async function setPoint(k,lat,lon,name,detail){
+    const before=get(k),keepLabel=before&&before.custom;
+    put(k,{name:keepLabel?before.name:(name||''),lat:+lat.toFixed(6),lon:+lon.toFixed(6),custom:keepLabel});
     drawPins();
-    const input=()=>q(`[data-jq="${k}"]`);
+    const search=()=>q(`[data-jq="${k}"]`),labelIn=()=>q(`[data-jl="${k}"]`);
     if(!name){
-      if(input())input().value='Finding the place name…';
+      if(search())search().value='Finding the place name…';
       let n='';try{n=(await api(`/api/places/reverse?lat=${lat}&lon=${lon}`)).name||''}catch(e){}
-      const p=get(k);if(p)p.name=n||`${lat.toFixed(3)}, ${lon.toFixed(3)}`;
+      name=n||`${lat.toFixed(3)}, ${lon.toFixed(3)}`;
+      const p=get(k);if(p&&!p.custom)p.name=name;
     }
-    if(input()&&get(k))input().value=get(k).name;
+    if(search())search().value=detail||name;
+    if(labelIn()&&get(k)){labelIn().disabled=false;labelIn().value=get(k).name}
     drawPins();preview();
   }
   // A tap after start and finish adds a stop in the gap where it adds the least distance.
@@ -604,6 +612,12 @@ function journeyPicker(root,initial,onChange=()=>{}){
     if(st.via.length>=10){say('A journey can have up to 10 stops on the way.',true);return}
     st.via.splice(best,0,{name:'',lat,lon});renderStops();setPoint('via'+best,lat,lon);
   }
+  let lastRoute=null;
+  function sayRoute(){
+    if(!lastRoute||!st.from||!st.to)return;
+    const via=st.via.filter(Boolean),stops=via.length?` via ${via.map(s=>s.name).join(', ')}`:'',r=lastRoute;
+    say(`${st.from.name} → ${st.to.name}${stops}: ${fmtLen(r.miles)} miles (${fmtLen(r.km)} km) ${SHAPE_LABEL[st.shape]}, about ${fmtSteps(r.steps)} steps`);
+  }
   function preview(){
     clearTimeout(timer);onChange();
     if(!st.from||!st.to){say('Choose a start and a finish.');return}
@@ -614,8 +628,7 @@ function journeyPicker(root,initial,onChange=()=>{}){
         const r=await api('/api/journeys/preview',{method:'POST',body:JSON.stringify({journey:value()})});
         if(my!==ask)return;
         if(map){if(line)line.remove();line=L.polyline(r.points,{color:'#d40511',weight:4}).addTo(map);map.fitBounds(line.getBounds(),{padding:[24,24]})}
-        const stops=r.stops.length?` via ${r.stops.map(s=>s.name).join(', ')}`:'';
-        say(`${st.from.name} → ${st.to.name}${stops}: ${fmtLen(r.miles)} miles (${fmtLen(r.km)} km) ${SHAPE_LABEL[st.shape]}, about ${fmtSteps(r.steps)} steps`);
+        lastRoute=r;sayRoute();
       }catch(e){if(my===ask){if(line){line.remove();line=null}say(e.message,true)}}
     },350);
   }
@@ -626,7 +639,7 @@ function journeyPicker(root,initial,onChange=()=>{}){
     try{
       const {places}=await api(`/api/places?q=${encodeURIComponent(text)}`);
       out.innerHTML=places.map((p,i)=>`<button type="button" data-i="${i}">${esc(p.detail)}</button>`).join('')||'<span class="muted">Nothing found - try another name, or tap the map.</span>';
-      out.querySelectorAll('button').forEach(b=>b.onclick=()=>{const p=places[Number(b.dataset.i)];out.innerHTML='';setPoint(k,p.lat,p.lon,p.name);if(map)map.setView([p.lat,p.lon],Math.max(map.getZoom(),9))});
+      out.querySelectorAll('button').forEach(b=>b.onclick=()=>{const p=places[Number(b.dataset.i)];out.innerHTML='';setPoint(k,p.lat,p.lon,p.name,p.detail);if(map)map.setView([p.lat,p.lon],Math.max(map.getZoom(),9))});
     }catch(e){out.innerHTML=`<span class="error">${esc(e.message)}</span>`}
   }
   function wireRows(){
@@ -634,8 +647,14 @@ function journeyPicker(root,initial,onChange=()=>{}){
     root.querySelectorAll('[data-jq]').forEach(inp=>{
       const k=inp.dataset.jq;
       inp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();find(k)}};
-      // Once a place is chosen, the box renames it ("Greater London" -> "London") without moving it.
-      inp.onchange=e=>{const v=e.target.value.trim(),p=get(k);if(p&&v&&!q(`[data-jres="${k}"]`).children.length){p.name=v.slice(0,120);preview()}};
+    });
+    // The label: what the challenge calls the place. Typing updates the summary without planning again;
+    // left empty, it goes back to the map's name.
+    root.querySelectorAll('[data-jl]').forEach(inp=>{
+      const k=inp.dataset.jl;
+      inp.oninput=()=>{const p=get(k);if(!p)return;const v=inp.value.trim().slice(0,120);if(v){p.name=v;p.custom=true}onChange();sayRoute()};
+      inp.onblur=()=>{const p=get(k);if(p&&!inp.value.trim()){p.custom=false;const text=q(`[data-jq="${k}"]`).value.split(',')[0].trim();p.name=text||p.name;inp.value=p.name;sayRoute()}};
+      inp.onkeydown=e=>{if(e.key==='Enter')e.preventDefault()};
     });
     root.querySelectorAll('[data-jmove]').forEach(b=>b.onclick=()=>{const [i,d]=b.dataset.jmove.split(':').map(Number);[st.via[i],st.via[i+d]]=[st.via[i+d],st.via[i]];renderStops();preview()});
     root.querySelectorAll('[data-jdel]').forEach(b=>b.onclick=()=>{st.via.splice(Number(b.dataset.jdel),1);renderStops();preview()});
@@ -646,7 +665,8 @@ function journeyPicker(root,initial,onChange=()=>{}){
   };
   q('[data-jmode]').onchange=e=>{st.mode=e.target.value;preview()};
   q('[data-jshape]').onchange=e=>{st.shape=e.target.value;preview()};
-  const value=()=>st.from&&st.to?{from:st.from,to:st.to,via:st.via.filter(Boolean),shape:st.shape,mode:st.mode}:null;
+  const clean=p=>({name:p.name,lat:p.lat,lon:p.lon});
+  const value=()=>st.from&&st.to?{from:clean(st.from),to:clean(st.to),via:st.via.filter(Boolean).map(clean),shape:st.shape,mode:st.mode}:null;
   renderStops();
   return {
     async show(){
@@ -659,7 +679,7 @@ function journeyPicker(root,initial,onChange=()=>{}){
     },
     value,mode:()=>st.mode,
     changed:()=>snapshot()!==start,
-    reset(){st.from=st.to=null;st.via=[];for(const k of ['from','to']){if(pins[k])pins[k].remove();q(`[data-jq="${k}"]`).value='';q(`[data-jres="${k}"]`).innerHTML=''}pins={};renderStops();if(line){line.remove();line=null}say('Choose a start and a finish.')},
+    reset(){st.from=st.to=null;st.via=[];lastRoute=null;for(const k of ['from','to']){if(pins[k])pins[k].remove();q(`[data-jq="${k}"]`).value='';q(`[data-jres="${k}"]`).innerHTML='';const l=q(`[data-jl="${k}"]`);l.value='';l.disabled=true}pins={};renderStops();if(line){line.remove();line=null}say('Choose a start and a finish.')},
   };
 }
 // The journey map on a challenge page: the route, start and finish flags, and each team's logo or

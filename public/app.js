@@ -495,46 +495,36 @@ $('#myProfile').onclick=()=>openProfile(me.id);
 }
 
 // --- Apple Shortcuts sync ---------------------------------------------------------------------
-// The shared shortcut (its iCloud link comes from the server's settings) keeps its sync key in a file
-// on the iPhone. "Connect this iPhone" makes a new key and opens the shortcut with it, so nobody
-// copies keys around; the server keeps only a hash of the key.
+// The shared shortcut (its iCloud link comes from the server's settings) holds the person's sync key in
+// a Text action, which iPhone asks for when they add it. The key is shown here once, to copy; the server
+// keeps only a hash of it.
 const SHORTCUT_NAME='Active Together sync';
-const onIPhone=()=>/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 async function openShortcutSetup(){
   let st,cfg;
   try{[st,cfg]=await Promise.all([api('/api/me/sync-key'),api('/api/config')])}catch(e){alert(e.message);return}
-  const ios=onIPhone();
   $('#modalBody').innerHTML=`<h2>Apple Shortcuts sync</h2>
     <p>Sends your day's steps, exercise minutes and distance from Apple Health, twice a day. Do this on your iPhone, once.</p>
-    <h3>1. Get the shortcut</h3>
-    ${cfg.shortcutUrl?`<p><a class="button" href="${esc(cfg.shortcutUrl)}">Get the shortcut</a></p><p class="muted">${ios?'':'Open this page on your iPhone to do this. '}Tap <b>Add Shortcut</b> and keep its name, "${SHORTCUT_NAME}".</p>`
+    <h3>1. Copy your sync key</h3>
+    <div id="keyBox"><p><button id="showKey">${st.exists?'Make a new sync key':'Show my sync key'}</button></p>${st.exists?`<p class="muted">You made a key on ${esc(fmtWhen(st.created_at))}. Keys are only shown once, so a new one replaces it (a shortcut using the old key stops working until you paste the new one in).</p>`:''}</div>
+    <h3>2. Get the shortcut</h3>
+    ${cfg.shortcutUrl?`<p><a class="button" href="${esc(cfg.shortcutUrl)}">Get the shortcut</a></p><p class="muted">Tap <b>Add Shortcut</b>, and paste your key when it asks.</p>`
       :`<p class="muted">The shared shortcut isn't available yet. To make it yourself, follow <a href="/shortcut-build.html" target="_blank" rel="noopener">how to build it</a>.</p>`}
-    <h3>2. Connect it to your account</h3>
-    ${ios?`<p><button id="connectIPhone">Connect this iPhone</button></p><p class="muted">Opens Shortcuts and runs it once. Allow it to read Apple Health and to connect to activetogether.team when asked. ${st.exists?'This replaces your current key, so connect each of your iPhones again.':''}</p>`
-      :`<p class="muted">Open activetogether.team on your iPhone, tap <b>Set up Apple Shortcuts</b>, then <b>Connect this iPhone</b>.</p>`}
     <h3>3. Make it automatic</h3>
     <p class="muted">In Shortcuts, tap <b>Automation</b>, <b>+</b>, <b>Time of Day</b>: <b>21:00</b>, <b>Daily</b>, <b>Run Immediately</b>, and pick "${SHORTCUT_NAME}". Add another for <b>08:00</b>.</p>
-    <div id="keyBox"></div>
-    <p class="muted">${st.exists?`Connected since ${esc(fmtWhen(st.created_at))}. `:''}<a href="#" id="showKey">Show a key to paste instead</a>${st.exists?' · <a href="#" id="dropKey">Disconnect</a>':''}</p>
+    ${st.exists?'<p class="muted"><a href="#" id="dropKey">Disconnect</a> (stops any shortcut using your key)</p>':''}
     <p id="keyMsg" class="error"></p>`;
   if(!$('#modal').open)$('#modal').showModal();
-  const newKey=async()=>(await api('/api/me/sync-key',{method:'POST'})).key;
-  if(ios)$('#connectIPhone').onclick=async()=>{
-    try{const key=await newKey();location.href=`shortcuts://run-shortcut?name=${encodeURIComponent(SHORTCUT_NAME)}&input=text&text=${encodeURIComponent(key)}`}
-    catch(e){$('#keyMsg').textContent=e.message}
-  };
-  $('#showKey').onclick=async e=>{
-    e.preventDefault();
-    if(st.exists&&!confirm('Make a new key? The shortcut stops working on any iPhone using the old one until it gets the new key.'))return;
+  $('#showKey').onclick=async()=>{
+    if(st.exists&&!confirm('Make a new key? A shortcut using the old one stops working until you paste the new key into it.'))return;
     try{
-      const key=await newKey();
-      $('#keyBox').innerHTML=`<p><b>Your sync key.</b> Copy it now; it won't be shown again. Run the shortcut and paste it when asked.</p><div class="linkrow"><code>${esc(key)}</code><button type="button" id="copyKey">Copy</button></div>`;
+      const {key}=(await api('/api/me/sync-key',{method:'POST'}));
+      $('#keyBox').innerHTML=`<p class="muted">Your sync key. It's only shown now, so copy it before closing this.</p><div class="linkrow"><code>${esc(key)}</code><button type="button" id="copyKey">Copy</button></div>`;
       $('#copyKey').onclick=async()=>{try{await navigator.clipboard.writeText(key);$('#copyKey').textContent='Copied'}catch(err){prompt('Copy your sync key:',key)}};
     }catch(err){$('#keyMsg').textContent=err.message}
   };
   if(st.exists)$('#dropKey').onclick=async e=>{
     e.preventDefault();
-    if(!confirm('Disconnect? Your shortcut stops sending until you connect again.'))return;
+    if(!confirm('Disconnect? Your shortcut stops sending until you make a new key and paste it in.'))return;
     try{await api('/api/me/sync-key',{method:'DELETE'});openShortcutSetup()}catch(err){$('#keyMsg').textContent=err.message}
   };
 }

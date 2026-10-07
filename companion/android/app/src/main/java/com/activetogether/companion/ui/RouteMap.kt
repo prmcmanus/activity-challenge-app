@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import com.activetogether.companion.RoutePoint
@@ -44,7 +45,7 @@ fun RouteMap(points: List<RoutePoint>, modifier: Modifier = Modifier) {
         map.onResume()
         onDispose { map.onPause(); map.onDetach() }
     }
-    AndroidView(factory = { map }, modifier = modifier, update = { view ->
+    AndroidView(factory = { map }, modifier = modifier.clipToBounds(), update = { view ->
         view.overlays.clear()
         val geo = points.map { GeoPoint(it.lat, it.lon) }
         if (geo.size < 2) return@AndroidView
@@ -129,7 +130,7 @@ fun JourneyMapView(journey: com.activetogether.companion.JourneyMap, describe: (
         photos = got
     }
     val density = context.resources.displayMetrics.density
-    AndroidView(factory = { map }, modifier = modifier, update = { view ->
+    AndroidView(factory = { map }, modifier = modifier.clipToBounds(), update = { view ->
         view.overlays.clear()
         val geo = journey.route.map { GeoPoint(it.lat, it.lon) }
         if (geo.size < 2) return@AndroidView

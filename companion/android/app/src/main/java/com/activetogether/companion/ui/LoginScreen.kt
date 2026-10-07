@@ -56,7 +56,8 @@ fun LoginScreen(vm: AppViewModel) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Image(painterResource(R.mipmap.ic_launcher), contentDescription = null, modifier = Modifier.padding(top = 32.dp).size(96.dp).clip(MaterialTheme.shapes.large))
+            // The logo as a plain picture: the launcher icon is an adaptive icon, which Image() can't draw.
+            Image(painterResource(R.drawable.app_logo), contentDescription = null, modifier = Modifier.padding(top = 32.dp).size(96.dp).clip(MaterialTheme.shapes.large))
             Text("Active Together", style = MaterialTheme.typography.headlineMedium, color = Color.White)
             Text("Sign in with your Active Together account to see your challenges, log activity and sync your workouts.",
                 color = Color.White.copy(alpha = 0.9f), textAlign = TextAlign.Center)

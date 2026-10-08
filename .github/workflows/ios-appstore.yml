@@ -1,0 +1,88 @@
+# Builds the iPhone app for the App Store and uploads it to App Store Connect, where it appears in
+# TestFlight and can be submitted for review. Run by hand: Actions > "iOS App Store" > Run workflow.
+#
+# Needs four repository secrets (Settings > Secrets and variables > Actions), set up once - see
+# docs/store-release.md:
+#   ASC_KEY_ID      App Store Connect API key ID
+#   ASC_ISSUER_ID   its Issuer ID
+#   ASC_KEY_P8      the contents of the downloaded AuthKey_XXXX.p8 file
+#   APPLE_TEAM_ID   the developer team ID (Membership details)
+#
+# Signing is automatic: Xcode uses the API key to make the distribution certificate and profile.
+# The version comes from companion/ios/project.yml; the build number is 1000 + this workflow's run
+# number, so every upload is new to Apple without editing anything.
+name: iOS App Store
+on:
+  workflow_dispatch:
+
+jobs:
+  upload:
+    runs-on: macos-26
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the secrets are set
+        run: |
+          for s in ASC_KEY_ID ASC_ISSUER_ID APPLE_TEAM_ID; do [ -n "${!s}" ] || { echo "Missing secret $s"; exit 1; }; done
+          [ -n "${{ secrets.ASC_KEY_P8 }}" ] || { echo "Missing secret ASC_KEY_P8"; exit 1; }
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate the Xcode project
+        working-directory: companion/ios
+        run: xcodegen generate
+      - name: Install the App Store Connect API key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          printf '%s\n' "$ASC_KEY_P8" > ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8
+      - name: Archive (App Store build)
+        working-directory: companion/ios
+        run: |
+          set -o pipefail
+          BUILD=$((1000 + ${{ github.run_number }}))
+          echo "Build number $BUILD"
+          xcodebuild -project ActiveTogether.xcodeproj -scheme ActiveTogether -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -archivePath build/ActiveTogether.xcarchive \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic AT_DISTRIBUTION=appstore CURRENT_PROJECT_VERSION="$BUILD" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            archive | tee archive.log | grep -E "error:|ARCHIVE (SUCCEEDED|FAILED)"
+      - name: Upload to App Store Connect
+        working-directory: companion/ios
+        run: |
+          set -o pipefail
+          cat > ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>$APPLE_TEAM_ID</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          EOF
+          xcodebuild -exportArchive -archivePath build/ActiveTogether.xcarchive -exportOptionsPlist ExportOptions.plist \
+            -exportPath build/export -allowProvisioningUpdates \
+            -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            | tee export.log | grep -E "error:|EXPORT (SUCCEEDED|FAILED)|Upload succeeded|Uploaded"
+          echo "Uploaded. It shows in App Store Connect > TestFlight after Apple finishes processing (usually 10-30 minutes)."
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appstore-logs
+          path: |
+            companion/ios/archive.log
+            companion/ios/export.log
+          retention-days: 14
+      - name: Remove the key
+        if: always()
+        run: rm -rf ~/.appstoreconnect

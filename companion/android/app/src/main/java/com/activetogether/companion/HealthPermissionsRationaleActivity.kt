@@ -2,6 +2,8 @@ package com.activetogether.companion
 
 import android.app.Activity
 import android.os.Bundle
+import android.text.method.LinkMovementMethod
+import androidx.core.text.HtmlCompat
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.view.ViewCompat
@@ -11,12 +13,19 @@ import androidx.core.view.WindowInsetsCompat
 class HealthPermissionsRationaleActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Health Connect shows this when someone asks why the app wants access; Play requires it to
+        // explain the use and link the privacy policy.
         val text = TextView(this).apply {
-            text = "Active Together reads your exercise sessions and, if you allow it, the distance " +
-                "recorded during them. For each workout it uploads only the activity type, date, start/finish time, " +
-                "whole minutes and distance to the challenges you choose at $SERVER_URL. " +
-                "If you switch on \"Include GPS routes\", it also uploads each workout's route so you can see it " +
-                "on a map; only you can see your routes. It never reads or uploads heart rate, calories or any other health data."
+            text = HtmlCompat.fromHtml(
+                "Active Together reads your exercise sessions, the distance recorded during them, and your daily step count. " +
+                "For each workout it uploads only the activity type, date, start and finish time, whole minutes and distance, " +
+                "and for each day your step total, to the challenges you choose at $SERVER_URL. " +
+                "If you switch on \"Include GPS routes\", it also uploads each workout's route so you can see it on a map; " +
+                "only you can see your routes. It never reads or uploads heart rate, calories or any other health data, " +
+                "and your health data is never used for advertising or sold.<br><br>" +
+                "<a href=\"$SERVER_URL/privacy.html\">Privacy policy</a>",
+                HtmlCompat.FROM_HTML_MODE_COMPACT)
+            movementMethod = LinkMovementMethod.getInstance()
             textSize = 18f
             setPadding(32, 32, 32, 32)
         }

@@ -8,8 +8,8 @@ options:
     iOS: "17.0"
 settings:
   base:
-    MARKETING_VERSION: "1.10.0"
-    CURRENT_PROJECT_VERSION: "17"
+    MARKETING_VERSION: "1.11.0"
+    CURRENT_PROJECT_VERSION: "18"
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
     # sideload (the website download, which offers its own updates) or appstore (updated only by the App Store).
@@ -46,7 +46,6 @@ targets:
         ATServerURL: ""
         ATDistribution: $(AT_DISTRIBUTION)
         NSHealthShareUsageDescription: Active Together reads your workouts (their time, distance and, if you choose, GPS route) and your daily steps, to log them in your challenges.
-        NSHealthUpdateUsageDescription: Active Together never writes to Apple Health.
         # Invite links: activetogether://join/CODE
         CFBundleURLTypes:
           - CFBundleURLName: team.activetogether.invite

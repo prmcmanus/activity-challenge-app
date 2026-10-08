@@ -162,6 +162,7 @@ struct MeView: View {
             Button(role: .destructive) { Task { await model.signOut() } } label: { Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right").frame(maxWidth: .infinity) }
                 .buttonStyle(.bordered).controlSize(.large)
             Text("Active Together · \(serverURL.replacingOccurrences(of: "https://", with: "")) · version \(appVersion)").font(.caption).foregroundStyle(.secondary)
+            Link("Privacy policy", destination: URL(string: "\(serverURL)/privacy.html")!).font(.caption)
         }
         .navigationTitle("Active Together").navigationBarTitleDisplayMode(.inline)
         .task(id: model.me) { await load() }

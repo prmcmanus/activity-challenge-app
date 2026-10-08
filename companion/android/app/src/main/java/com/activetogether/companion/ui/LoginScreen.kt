@@ -85,6 +85,7 @@ fun LoginScreen(vm: AppViewModel) {
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     val context = androidx.compose.ui.platform.LocalContext.current
                     androidx.compose.material3.TextButton(onClick = { openInBrowser(context, SERVER_URL) }) { Text("Create an account") }
+                    androidx.compose.material3.TextButton(onClick = { openInBrowser(context, "$SERVER_URL/privacy.html") }) { Text("Privacy policy") }
                 }
             }
         }

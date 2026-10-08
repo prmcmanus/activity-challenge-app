@@ -271,8 +271,11 @@ fun MeScreen(vm: AppViewModel, edit: () -> Unit, help: () -> Unit, admin: () -> 
 @Composable
 private fun VersionLine() {
     val context = LocalContext.current
-    Text("Active Together · ${SERVER_URL.removePrefix("https://")} · version ${context.packageManager.getPackageInfo(context.packageName, 0).versionName}",
-        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column {
+        Text("Active Together · ${SERVER_URL.removePrefix("https://")} · version ${context.packageManager.getPackageInfo(context.packageName, 0).versionName}",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        androidx.compose.material3.TextButton(onClick = { openInBrowser(context, "$SERVER_URL/privacy.html") }) { Text("Privacy policy") }
+    }
 }
 
 /** Shrink a picked photo to a 320px JPEG data: URL - the same size the web app sends for avatars. */

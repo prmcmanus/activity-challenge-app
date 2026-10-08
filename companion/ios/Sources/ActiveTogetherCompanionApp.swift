@@ -136,6 +136,7 @@ struct LoginView: View {
                     .disabled(busy || email.isEmpty || password.isEmpty)
                     Text("New here? Create an account at \(serverURL.replacingOccurrences(of: "https://", with: "")), then sign in.").font(.footnote).foregroundStyle(.secondary)
                     Link("Create an account", destination: URL(string: serverURL)!).font(.footnote.bold())
+                    Link("Privacy policy", destination: URL(string: "\(serverURL)/privacy.html")!).font(.footnote)
                 }
                 .textFieldStyle(.roundedBorder)
                 .padding(20).background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 20))

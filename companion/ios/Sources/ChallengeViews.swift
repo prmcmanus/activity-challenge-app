@@ -432,15 +432,18 @@ struct JourneyCard: View {
                     Annotation("Start: \(m.journey.fromName)", coordinate: CLLocationCoordinate2D(latitude: m.journey.fromLat, longitude: m.journey.fromLon)) {
                         Circle().fill(.white).frame(width: 12, height: 12).overlay(Circle().stroke(.black, lineWidth: 4)).shadow(radius: 1)
                     }
+                    .annotationTitles(.hidden)
                     ForEach(Array(m.journey.via.enumerated()), id: \.offset) { i, s in
                         Annotation("Stop \(i + 1): \(s.name)", coordinate: CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)) {
                             Text("\(i + 1)").font(.caption2.bold()).foregroundStyle(.white).frame(width: 20, height: 20)
                                 .background(Circle().fill(.black)).overlay(Circle().stroke(.white, lineWidth: 2))
                         }
+                        .annotationTitles(.hidden)
                     }
                     Annotation("Finish: \(m.journey.toName)", coordinate: CLLocationCoordinate2D(latitude: m.journey.toLat, longitude: m.journey.toLon), anchor: .bottomLeading) {
                         Text("🏁").font(.title2)
                     }
+                    .annotationTitles(.hidden)
                     ForEach(m.markers) { mk in
                         Annotation(mk.name, coordinate: CLLocationCoordinate2D(latitude: mk.lat, longitude: mk.lon)) {
                             Avatar(url: mk.imageURL, name: mk.name, size: 36)
@@ -449,10 +452,10 @@ struct JourneyCard: View {
                                 .offset(offsets[mk.id] ?? .zero)
                                 .onTapGesture { selected = mk.id }
                         }
+                        .annotationTitles(.hidden)
                     }
                 }
                 .mapStyle(.standard(pointsOfInterest: .excludingAll))
-                .annotationTitles(.hidden)
                 .frame(height: 300).clipShape(RoundedRectangle(cornerRadius: 12))
                 if let s = m.markers.first(where: { $0.id == selected }) {
                     HStack {

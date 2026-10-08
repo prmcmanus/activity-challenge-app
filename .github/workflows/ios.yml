@@ -26,8 +26,9 @@ jobs:
           set -o pipefail
           xcodebuild -project ActiveTogether.xcodeproj -scheme ActiveTogether -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build | tee build.log | grep -E "error:|warning: .*deprecated|BUILD (SUCCEEDED|FAILED)" || true
-          test -d build/Build/Products/Release-iphoneos/ActiveTogether.app
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build | tee build.log | grep -E "error:|warning: .*deprecated|BUILD (SUCCEEDED|FAILED)"
+          # A failed compile can still leave an .app folder behind, so check for the app's executable.
+          test -x build/Build/Products/Release-iphoneos/ActiveTogether.app/ActiveTogether
       - name: Package the .ipa
         working-directory: companion/ios
         run: |

@@ -46,6 +46,8 @@ targets:
         ATServerURL: ""
         ATDistribution: $(AT_DISTRIBUTION)
         NSHealthShareUsageDescription: Active Together reads your workouts (their time, distance and, if you choose, GPS route) and your daily steps, to log them in your challenges.
+        # Required by App Store upload checks for any HealthKit app, though the app never asks to write.
+        NSHealthUpdateUsageDescription: Active Together only reads from Apple Health. It never writes to or changes your Health data.
         # Invite links: activetogether://join/CODE
         CFBundleURLTypes:
           - CFBundleURLName: team.activetogether.invite

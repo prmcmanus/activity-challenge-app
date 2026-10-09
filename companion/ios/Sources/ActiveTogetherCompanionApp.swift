@@ -134,6 +134,7 @@ struct LoginView: View {
                     } label: { Group { if busy { ProgressView().tint(.white) } else { Text("Sign in").bold() } }.frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent).controlSize(.large)
                     .disabled(busy || email.isEmpty || password.isEmpty)
+                    Link("Forgot password?", destination: URL(string: "\(serverURL)/forgot")!).font(.footnote.bold())
                     Text("New here? Create an account at \(serverURL.replacingOccurrences(of: "https://", with: "")), then sign in.").font(.footnote).foregroundStyle(.secondary)
                     Link("Create an account", destination: URL(string: serverURL)!).font(.footnote.bold())
                     Link("Privacy policy", destination: URL(string: "\(serverURL)/privacy.html")!).font(.footnote)

@@ -14,8 +14,8 @@ android {
         applicationId = "com.activetogether.companion"
         minSdk = 28
         targetSdk = 36
-        versionCode = 18
-        versionName = "1.11.0"
+        versionCode = 19
+        versionName = "1.12.0"
         buildConfigField("String", "SERVER_URL", "\"https://activetogether.team\"")
         manifestPlaceholders["cleartext"] = "false"
         // Whether the app offers its own updates from the website. Off in the Play Store build.

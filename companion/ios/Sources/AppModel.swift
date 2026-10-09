@@ -1,11 +1,23 @@
 import Foundation
 import Observation
 import BackgroundTasks
+import Security
 
-/// Session and settings, in UserDefaults (as the Android app keeps them in SharedPreferences).
+/// Settings in UserDefaults; the session token in the Keychain (this device only, readable once the phone has
+/// been unlocked since starting, so background sync still works). A token an older version kept in UserDefaults
+/// moves across the first time it's read.
 struct Prefs {
     private static let d = UserDefaults.standard
-    static var token: String? { get { d.string(forKey: "token").flatMap { $0.isEmpty ? nil : $0 } } set { d.set(newValue, forKey: "token") } }
+    static var token: String? {
+        get {
+            if let old = d.string(forKey: "token"), !old.isEmpty { if Keychain.set(old) { d.removeObject(forKey: "token") }; return old }
+            return Keychain.get().flatMap { $0.isEmpty ? nil : $0 }
+        }
+        set {
+            d.removeObject(forKey: "token")
+            if let v = newValue, !v.isEmpty { if !Keychain.set(v) { d.set(v, forKey: "token") } } else { Keychain.delete() }
+        }
+    }
     static var email: String { get { d.string(forKey: "email") ?? "" } set { d.set(newValue, forKey: "email") } }
     static var autoSync: Bool { get { d.bool(forKey: "autoSync") } set { d.set(newValue, forKey: "autoSync") } }
     /// Upload GPS routes with workouts. Off by default: a route is precise location data.
@@ -14,6 +26,27 @@ struct Prefs {
     static var lastSyncSummary: String { get { d.string(forKey: "lastSyncSummary") ?? "" } set { d.set(newValue, forKey: "lastSyncSummary") } }
     /// An invite link opened before signing in, kept until the person has signed in and decided.
     static var pendingInvite: String? { get { d.string(forKey: "pendingInvite") } set { d.set(newValue, forKey: "pendingInvite") } }
+}
+
+/// The session token as a generic-password Keychain item.
+private enum Keychain {
+    private static let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                              kSecAttrService as String: "team.activetogether.companion.session",
+                                              kSecAttrAccount as String: "session"]
+    static func get() -> String? {
+        var q = base; q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: AnyObject?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+    @discardableResult static func set(_ value: String) -> Bool {
+        delete()
+        var q = base
+        q[kSecValueData as String] = Data(value.utf8)
+        q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return SecItemAdd(q as CFDictionary, nil) == errSecSuccess
+    }
+    static func delete() { SecItemDelete(base as CFDictionary) }
 }
 
 /// A device workout and every challenge it could go into.

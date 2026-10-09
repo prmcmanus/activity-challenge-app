@@ -3,7 +3,7 @@
 <!-- Apple's privacy manifest, required for App Store uploads. No tracking and no tracking domains.
      Collected data: account (name, email, user ID), workouts and steps from Apple Health, optional GPS
      routes, avatar and screenshot images, comments/bio, and support tickets - all linked to the
-     account and used only to run the app. UserDefaults holds the session and settings (reason CA92.1). -->
+     account and used only to run the app. UserDefaults holds settings (reason CA92.1); the session is in the Keychain. -->
 <plist version="1.0">
 <dict>
 	<key>NSPrivacyTracking</key>

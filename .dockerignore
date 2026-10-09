@@ -15,3 +15,12 @@ npm-debug.log*
 README.md
 start-local.ps1
 .standby.*
+# Never in the image: pre-update database copies and env backups (personal data and secrets), uploads (they
+# live on the data volume), and things the server doesn't run.
+backups
+uploads
+**/*.sqlite
+**/*.sqlite-*
+**/env-*
+docs
+tools

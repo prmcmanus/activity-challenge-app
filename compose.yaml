@@ -1,3 +1,10 @@
+# Each container's log is capped (3 files of 10 MB), however long it runs between deploys.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   activity-challenge:
     build: .
@@ -14,6 +21,9 @@ services:
       RECAPTCHA_SITE_KEY: ${RECAPTCHA_SITE_KEY:-}
       RECAPTCHA_SECRET_KEY: ${RECAPTCHA_SECRET_KEY:-}
       SHORTCUT_URL: ${SHORTCUT_URL:-}
+      # Password reset emails through Resend (resend.com); without a key, admins make reset links instead.
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      MAIL_FROM: ${MAIL_FROM:-Active Together <no-reply@activetogether.team>}
       AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-20}
       AUTH_RATE_LIMIT_WINDOW_MS: ${AUTH_RATE_LIMIT_WINDOW_MS:-900000}
       API_RATE_LIMIT_MAX: ${API_RATE_LIMIT_MAX:-300}
@@ -23,6 +33,7 @@ services:
     volumes:
       - activity_data:/data
     restart: unless-stopped
+    logging: *logging
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -54,6 +65,7 @@ services:
     volumes:
       - activity_data:/data
     restart: unless-stopped
+    logging: *logging
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -87,6 +99,7 @@ services:
       - activity_data:/data
     stop_grace_period: 60s
     restart: unless-stopped
+    logging: *logging
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -101,6 +114,7 @@ services:
     environment:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
     restart: unless-stopped
+    logging: *logging
     security_opt:
       - no-new-privileges:true
     cap_drop:

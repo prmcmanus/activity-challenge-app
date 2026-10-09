@@ -2579,3 +2579,92 @@ test('my activities can be listed for one challenge', async () => {
   assert.deepEqual(onlyA.body.activities.map(x => x.activity_type), ['Walk']);
   assert.equal((await jsonFetch(`${origin}/api/me/activities?limit=10`, me.cookie)).body.activities.length, 4);
 });
+
+test('sessions last 30 days on the web and 90 in the apps, extended as they are used', async () => {
+  const u = await register('Sid Session');
+  const web = await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: u.email, password: 'SuperSecret123!' }) });
+  assert.match(web.headers.get('set-cookie'), /Max-Age=2592000/);
+  const app = await (await fetch(`${origin}/api/mobile/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: u.email, password: 'SuperSecret123!' }) })).json();
+  const me = await (await fetch(`${origin}/api/me`, { headers: { Authorization: `Bearer ${app.sessionToken}` } })).json();
+  assert.equal(me.user.id, u.user.id);
+  assert.equal(me.user.renewCookie, undefined, 'nothing internal leaks into the reply');
+});
+
+test('password reset: admin-made links work once and sign the account out everywhere; forgot never reveals accounts', async () => {
+  const login = await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }) });
+  const admin = login.headers.get('set-cookie').split(';')[0];
+  const u = await register('Rita Reset');
+  assert.equal((await jsonFetch(`${origin}/api/admin/users/${u.user.id}/reset-link`, u.cookie, 'POST')).status, 403);
+  const link = await jsonFetch(`${origin}/api/admin/users/${u.user.id}/reset-link`, admin, 'POST');
+  assert.equal(link.status, 201);
+  const token = link.body.url.split('/reset/')[1];
+  assert.equal((await jsonFetch(`${origin}/api/password/reset?token=${token}`)).body.name, 'Rita Reset');
+  assert.equal((await jsonFetch(`${origin}/api/password/reset`, undefined, 'POST', { token, password: 'short' })).status, 400);
+  const done = await jsonFetch(`${origin}/api/password/reset`, undefined, 'POST', { token, password: 'BrandNewPass1' });
+  assert.equal(done.status, 200);
+  assert.equal(done.body.email, u.email);
+  assert.equal((await jsonFetch(`${origin}/api/dashboard`, u.cookie)).status, 401, 'old sessions are signed out');
+  assert.equal((await jsonFetch(`${origin}/api/password/reset`, undefined, 'POST', { token, password: 'AnotherPass1' })).status, 400, 'a link works once');
+  assert.equal((await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: u.email, password: 'BrandNewPass1' }) })).status, 200);
+  // Forgot: the same answer whether or not the email has an account.
+  const known = await jsonFetch(`${origin}/api/password/forgot`, undefined, 'POST', { email: u.email });
+  const unknown = await jsonFetch(`${origin}/api/password/forgot`, undefined, 'POST', { email: 'no-such-person@example.com' });
+  assert.deepEqual([known.status, known.body], [unknown.status, unknown.body]);
+  assert.equal((await jsonFetch(`${origin}/api/config`)).body.passwordResetEmail, false);
+});
+
+test('owners can see members and their entries, delete an entry, and remove someone - but not themselves', async () => {
+  const owner = await register('Opal Owner');
+  const cheat = await register('Chet Cheater');
+  const other = await register('Olly Other');
+  const c = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Moderated', start_date: '2026-01-01', end_date: '2026-12-31', participation: 'individual' });
+  const cid = c.body.id;
+  for (const p of [cheat, other]) await jsonFetch(`${origin}/api/join`, p.cookie, 'POST', { code: c.body.invite_code });
+  await jsonFetch(`${origin}/api/activities`, cheat.cookie, 'POST', { challenge_id: cid, activity_type: 'Run', minutes: 9000, activity_date: '2026-03-01' });
+  await jsonFetch(`${origin}/api/activities`, cheat.cookie, 'POST', { challenge_id: cid, activity_type: 'Walk', minutes: 30, activity_date: '2026-03-02' });
+
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}/members`, other.cookie)).status, 403);
+  const list = await jsonFetch(`${origin}/api/challenges/${cid}/members`, owner.cookie);
+  assert.equal(list.body.members.find(m => m.id === cheat.user.id).entries, 2);
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}/members/${cheat.user.id}/activities`, other.cookie)).status, 403);
+  const entries = await jsonFetch(`${origin}/api/challenges/${cid}/members/${cheat.user.id}/activities`, owner.cookie);
+  const bogus = entries.body.activities.find(a => a.minutes === 9000);
+  assert.equal((await jsonFetch(`${origin}/api/activities/${bogus.id}`, other.cookie, 'DELETE')).status, 403, 'members cannot delete other people\'s entries');
+  // The leaderboard is cached between writes, and a deletion shows straight away.
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}/leaderboard`, owner.cookie)).body.users.find(x => x.id === cheat.user.id).minutes, 9030);
+  assert.equal((await jsonFetch(`${origin}/api/activities/${bogus.id}`, owner.cookie, 'DELETE')).status, 200);
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}/leaderboard`, owner.cookie)).body.users.find(x => x.id === cheat.user.id).minutes, 30);
+
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}/members/${owner.user.id}`, owner.cookie, 'DELETE')).status, 400, 'owners leave, not remove themselves');
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}/members/${cheat.user.id}`, other.cookie, 'DELETE')).status, 403);
+  const removed = await jsonFetch(`${origin}/api/challenges/${cid}/members/${cheat.user.id}`, owner.cookie, 'DELETE');
+  assert.deepEqual([removed.status, removed.body.entriesDeleted], [200, 1]);
+  assert.ok(!(await jsonFetch(`${origin}/api/challenges/${cid}/leaderboard`, owner.cookie)).body.users.some(x => x.id === cheat.user.id));
+});
+
+test('owners can replace an invite code; the old one stops working', async () => {
+  const owner = await register('Ivy Inviter');
+  const joiner = await register('Jo Joiner');
+  const c = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Leaky link', start_date: '2026-01-01', end_date: '2026-12-31' });
+  const t = await jsonFetch(`${origin}/api/teams`, owner.cookie, 'POST', { challenge_id: c.body.id, name: 'Green' });
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${c.body.id}/invite-code`, joiner.cookie, 'POST')).status, 403);
+  const fresh = await jsonFetch(`${origin}/api/challenges/${c.body.id}/invite-code`, owner.cookie, 'POST');
+  assert.notEqual(fresh.body.invite_code, c.body.invite_code);
+  assert.equal((await jsonFetch(`${origin}/api/join`, joiner.cookie, 'POST', { code: c.body.invite_code })).status, 400);
+  assert.equal((await jsonFetch(`${origin}/api/join`, joiner.cookie, 'POST', { code: fresh.body.invite_code })).status, 200);
+  const freshTeam = await jsonFetch(`${origin}/api/teams/${t.body.id}/invite-code`, owner.cookie, 'POST');
+  assert.notEqual(freshTeam.body.invite_code, t.body.invite_code);
+  assert.equal((await jsonFetch(`${origin}/api/join/preview?code=${t.body.invite_code}`)).status, 404);
+});
+
+test('invite links preview what they are for; bad JSON gets a clear 400', async () => {
+  const owner = await register('Pia Preview');
+  const c = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Steps & "Smiles"', start_date: '2026-01-01', end_date: '2026-12-31' });
+  const html = await (await fetch(`${origin}/join/${c.body.invite_code}`)).text();
+  assert.ok(html.includes('<meta property="og:title" content="Join Steps &amp; &quot;Smiles&quot;">'), html.slice(0, 600));
+  assert.ok(html.includes(`content="${origin}/icon-512.png"`), 'absolute image address');
+  assert.ok((await (await fetch(`${origin}/`)).text()).includes('<meta property="og:title" content="Active Together">'));
+  const bad = await fetch(`${origin}/api/challenges`, { method: 'POST', headers: { cookie: owner.cookie, 'Content-Type': 'application/json' }, body: '{not json' });
+  assert.equal(bad.status, 400);
+  assert.match((await bad.json()).error, /JSON/);
+});

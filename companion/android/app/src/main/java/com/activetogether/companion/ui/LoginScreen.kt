@@ -81,6 +81,8 @@ fun LoginScreen(vm: AppViewModel) {
                         if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
                         else Text("Sign in", fontWeight = FontWeight.Bold)
                     }
+                    val forgotContext = androidx.compose.ui.platform.LocalContext.current
+                    androidx.compose.material3.TextButton(onClick = { openInBrowser(forgotContext, "$SERVER_URL/forgot") }) { Text("Forgot password?") }
                     Text("New here? Create an account at ${SERVER_URL.removePrefix("https://")}, then sign in.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     val context = androidx.compose.ui.platform.LocalContext.current

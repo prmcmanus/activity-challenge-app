@@ -271,6 +271,11 @@ Start a challenge for your workplace, club, family or friends, and see who moves
 > • Private by default: only people you invite can see a challenge
 >
 > No ads and no tracking. You can delete your account and everything in it at any time.
+>
+> Active Together is not a medical device and does not diagnose, treat, cure, or prevent any
+> medical condition. For medical advice, diagnosis or treatment, consult a healthcare professional.
+> Activity can be synced from Health Connect or Apple Health, or logged by hand; no extra device
+> is needed.
 
 **Keywords (Apple, max 100 characters):**
 `team,challenge,steps,fitness,workout,leaderboard,walking,running,cycling,journey,club,activity`

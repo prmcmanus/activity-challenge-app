@@ -1918,7 +1918,7 @@ test('invite links: page addresses load the app, the preview says what a code jo
   for (const p of ['/join/ABCD2345', '/challenges/1', '/help/tickets/3', '/admin/challenges']) {
     const r = await fetch(`${origin}${p}`);
     assert.equal(r.status, 200, p);
-    assert.match(await r.text(), /<script src="\/app\.js">/);
+    assert.match(await r.text(), /<script src="\/app\.js\?v=[0-9a-f]+">/);
   }
   assert.equal((await fetch(`${origin}/nope.png`)).status, 404);
   const links = await fetch(`${origin}/.well-known/assetlinks.json`);
@@ -2543,7 +2543,15 @@ test('security: challenge dates must be real dates, activity sources are plain w
   const etag = page.headers.get('etag');
   assert.ok(etag);
   assert.equal((await fetch(`${origin}/`, { headers: { 'If-None-Match': etag } })).status, 304);
+  assert.equal((await fetch(`${origin}/`, { headers: { 'If-None-Match': 'W/' + etag } })).status, 304, 'a weakened tag (from a compressing proxy) matches too');
   assert.equal((await fetch(`${origin}/vendor/leaflet-1.9.4/leaflet.js`)).status, 200);
+  // Pages link versioned copies of the script, stylesheet and theme, which can be cached for good.
+  const html = await (await fetch(`${origin}/privacy.html`)).text();
+  const v = html.match(/style\.css\?v=([0-9a-f]+)/);
+  assert.ok(v, 'privacy.html links a versioned stylesheet');
+  assert.ok(html.includes(`/theme.js?v=${v[1]}`));
+  assert.match((await fetch(`${origin}/app.js?v=${v[1]}`)).headers.get('cache-control'), /immutable/);
+  assert.equal((await fetch(`${origin}/app.js`)).headers.get('cache-control'), 'no-cache');
 });
 
 test('CSV exports neutralise spreadsheet formulas, and an admin deleting a sole owner hands the challenge on', async () => {

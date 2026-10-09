@@ -1563,6 +1563,12 @@ const SECURITY_HEADERS={
   ...(ORIGIN.startsWith('https:')?{'Strict-Transport-Security':'max-age=31536000'}:{}),
 };
 const STATIC_TYPES={'.json':'application/json','.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'application/javascript; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon','.png':'image/png','.txt':'text/plain; charset=utf-8'};
+// Pages link the site's own script and stylesheet with ?v=<content hash>, so a deploy is picked up at once
+// even where a cache (Cloudflare's browser TTL) holds files for hours; the versioned files can then be cached
+// for good.
+const VERSIONED=['app.js','style.css','theme.js'];
+const ASSET_V=crypto.createHash('sha256').update(VERSIONED.map(f=>{try{return fs.readFileSync(path.join(__dirname,'public',f))}catch(e){return ''}}).join('|')).digest('hex').slice(0,10);
+const versionAssets=html=>html.replace(/(src|href)="(\/?)(app\.js|style\.css|theme\.js)"/g,`$1="$2$3?v=${ASSET_V}"`);
 const server=http.createServer(async(req,res)=>{try{for(const [k,v] of Object.entries(SECURITY_HEADERS))res.setHeader(k,v);const url=new URL(req.url,ORIGIN);if(url.pathname.startsWith('/api/'))return await api(req,res,url);
  if(url.pathname.startsWith('/uploads/')){
    const rel=path.normalize(url.pathname.slice('/uploads/'.length)).replace(/^\.\.(\/|\\|$)/,'');
@@ -1575,11 +1581,17 @@ const server=http.createServer(async(req,res)=>{try{for(const [k,v] of Object.en
  let p=url.pathname==='/'?'index.html':url.pathname.slice(1);p=path.normalize(p).replace(/^\.\.(\/|\\|$)/,'');let f=path.join(__dirname,'public',p);if(!f.startsWith(path.join(__dirname,'public')))return send(res,404,{error:'Not found'});
  // Page addresses (/challenges/12, /join/ABC123, /help...) all load the app, which reads the path itself.
  if(!fs.existsSync(f)||!fs.statSync(f).isFile()){if(req.method==='GET'&&!path.extname(p))f=path.join(__dirname,'public','index.html');else return send(res,404,{error:'Not found'})}
- // Browsers keep a copy but check it each time: unchanged files come back as a small 304.
- const st=fs.statSync(f),etag=`"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
- const headers={'Content-Type':STATIC_TYPES[path.extname(f)]||'application/octet-stream','Cache-Control':'no-cache','ETag':etag};
- if(req.headers['if-none-match']===etag){res.writeHead(304,headers);return res.end()}
- res.writeHead(200,headers);fs.createReadStream(f).pipe(res)}catch(e){console.error(e);if(!res.headersSent)send(res,500,{error:'Server error'})}});// Node's default keepAliveTimeout is 5s, which races a client that reuses a pooled keep-alive
+ // Browsers keep a copy but check it each time (unchanged files come back as a small 304); a versioned
+ // script or stylesheet (?v=) never changes, so it's kept for a year.
+ const ext=path.extname(f),st=fs.statSync(f),html=ext==='.html';
+ const etag=`"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}${html?'-'+ASSET_V:''}"`;
+ const forever=url.searchParams.has('v')&&VERSIONED.includes(path.basename(f));
+ const headers={'Content-Type':STATIC_TYPES[ext]||'application/octet-stream','Cache-Control':forever?'public, max-age=31536000, immutable':'no-cache','ETag':etag};
+ // A proxy that compresses may weaken the tag to W/"..."; it still names the same file.
+ if(String(req.headers['if-none-match']||'').split(',').some(t=>t.trim().replace(/^W\//,'')===etag)){res.writeHead(304,headers);return res.end()}
+ res.writeHead(200,headers);
+ if(html)return res.end(versionAssets(fs.readFileSync(f,'utf8')));
+ fs.createReadStream(f).pipe(res)}catch(e){console.error(e);if(!res.headersSent)send(res,500,{error:'Server error'})}});// Node's default keepAliveTimeout is 5s, which races a client that reuses a pooled keep-alive
 // connection right as the server decides to close it - the client's write lands on a socket the
 // server is already tearing down, seen as a bare ECONNRESET with no HTTP response at all.
 // headersTimeout must exceed keepAliveTimeout or Node logs a warning and clamps it back down.

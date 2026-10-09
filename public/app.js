@@ -460,7 +460,7 @@ async function openTeamManage(tid,tname){
     <form id="addMemberForm"><label>Add someone already in this challenge (their email)<input id="addMemberEmail" type="email" required placeholder="name@example.com"></label><button>Add to team</button></form>
     <p class="muted">To bring someone new in, share the team's invite link.</p>
     <p id="manageMsg" class="error"></p>
-    <hr><button id="deleteTeamBtn" class="ghost" style="color:var(--red)">Delete this team</button>`;
+    <hr><button id="deleteTeamBtn" class="ghost" style="color:var(--red-text)">Delete this team</button>`;
   $('#modal').showModal();
   $('#renameTeamImage').addEventListener('change',()=>{
     const f=$('#renameTeamImage').files[0];

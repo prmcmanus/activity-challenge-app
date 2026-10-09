@@ -143,6 +143,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Create an account in the app, then signed in as it. An invite link that brought them here is asked about next. */
+    fun register(name: String, email: String, password: String, inviteCode: String?, done: (String?) -> Unit) = viewModelScope.launch {
+        try {
+            val token = withContext(Dispatchers.IO) { ActiveTogetherApi().register(name.trim(), email.trim(), password, inviteCode) }
+            prefs.email = email.trim()
+            signedInWith(token)
+            done(null)
+        } catch (e: Exception) {
+            done(e.message ?: "Couldn't create the account")
+        }
+    }
+
     /** The second step of two-step sign-in. */
     fun signInCode(ticket: String, code: String, done: (String?) -> Unit) = viewModelScope.launch {
         try {

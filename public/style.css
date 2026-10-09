@@ -37,3 +37,4 @@ footer a{color:var(--muted);font-size:13px;text-decoration:underline}
 .targets{border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin:12px 0}.targets legend{color:var(--muted);font-size:13px;padding:0 6px}.target{align-items:center;flex-wrap:wrap;margin:8px 0}.target select{width:auto;margin:0 0 0 auto}
 .twostep{margin-top:24px;padding-top:16px;border-top:1px solid var(--line)}.ts-steps{padding-left:20px;line-height:1.5}.qr{width:180px;margin:10px 0;background:#fff;padding:6px;border-radius:8px}.qr svg{display:block;width:100%;height:auto}.ts-secret{font-size:13px;word-break:break-all}.backup-codes{background:var(--surface-2);padding:10px 14px;border-radius:8px;font-size:15px;line-height:1.7;columns:2}
 .audit-row{align-items:start}
+.in-app header,.in-app footer{display:none}.in-app main{margin-top:12px}

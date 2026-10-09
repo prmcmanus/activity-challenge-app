@@ -5,6 +5,8 @@
   function saved(){try{return localStorage.getItem(KEY)||'auto'}catch(e){return 'auto'}}
   function apply(t){if(t==='light'||t==='dark')root.setAttribute('data-theme',t);else root.removeAttribute('data-theme')}
   apply(saved());
+  // Opened inside the phone apps (?in_app=1): the app has its own title bar, so the site's header and footer go.
+  if(/[?&]in_app=1\b/.test(location.search))root.classList.add('in-app');
   document.addEventListener('DOMContentLoaded',function(){
     var footer=document.querySelector('footer');if(!footer)return;
     var pick=document.createElement('span');pick.className='theme-pick';pick.setAttribute('role','group');pick.setAttribute('aria-label','Theme');

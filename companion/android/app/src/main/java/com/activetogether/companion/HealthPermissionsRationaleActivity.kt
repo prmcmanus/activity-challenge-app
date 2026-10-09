@@ -2,7 +2,6 @@ package com.activetogether.companion
 
 import android.app.Activity
 import android.os.Bundle
-import android.text.method.LinkMovementMethod
 import androidx.core.text.HtmlCompat
 import android.widget.ScrollView
 import android.widget.TextView
@@ -22,14 +21,19 @@ class HealthPermissionsRationaleActivity : Activity() {
                 "and for each day your step total, to the challenges you choose at $SERVER_URL. " +
                 "If you switch on \"Include GPS routes\", it also uploads each workout's route so you can see it on a map; " +
                 "only you can see your routes. It never reads or uploads heart rate, calories or any other health data, " +
-                "and your health data is never used for advertising or sold.<br><br>" +
-                "<a href=\"$SERVER_URL/privacy.html\">Privacy policy</a>",
+                "and your health data is never used for advertising or sold.",
                 HtmlCompat.FROM_HTML_MODE_COMPACT)
-            movementMethod = LinkMovementMethod.getInstance()
             textSize = 18f
-            setPadding(32, 32, 32, 32)
+            setPadding(32, 32, 32, 16)
         }
-        val root = ScrollView(this).apply { addView(text) }
+        // The privacy policy, opened inside the app.
+        val policy = android.widget.Button(this).apply { setText("Privacy policy"); setOnClickListener { PolicyActivity.open(this@HealthPermissionsRationaleActivity) } }
+        val column = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            addView(text)
+            addView(policy, android.widget.LinearLayout.LayoutParams(android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(32, 0, 32, 32) })
+        }
+        val root = ScrollView(this).apply { addView(column) }
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             v.setPadding(bars.left, bars.top, bars.right, bars.bottom)

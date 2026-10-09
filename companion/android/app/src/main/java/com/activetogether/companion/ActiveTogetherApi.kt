@@ -207,6 +207,14 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         return if (r.optBoolean("twoFactor")) LoginStep(null, r.getString("ticket")) else LoginStep(r.getString("sessionToken"), null)
     }
 
+    /** Create an account (the app's own sign-up); returns a session token, signed in. */
+    fun register(name: String, email: String, password: String, inviteCode: String?): String =
+        request("/api/mobile/register", "POST", JSONObject().put("name", name).put("email", email).put("password", password)
+            .apply { if (inviteCode != null) put("invite_code", inviteCode) }).getString("sessionToken")
+
+    /** Whether a new account needs an invite code. */
+    fun inviteOnly(): Boolean = request("/api/config").optBoolean("inviteOnly")
+
     /** The second step: the code from the authenticator app (or a backup code), with the ticket from [login]. */
     fun loginCode(ticket: String, code: String): String =
         request("/api/mobile/login/2fa", "POST", JSONObject().put("ticket", ticket).put("code", code)).getString("sessionToken")

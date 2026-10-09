@@ -2838,3 +2838,33 @@ test('a global admin can turn off someone\'s two-step sign-in (a lost phone); it
   const log = await jsonFetch(`${origin}/api/admin/audit?q=lou`, admin);
   assert.ok(log.body.entries.some(e => e.action === 'changed account' && e.detail === 'two-step sign-in off'));
 });
+
+test('the apps create accounts without the bot check, get a token, and still need an invite on an invite-only site', async () => {
+  const srv = await spawnServer({ RECAPTCHA_SITE_KEY: 'k', RECAPTCHA_SECRET_KEY: 's' });
+  const reg = (body, path = '/api/mobile/register') => fetch(`${srv.origin}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(async r => ({ status: r.status, body: await r.json(), cookie: r.headers.get('set-cookie') }));
+  try {
+    assert.equal((await reg({ name: 'Web Bot', email: 'webbot@example.com', password: 'SuperSecret123!' }, '/api/register')).status, 400, 'the website still needs the bot check');
+    const ok = await reg({ name: 'App Person', email: 'app.person@example.com', password: 'SuperSecret123!' });
+    assert.equal(ok.status, 201);
+    assert.match(ok.body.sessionToken, /^[a-f0-9]+$/);
+    assert.equal(ok.cookie, null);
+    assert.equal((await reg({ name: 'Dup', email: 'app.person@example.com', password: 'SuperSecret123!' })).status, 409);
+    assert.equal((await reg({ name: 'Short', email: 'short@example.com', password: 'short' })).status, 400);
+  } finally {
+    await srv.stop();
+  }
+  // Invite only: the app needs the code too.
+  const login = await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }) });
+  const admin = login.headers.get('set-cookie').split(';')[0];
+  const owner = await register('Inez Inviter');
+  const c = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'App invite', start_date: '2026-01-01', end_date: '2026-12-31' });
+  const appReg = body => fetch(`${origin}/api/mobile/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: 'SuperSecret123!', ...body }) }).then(async r => ({ status: r.status, body: await r.json() }));
+  await jsonFetch(`${origin}/api/admin/settings`, admin, 'PATCH', { inviteOnly: true });
+  try {
+    const none = await appReg({ name: 'No Code', email: 'nocode.app@example.com' });
+    assert.deepEqual([none.status, none.body.inviteRequired], [403, true]);
+    assert.equal((await appReg({ name: 'Has Code', email: 'hascode.app@example.com', invite_code: c.body.invite_code })).status, 201);
+  } finally {
+    await jsonFetch(`${origin}/api/admin/settings`, admin, 'PATCH', { inviteOnly: false });
+  }
+});

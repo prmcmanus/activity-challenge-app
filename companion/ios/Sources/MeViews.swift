@@ -138,6 +138,7 @@ struct MeView: View {
     @Environment(AppModel.self) private var model
     @Environment(Router.self) private var router
     @State private var profile: Profile?
+    @State private var showPolicy = false
 
     var body: some View {
         Page(refresh: load) {
@@ -162,10 +163,11 @@ struct MeView: View {
             Button(role: .destructive) { Task { await model.signOut() } } label: { Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right").frame(maxWidth: .infinity) }
                 .buttonStyle(.bordered).controlSize(.large)
             Text("Active Together · \(serverURL.replacingOccurrences(of: "https://", with: "")) · version \(appVersion)").font(.caption).foregroundStyle(.secondary)
-            Link("Privacy policy", destination: URL(string: "\(serverURL)/privacy.html")!).font(.caption)
+            Button("Privacy policy") { showPolicy = true }.font(.caption)
         }
         .navigationTitle("Active Together").navigationBarTitleDisplayMode(.inline)
         .task(id: model.me) { await load() }
+        .sheet(isPresented: $showPolicy) { PolicyView() }
     }
 
     private func load() async {

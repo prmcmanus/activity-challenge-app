@@ -1098,15 +1098,19 @@ async function api(req,res,url){
    if(m==='PATCH'){const b=await body(req);if(b.inviteOnly!==undefined&&!!b.inviteOnly!==inviteOnly()){setSetting('invite_only',b.inviteOnly?'1':'0');audit(u,b.inviteOnly?'invite only on':'invite only off')}}
    return send(res,200,{inviteOnly:inviteOnly()});
  }
- if(m==='POST'&&url.pathname==='/api/register'){
+ // Creating an account: on the website (with the bot check, the session in a cookie) or in the apps (no web
+ // page to show a bot check in, so they rely on the sign-up rate limit - and the invite when the site is
+ // invite only - as the app sign-in does; the session comes back as a token).
+ if(m==='POST'&&(url.pathname==='/api/register'||url.pathname==='/api/mobile/register')){
+   const app=url.pathname==='/api/mobile/register';
    if(hitRateLimit('register:'+ip,REGISTER_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many registration attempts from this network. Please try again later.'});
    const b=await body(req),email=String(b.email||'').toLowerCase().trim(),name=String(b.name||'').trim();
    if(!name||!email||!b.password||String(b.password).length<8)return send(res,400,{error:'Name, email and a password of at least 8 characters are required'});
    // Invite only: a new account needs the invite code (or emailed invite) someone shared.
    if(inviteOnly()&&!validInvite(b.invite_code,b.invite_token))return send(res,403,{error:b.invite_code?"That invite code wasn't recognised. Check it, or ask for a new invite link.":'Active Together is invite only. Use the invite link or code someone sent you to create an account.',inviteRequired:true});
-   if(!(await verifyCaptcha(b.captchaToken||b.recaptchaToken,ip)))return send(res,400,{error:'Bot check failed. Please try again.'});
-   // The session is only ever in the cookie (HttpOnly): page scripts never see it.
-   try{const r=db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'member')").run(email,name,await hash(b.password));const uid=Number(r.lastInsertRowid),t=startSession(uid);return send(res,201,{ok:true,user:{id:uid,email,name,role:'member'}},setSessionCookie(t))}catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
+   if(!app&&!(await verifyCaptcha(b.captchaToken||b.recaptchaToken,ip)))return send(res,400,{error:'Bot check failed. Please try again.'});
+   // On the website the session is only ever in the cookie (HttpOnly): page scripts never see it.
+   try{const r=db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'member')").run(email,name,await hash(b.password));const uid=Number(r.lastInsertRowid),t=startSession(uid,app?'app':'web'),user={id:uid,email,name,role:'member'};return app?send(res,201,{ok:true,sessionToken:t,user}):send(res,201,{ok:true,user},setSessionCookie(t))}catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
  }
  if(m==='POST'&&url.pathname==='/api/login'){
    const b=await body(req);

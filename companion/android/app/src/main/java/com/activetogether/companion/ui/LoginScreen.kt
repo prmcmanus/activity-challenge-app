@@ -52,7 +52,7 @@ import com.activetogether.companion.SERVER_URL
 
 /** Tells Android's autofill (password managers) what a text field is for, and fills it when one is picked. */
 @OptIn(ExperimentalComposeUiApi::class)
-private fun Modifier.autofill(types: List<AutofillType>, onFill: (String) -> Unit): Modifier = composed {
+internal fun Modifier.autofill(types: List<AutofillType>, onFill: (String) -> Unit): Modifier = composed {
     val node = remember { AutofillNode(autofillTypes = types, onFill = onFill) }
     val autofill = LocalAutofill.current
     LocalAutofillTree.current += node
@@ -66,6 +66,8 @@ fun LoginScreen(vm: AppViewModel) {
     var email by remember { mutableStateOf(vm.prefs.email) }
     var password by remember { mutableStateOf("") }
     var ticket by remember { mutableStateOf<String?>(null) }
+    // Creating an account, rather than signing in (from the button below, or an invite card).
+    var creating by remember { mutableStateOf(false) }
     var code by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf(vm.message) }
@@ -81,9 +83,11 @@ fun LoginScreen(vm: AppViewModel) {
             // The logo as a plain picture: the launcher icon is an adaptive icon, which Image() can't draw.
             Image(painterResource(R.drawable.app_logo), contentDescription = null, modifier = Modifier.padding(top = 32.dp).size(96.dp).clip(MaterialTheme.shapes.large))
             Text("Active Together", style = MaterialTheme.typography.headlineMedium, color = Color.White)
-            Text("Sign in with your Active Together account to see your challenges, log activity and sync your workouts.",
+            Text(if (creating) "Create your Active Together account to join challenges, log activity and sync your workouts."
+                else "Sign in with your Active Together account to see your challenges, log activity and sync your workouts.",
                 color = Color.White.copy(alpha = 0.9f), textAlign = TextAlign.Center)
-            vm.pendingInvite?.let { InviteSignInCard(it) }
+            vm.pendingInvite?.let { InviteSignInCard(it, creating) { creating = true } }
+            if (creating) { CreateAccountCard(vm) { creating = false }; return@Column }
             Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, elevation = CardDefaults.cardElevation(6.dp)) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (ticket == null) {
@@ -118,11 +122,8 @@ fun LoginScreen(vm: AppViewModel) {
                     }
                     val forgotContext = androidx.compose.ui.platform.LocalContext.current
                     androidx.compose.material3.TextButton(onClick = { openInBrowser(forgotContext, "$SERVER_URL/forgot") }) { Text("Forgot password?") }
-                    Text("New here? Create an account at ${SERVER_URL.removePrefix("https://")}, then sign in.",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    val context = androidx.compose.ui.platform.LocalContext.current
-                    androidx.compose.material3.TextButton(onClick = { openInBrowser(context, SERVER_URL) }) { Text("Create an account") }
-                    androidx.compose.material3.TextButton(onClick = { openInBrowser(context, "$SERVER_URL/privacy.html") }) { Text("Privacy policy") }
+                    androidx.compose.material3.TextButton(onClick = { creating = true; error = null }) { Text("New here? Create an account") }
+                    androidx.compose.material3.TextButton(onClick = { com.activetogether.companion.PolicyActivity.open(forgotContext) }) { Text("Privacy policy") }
                 }
             }
         }

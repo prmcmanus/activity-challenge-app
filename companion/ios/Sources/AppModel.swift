@@ -244,6 +244,16 @@ enum BackgroundSync {
             return (nil, nil)
         } catch { return (error.localizedDescription, nil) }
     }
+    /// Create an account in the app, then signed in as it (an invite link that brought them here is asked about next).
+    func register(name: String, email: String, password: String, inviteCode: String?) async -> String? {
+        do {
+            let email = email.trimmingCharacters(in: .whitespaces)
+            let token = try await API(token: nil).register(name: name.trimmingCharacters(in: .whitespaces), email: email, password: password, inviteCode: inviteCode)
+            Prefs.email = email
+            signedInWith(token)
+            return nil
+        } catch { return error.localizedDescription }
+    }
     /// The second step of two-step sign-in.
     func signInCode(ticket: String, code: String) async -> String? {
         do {

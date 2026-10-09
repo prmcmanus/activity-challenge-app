@@ -51,6 +51,11 @@
             </intent-filter>
         </activity>
 
+        <!-- The privacy policy (or another page of the website) inside the app. -->
+        <activity
+            android:name=".PolicyActivity"
+            android:exported="false" />
+
         <activity
             android:name=".HealthPermissionsRationaleActivity"
             android:exported="true">

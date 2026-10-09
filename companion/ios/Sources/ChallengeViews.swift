@@ -381,13 +381,15 @@ struct InviteView: View {
 /// On the sign-in screen when an invite link brought them here.
 struct InviteSignInCard: View {
     let code: String
+    var creating = false
+    var createAccount: () -> Void = {}
     @State private var preview: InvitePreview?
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("You're invited").font(.headline)
             Text(preview.map { "Join \(inviteTitle($0))." } ?? "Sign in to see the invite.")
-            Text("Sign in below and we'll ask you to confirm. New to Active Together? Create an account on the website first, then come back and sign in.").font(.caption)
-            Link("Create an account", destination: URL(string: "\(serverURL)/?code=\(code)")!).font(.subheadline.bold()).foregroundStyle(Color.brandRed)
+            Text(creating ? "Create your account below and we'll ask you to confirm joining." : "Sign in below and we'll ask you to confirm. New to Active Together? Create an account first.").font(.caption)
+            if !creating { Button("Create an account", action: createAccount).font(.subheadline.bold()).foregroundStyle(Color.brandRed) }
         }
         .foregroundStyle(.black).padding(18).frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.brandYellow, in: RoundedRectangle(cornerRadius: 20))

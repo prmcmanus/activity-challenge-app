@@ -92,18 +92,16 @@ fun InviteScreen(vm: AppViewModel, code: String, opened: (Int) -> Unit, dismiss:
 
 /** On the sign-in screen when an invite link brought them here. */
 @Composable
-fun InviteSignInCard(code: String) {
-    val context = LocalContext.current
+fun InviteSignInCard(code: String, creating: Boolean, createAccount: () -> Unit) {
     var preview by remember { mutableStateOf<InvitePreview?>(null) }
     LaunchedEffect(code) { preview = runCatching { withContext(Dispatchers.IO) { ActiveTogetherApi().invitePreview(code) } }.getOrNull() }
     Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = BrandYellow)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("You're invited", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = androidx.compose.ui.graphics.Color.Black)
             Text(preview?.let { "Join ${inviteTitle(it)}." } ?: "Sign in to see the invite.", color = androidx.compose.ui.graphics.Color.Black)
-            Text("Sign in below and we'll ask you to confirm. New to Active Together? Create an account on the website first, then come back and sign in.",
+            Text(if (creating) "Create your account below and we'll ask you to confirm joining." else "Sign in below and we'll ask you to confirm. New to Active Together? Create an account first.",
                 style = MaterialTheme.typography.bodySmall, color = androidx.compose.ui.graphics.Color.Black)
-            // Not /join/CODE: that link would open this app again rather than the website.
-            TextButton(onClick = { openInBrowser(context, "$SERVER_URL/?code=$code") }) { Text("Create an account") }
+            if (!creating) TextButton(onClick = createAccount) { Text("Create an account") }
         }
     }
 }

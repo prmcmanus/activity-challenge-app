@@ -221,6 +221,14 @@ final class API: @unchecked Sendable {
         let r = try await request("/api/mobile/login", "POST", ["email": email, "password": password])
         return r.bool("twoFactor") ? (nil, r.string("ticket")) : (r.string("sessionToken"), nil)
     }
+    /// Create an account (the app's own sign-up); returns a session token, signed in.
+    func register(name: String, email: String, password: String, inviteCode: String?) async throws -> String {
+        var b: [String: Any] = ["name": name, "email": email, "password": password]
+        if let inviteCode { b["invite_code"] = inviteCode }
+        return try await request("/api/mobile/register", "POST", b).string("sessionToken")
+    }
+    /// Whether a new account needs an invite code.
+    func inviteOnly() async throws -> Bool { try await request("/api/config").bool("inviteOnly") }
     /// The second step: the code from the authenticator app (or a backup code), with the ticket from `login`.
     func loginCode(ticket: String, code: String) async throws -> String {
         try await request("/api/mobile/login/2fa", "POST", ["ticket": ticket, "code": code]).string("sessionToken")

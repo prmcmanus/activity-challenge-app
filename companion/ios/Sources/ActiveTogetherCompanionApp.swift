@@ -117,17 +117,23 @@ struct LoginView: View {
     @State private var code = ""
     @State private var busy = false
     @State private var error: String?
+    // Creating an account rather than signing in (from the link below, or an invite card); the privacy policy sheet.
+    @State private var creating = false
+    @State private var showPolicy = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
                 Image(systemName: "figure.run.circle.fill").font(.system(size: 80)).foregroundStyle(.white, Color.brandYellow).padding(.top, 40)
                 Text("Active Together").font(.largeTitle.weight(.heavy)).foregroundStyle(.white)
-                Text("Sign in with your Active Together account to see your challenges, log activity and sync your workouts.")
+                Text(creating ? "Create your Active Together account to join challenges, log activity and sync your workouts."
+                     : "Sign in with your Active Together account to see your challenges, log activity and sync your workouts.")
                     .multilineTextAlignment(.center).foregroundStyle(.white.opacity(0.9))
-                if let code = model.pendingInvite { InviteSignInCard(code: code) }
+                if let code = model.pendingInvite { InviteSignInCard(code: code, creating: creating) { creating = true } }
                 VStack(spacing: 12) {
-                    if let ticket {
+                    if creating {
+                        CreateAccountForm { creating = false }
+                    } else if let ticket {
                         // Two-step sign-in: the code from the authenticator app, or a backup code.
                         Text("Enter the 6-digit code from your authenticator app, or one of your backup codes.").font(.subheadline)
                         TextField("Code", text: $code).textContentType(.oneTimeCode).textInputAutocapitalization(.characters).autocorrectionDisabled()
@@ -155,10 +161,11 @@ struct LoginView: View {
                         .buttonStyle(.borderedProminent).controlSize(.large)
                         .disabled(busy || email.isEmpty || password.isEmpty)
                     }
-                    Link("Forgot password?", destination: URL(string: "\(serverURL)/forgot")!).font(.footnote.bold())
-                    Text("New here? Create an account at \(serverURL.replacingOccurrences(of: "https://", with: "")), then sign in.").font(.footnote).foregroundStyle(.secondary)
-                    Link("Create an account", destination: URL(string: serverURL)!).font(.footnote.bold())
-                    Link("Privacy policy", destination: URL(string: "\(serverURL)/privacy.html")!).font(.footnote)
+                    if !creating {
+                        Link("Forgot password?", destination: URL(string: "\(serverURL)/forgot")!).font(.footnote.bold())
+                        Button("New here? Create an account") { creating = true; error = nil }.font(.footnote.bold())
+                        Button("Privacy policy") { showPolicy = true }.font(.footnote)
+                    }
                 }
                 .textFieldStyle(.roundedBorder)
                 .padding(20).background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 20))
@@ -167,5 +174,6 @@ struct LoginView: View {
         }
         .background(LinearGradient(colors: [.brandRedDeep, .brandRed, Color(.systemGroupedBackground)], startPoint: .top, endPoint: .bottom).ignoresSafeArea())
         .onAppear { if let m = model.message { error = m; model.message = nil } }
+        .sheet(isPresented: $showPolicy) { PolicyView() }
     }
 }

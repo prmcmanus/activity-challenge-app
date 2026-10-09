@@ -274,7 +274,7 @@ private fun VersionLine() {
     Column {
         Text("Active Together · ${SERVER_URL.removePrefix("https://")} · version ${context.packageManager.getPackageInfo(context.packageName, 0).versionName}",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        androidx.compose.material3.TextButton(onClick = { openInBrowser(context, "$SERVER_URL/privacy.html") }) { Text("Privacy policy") }
+        androidx.compose.material3.TextButton(onClick = { com.activetogether.companion.PolicyActivity.open(context) }) { Text("Privacy policy") }
     }
 }
 

@@ -152,7 +152,7 @@ else if(pendingInviteToken)history.replaceState({},'',location.pathname);
 // server-side check becomes a no-op too.
 // The bot check on signing in, signing up and asking for a password reset: Cloudflare Turnstile (usually
 // invisible) or Google reCAPTCHA, whichever the server is set up with, or none.
-let captcha=null,captchaWidget=null,siteInviteOnly=false;
+let captcha=null,captchaWidget=null,captchaNeedsTick=false,siteInviteOnly=false;
 function renderCaptchaIfReady(){
   const el=document.getElementById('captcha-box');
   if(!el||!captcha)return;
@@ -160,13 +160,18 @@ function renderCaptchaIfReady(){
   if(ts?!window.turnstile:!(window.grecaptcha&&grecaptcha.render))return;
   if(ts&&captchaWidget!==null)try{turnstile.remove(captchaWidget)}catch(e){}
   el.innerHTML='';
-  captchaWidget=ts?turnstile.render(el,{sitekey:captcha.siteKey,appearance:'interaction-only'}):grecaptcha.render(el,{sitekey:captcha.siteKey});
+  // Turnstile only shows itself when it wants a tick from the person; we note when that is.
+  captchaNeedsTick=false;
+  captchaWidget=ts?turnstile.render(el,{sitekey:captcha.siteKey,appearance:'interaction-only',callback:()=>{captchaNeedsTick=false},'before-interactive-callback':()=>{captchaNeedsTick=true}})
+    :grecaptcha.render(el,{sitekey:captcha.siteKey});
 }
 // Turnstile works in the background, so its answer may still be on its way: wait a few seconds for it.
 async function captchaToken(){
   if(!captcha||captchaWidget===null)return '';
   if(captcha.provider!=='turnstile')return window.grecaptcha?grecaptcha.getResponse(captchaWidget):'';
-  for(let i=0;i<25;i++){const t=window.turnstile&&turnstile.getResponse(captchaWidget);if(t)return t;await new Promise(r=>setTimeout(r,200))}
+  for(let i=0;i<25;i++){const t=window.turnstile&&turnstile.getResponse(captchaWidget);if(t)return t;if(captchaNeedsTick)break;await new Promise(r=>setTimeout(r,200))}
+  // Waiting for the person to tick "Verify you are human": say so, rather than sending without it.
+  if(captchaNeedsTick)throw Object.assign(Error('Tick "Verify you are human" above first, then try again.'),{keepCaptcha:true});
   return '';
 }
 function resetCaptcha(){if(!captcha||captchaWidget===null)return;try{captcha.provider==='turnstile'?turnstile.reset(captchaWidget):grecaptcha.reset(captchaWidget)}catch(e){}}
@@ -219,7 +224,7 @@ async function showPasswordPage(token){
       $('#forgotForm').onsubmit=guarded(async()=>{
         try{await api('/api/password/forgot',{method:'POST',body:JSON.stringify({email:$('#fEmail').value,captchaToken:await captchaToken()})});
           $('#authPanel').innerHTML=`<h1>Check your email</h1><p>If an account uses that address, a link to choose a new password is on its way. It works for an hour. Nothing after a few minutes? Check your spam folder.</p>${back}`;wireBack()}
-        catch(x){$('#authMsg').textContent=x.message;resetCaptcha()}
+        catch(x){$('#authMsg').textContent=x.message;if(!x.keepCaptcha)resetCaptcha()}
       });
     }
     return;
@@ -252,7 +257,7 @@ function renderAuth(){
   if(authTab==='login'){
     $('#authPanel').innerHTML=`<h1>Welcome back</h1><p>Sign in to log activity and support your team.</p><form id="loginForm"><label>Email<input id="email" type="email" required autocomplete="username" autocapitalize="off" spellcheck="false"></label><label>Password<input id="password" type="password" required autocomplete="current-password"></label><div id="captcha-box"></div><button>Sign in</button></form><p id="authMsg" class="error"></p><p><a href="/forgot" id="forgotLink">Forgot your password?</a></p>`;
     $('#forgotLink').onclick=e=>{e.preventDefault();setUrl('/forgot');showPasswordPage(null)};
-    $('#loginForm').onsubmit=guarded(async()=>{try{const r=await api('/api/login',{method:'POST',body:JSON.stringify({email:$('#email').value,password:$('#password').value,captchaToken:await captchaToken()})});if(r.twoFactor)return showCodeStep(r.ticket,'/api/login/2fa');await load()}catch(x){$('#authMsg').textContent=x.message;resetCaptcha()}});
+    $('#loginForm').onsubmit=guarded(async()=>{try{const r=await api('/api/login',{method:'POST',body:JSON.stringify({email:$('#email').value,password:$('#password').value,captchaToken:await captchaToken()})});if(r.twoFactor)return showCodeStep(r.ticket,'/api/login/2fa');await load()}catch(x){$('#authMsg').textContent=x.message;if(!x.keepCaptcha)resetCaptcha()}});
   }else{
     // An invite link (/join/CODE) or emailed invite (?invite=) is passed along automatically; on an invite-only
     // site without one, the form asks for the code.
@@ -261,7 +266,7 @@ function renderAuth(){
       :'<label>Invite code<input id="rinvite" required autocomplete="off" placeholder="From the invite someone sent you" style="text-transform:uppercase"></label><p class="muted">Active Together is invite only: you need the invite link or code someone sent you.</p>';
     $('#authPanel').innerHTML=`<h1>Create your account</h1><p>Then create a challenge or join one with an invite code.</p><form id="registerForm"><label>Name<input id="rname" required autocomplete="name"></label><label>Email<input id="remail" type="email" required autocomplete="email" autocapitalize="off" spellcheck="false"></label><label>Password<input id="rpassword" type="password" required minlength="8" autocomplete="new-password"></label>${inviteBit}<div id="captcha-box"></div><button>Create account</button></form><p class="muted">By creating an account you agree to our <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</p><p id="authMsg" class="error"></p>`;
     $('#registerForm').onsubmit=guarded(async()=>{try{await api('/api/register',{method:'POST',body:JSON.stringify({name:$('#rname').value,email:$('#remail').value,password:$('#rpassword').value,
-      invite_code:linkCode||($('#rinvite')?$('#rinvite').value.trim():undefined),invite_token:pendingInviteToken||undefined,captchaToken:await captchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;resetCaptcha()}});
+      invite_code:linkCode||($('#rinvite')?$('#rinvite').value.trim():undefined),invite_token:pendingInviteToken||undefined,captchaToken:await captchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;if(!x.keepCaptcha)resetCaptcha()}});
   }
   renderCaptchaIfReady();
 }

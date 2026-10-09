@@ -157,9 +157,11 @@ image and wiped on every rebuild, so anything meant to survive a deploy has to b
 `GET /uploads/*` streams them back with a one-year immutable cache header (filenames are random,
 never reused) and `X-Content-Type-Options: nosniff`.
 
-**Known gap:** deleting a challenge, team, or clearing an avatar doesn't delete the underlying
-uploaded file — there's no reference-counting cleanup. Orphaned files accumulate in `uploads/`
-over time. Documented here and in the privacy policy rather than silently ignored.
+Once a day (`sweepUploads()` in `server.js`), files nothing refers to any more - an old avatar, a
+deleted account's photo, a purged challenge's pictures, a ticket screenshot whose ticket is gone - are
+deleted, a day after they were uploaded so an image added to a form that hasn't been saved yet survives.
+`files-sync` mirrors the folder to R2 with `rclone sync`, which moves deleted files to
+`<epoch>/deleted/<date>`; `tools/standby/prune.sh` empties those after 30 days.
 
 ## Rich text challenge descriptions
 
@@ -180,7 +182,9 @@ while its own text content survives as inert, escaped text — which is what neu
 `<script>alert(1)</script>` into the harmless text `alert(1)`. No tag, allowed or not, may ever
 carry a `style` or `on*` attribute (neither appears in the attribute allowlist for anything, so
 they're stripped unconditionally rather than pattern-matched), and `href`/`src` are restricted to
-`https:`/`mailto:` and `https:`/`/uploads/` respectively — a `javascript:` URL never survives.
+`https:`/`mailto:` and this site's own `/uploads/` files respectively — a `javascript:` URL never
+survives, and a picture from another site (which would tell that site who opened the challenge) is
+dropped.
 It hasn't been fuzzed against the kind of parser-differential bypasses that real sanitizer
 libraries are hardened against, so treat it as solid for this app's threat model (a small,
 trusted user base) rather than as a guarantee against a determined, sophisticated attacker.
@@ -197,23 +201,22 @@ in that function (and updating the privacy policy to match).
 
 ## Bot and abuse precautions
 
-- **reCAPTCHA v2** ("I'm not a robot") on the registration and sign-in *pages*. Optional — unset
-  `RECAPTCHA_SITE_KEY`/`RECAPTCHA_SECRET_KEY` (the default) disables it everywhere with no code
-  change, which is what local dev and the automated tests rely on. Get a key pair at
-  [google.com/recaptcha/admin](https://www.google.com/recaptcha/admin) for your real domain, put
-  them in the server's `.env`, and `docker compose up -d --build` to pick them up. `GET /api/config`
-  tells the frontend whether a widget should render, so nothing needs rebuilding client-side either.
+- **A bot check** on the registration, sign-in and forgotten-password *pages*: **Cloudflare
+  Turnstile** (usually invisible) when `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` are set, else
+  **reCAPTCHA v2** when `RECAPTCHA_SITE_KEY`/`RECAPTCHA_SECRET_KEY` are, else none (local dev and the
+  automated tests). For Turnstile: Cloudflare dashboard → Turnstile → Add widget, hostname
+  `activetogether.team`, mode Managed; put the two keys in the server's `.env` and
+  `docker compose --profile primary up -d`. `GET /api/config` tells the page which one to show.
 - The **Android/iOS companion apps sign in through a separate endpoint**, `/api/mobile/login`, not
   the recaptcha-gated `/api/login` — there's no page there to render a widget in. It relies on the
   rate limit below instead.
-- **Per-IP rate limiting**, in-memory, no dependency: `register` and `login` (and `/api/mobile/login`)
-  each get their own bucket, default 20 attempts per 15 minutes per IP
-  (`AUTH_RATE_LIMIT_MAX`/`AUTH_RATE_LIMIT_WINDOW_MS`); `POST /api/uploads` gets its own, default 30
-  per 15 minutes (`UPLOAD_RATE_LIMIT_MAX`/`UPLOAD_RATE_LIMIT_WINDOW_MS`); all on top of a general
-  ceiling across every `/api/` route, default 300 requests/minute/IP
-  (`API_RATE_LIMIT_MAX`/`API_RATE_LIMIT_WINDOW_MS`). All six are overridable in `.env`. Counters
-  reset on container restart — an acceptable escape hatch at this scale, same tradeoff ITCM's
-  login lockout makes.
+- **Rate limiting**, in-memory, no dependency. Signing in counts attempts per network *and email*
+  (`AUTH_RATE_LIMIT_MAX`, default 20 per 15 minutes), with a network as a whole allowed five times
+  that, so an office behind one address can all sign in; registration allows three times the per-network
+  limit (`REGISTER_RATE_LIMIT_MAX`); `POST /api/uploads` has its own (`UPLOAD_RATE_LIMIT_MAX`, default
+  30 per 15 minutes). Every `/api/` request also counts: per signed-in person (`API_RATE_LIMIT_MAX`,
+  default 300 a minute) with ten times that per network (`API_NETWORK_RATE_LIMIT_MAX`), or per network
+  when signed out. Counters reset on restart - an acceptable escape hatch at this scale.
 - Order of checks matters for cost: the rate limit (cheap) runs before reCAPTCHA verification
   (a network call), which runs before password hashing (deliberately CPU-expensive, `scrypt`) —
   so a scripted flood gets turned away before it can burn CPU or hit Google's API.
@@ -255,13 +258,41 @@ starts the stack and keeps the three newest epochs in R2. With `--force`, anythi
 unreachable machine since its last sync is lost (normally under a second of database changes and a
 minute of uploads).
 
+## Email
+
+Password reset links, "you've been added to a challenge" notes and support ticket news go out through
+[Resend](https://resend.com)'s HTTP API when `RESEND_API_KEY` is set (`MAIL_FROM` must be on a domain
+verified in Resend; replies go to `MAIL_REPLY_TO`, default support@activetogether.team). Without a key
+nothing is emailed, and a global admin makes reset links instead (Admin → Edit user). Each person can
+turn the notes off in My account. A password reset emails one account at most twice an hour.
+
+## Two-step sign-in
+
+Anyone can turn on authenticator-app codes (TOTP, RFC 6238) in My account; global admins are prompted
+to. It gives ten one-time backup codes. A global admin can turn it off for someone who has lost their
+phone (Admin → Edit user). If the **only** admin is locked out: set `CLEAR_TWO_FACTOR_FOR=their@email`
+in `.env`, `docker compose --profile primary up -d`, sign in, then remove the setting and restart again.
+
+## Activity log
+
+What global admins and challenge owners do to other people's accounts and entries (adding and removing
+people, deleting entries or accounts, password resets, role changes, two-step sign-in switched off) is
+recorded in the `audit_log` table, readable by global admins under Admin → Activity log, kept a year.
+
+## Health check
+
+`GET /api/health` answers when the app is up and its database reads; `compose.yaml` checks it every 30
+seconds, and `tools/standby/guard.sh` (every minute) restarts an app that has stopped answering. On
+`SIGTERM` the server stops taking connections, lets requests in progress finish (up to 10 seconds) and
+closes the database cleanly.
+
 ## Production checklist
 - Put behind HTTPS and a reverse proxy.
 - Replace local accounts with approved enterprise SSO if deployed at Company.
-- Add CSRF protection, email delivery, password reset and audit logs.
+- CSRF: session cookies are `SameSite=Strict` and every write takes JSON.
 - A plain-language [privacy policy](public/privacy.html) exists and states the 60-day challenge
   retention window, which is enforced in code. A formal DPIA, consent-capture flow, and the
   app-store health-data declarations the companion apps would need for a real store listing are
   still outside this project's scope.
 - Do not collect medical records, routes, heart rate or other health data when activity duration is sufficient.
-- Orphaned uploaded images (see "Uploaded images" above) are not garbage collected.
+- Set up Resend (domain verified) and Turnstile keys in `.env`, and add a DMARC record for the domain.

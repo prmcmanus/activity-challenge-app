@@ -233,14 +233,28 @@ enum BackgroundSync {
         if Prefs.autoSync && !challenges.isEmpty { await autoSyncNow(quiet: true) }
     }
 
-    func signIn(email: String, password: String) async -> String? {
+    /// Sign in with a password: an error, or (two-step sign-in) the ticket to send with the code.
+    func signIn(email: String, password: String) async -> (error: String?, ticket: String?) {
         do {
-            let token = try await API(token: nil).login(email: email.trimmingCharacters(in: .whitespaces), password: password)
-            Prefs.token = token; Prefs.email = email.trimmingCharacters(in: .whitespaces)
-            signedIn = true
-            Task { await refreshAll() }
+            let email = email.trimmingCharacters(in: .whitespaces)
+            let step = try await API(token: nil).login(email: email, password: password)
+            Prefs.email = email
+            if let ticket = step.ticket { return (nil, ticket) }
+            signedInWith(step.token ?? "")
+            return (nil, nil)
+        } catch { return (error.localizedDescription, nil) }
+    }
+    /// The second step of two-step sign-in.
+    func signInCode(ticket: String, code: String) async -> String? {
+        do {
+            signedInWith(try await API(token: nil).loginCode(ticket: ticket, code: code.trimmingCharacters(in: .whitespaces)))
             return nil
         } catch { return error.localizedDescription }
+    }
+    private func signedInWith(_ token: String) {
+        Prefs.token = token
+        signedIn = true
+        Task { await refreshAll() }
     }
     func signOut() async {
         try? await api.logout()

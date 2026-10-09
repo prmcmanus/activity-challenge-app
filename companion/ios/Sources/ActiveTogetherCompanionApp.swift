@@ -113,6 +113,8 @@ struct LoginView: View {
     @Environment(AppModel.self) private var model
     @State private var email = Prefs.email
     @State private var password = ""
+    @State private var ticket: String?
+    @State private var code = ""
     @State private var busy = false
     @State private var error: String?
 
@@ -125,15 +127,34 @@ struct LoginView: View {
                     .multilineTextAlignment(.center).foregroundStyle(.white.opacity(0.9))
                 if let code = model.pendingInvite { InviteSignInCard(code: code) }
                 VStack(spacing: 12) {
-                    TextField("Email", text: $email).textContentType(.username).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    SecureField("Password", text: $password).textContentType(.password)
-                    if let error { Text(error).foregroundStyle(.red).font(.subheadline) }
-                    Button {
-                        busy = true; error = nil
-                        Task { error = await model.signIn(email: email, password: password); busy = false; if error == nil { password = "" } }
-                    } label: { Group { if busy { ProgressView().tint(.white) } else { Text("Sign in").bold() } }.frame(maxWidth: .infinity) }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
-                    .disabled(busy || email.isEmpty || password.isEmpty)
+                    if let ticket {
+                        // Two-step sign-in: the code from the authenticator app, or a backup code.
+                        Text("Enter the 6-digit code from your authenticator app, or one of your backup codes.").font(.subheadline)
+                        TextField("Code", text: $code).textContentType(.oneTimeCode).textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        Button("Start again") { self.ticket = nil; code = ""; error = nil }.font(.footnote)
+                        if let error { Text(error).foregroundStyle(.red).font(.subheadline) }
+                        Button {
+                            busy = true; error = nil
+                            Task { error = await model.signInCode(ticket: ticket, code: code); busy = false; if error == nil { code = ""; self.ticket = nil } }
+                        } label: { Group { if busy { ProgressView().tint(.white) } else { Text("Sign in").bold() } }.frame(maxWidth: .infinity) }
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                        .disabled(busy || code.trimmingCharacters(in: .whitespaces).isEmpty)
+                    } else {
+                        TextField("Email", text: $email).textContentType(.username).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        SecureField("Password", text: $password).textContentType(.password)
+                        if let error { Text(error).foregroundStyle(.red).font(.subheadline) }
+                        Button {
+                            busy = true; error = nil
+                            Task {
+                                let r = await model.signIn(email: email, password: password)
+                                error = r.error; busy = false
+                                if r.error == nil { password = "" }
+                                if let next = r.ticket { ticket = next }
+                            }
+                        } label: { Group { if busy { ProgressView().tint(.white) } else { Text("Sign in").bold() } }.frame(maxWidth: .infinity) }
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                        .disabled(busy || email.isEmpty || password.isEmpty)
+                    }
                     Link("Forgot password?", destination: URL(string: "\(serverURL)/forgot")!).font(.footnote.bold())
                     Text("New here? Create an account at \(serverURL.replacingOccurrences(of: "https://", with: "")), then sign in.").font(.footnote).foregroundStyle(.secondary)
                     Link("Create an account", destination: URL(string: serverURL)!).font(.footnote.bold())

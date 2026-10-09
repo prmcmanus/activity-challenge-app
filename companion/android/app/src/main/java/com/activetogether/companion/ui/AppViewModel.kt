@@ -130,17 +130,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (prefs.autoSync && challenges.isNotEmpty()) autoSyncNow(quiet = true)
     }
 
-    fun signIn(email: String, password: String, done: (String?) -> Unit) = viewModelScope.launch {
+    /** Sign in with a password: [done] gets an error, or (two-step sign-in) the ticket to send with the code. */
+    fun signIn(email: String, password: String, done: (error: String?, ticket: String?) -> Unit) = viewModelScope.launch {
         try {
-            val token = withContext(Dispatchers.IO) { ActiveTogetherApi().login(email.trim(), password) }
-            prefs.token = token
+            val step = withContext(Dispatchers.IO) { ActiveTogetherApi().login(email.trim(), password) }
             prefs.email = email.trim()
-            signedIn = true
+            if (step.ticket != null) { done(null, step.ticket); return@launch }
+            signedInWith(step.token!!)
+            done(null, null)
+        } catch (e: Exception) {
+            done(e.message ?: "Sign in failed", null)
+        }
+    }
+
+    /** The second step of two-step sign-in. */
+    fun signInCode(ticket: String, code: String, done: (String?) -> Unit) = viewModelScope.launch {
+        try {
+            val token = withContext(Dispatchers.IO) { ActiveTogetherApi().loginCode(ticket, code.trim()) }
+            signedInWith(token)
             done(null)
-            refreshAll()
         } catch (e: Exception) {
             done(e.message ?: "Sign in failed")
         }
+    }
+
+    private fun signedInWith(token: String) {
+        prefs.token = token
+        signedIn = true
+        refreshAll()
     }
 
     fun signOut() = viewModelScope.launch {

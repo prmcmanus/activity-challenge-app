@@ -41,7 +41,22 @@ function runLabel(c){
   const n=diff(today,c.end_date);return n===0?'Last day':n===1?'1 day left':`${n} days left`;
 }
 const SOURCE_LABEL={manual:'logged by hand',health_connect:'Health Connect',health_kit:'Apple Health',shortcut:'Apple Shortcut'};
-const api=async(url,opt={})=>{const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opt});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||'Request failed');return j};
+// Requests in flight: a thin bar along the top shows once anything takes longer than a moment.
+let inFlight=0,barTimer=null;
+const progress=d=>{inFlight+=d;const bar=document.getElementById('progressBar');if(!bar)return;
+  if(inFlight>0&&!barTimer&&!bar.classList.contains('on'))barTimer=setTimeout(()=>{barTimer=null;if(inFlight>0)bar.classList.add('on')},180);
+  if(inFlight===0){clearTimeout(barTimer);barTimer=null;bar.classList.remove('on')}};
+// Errors carry the server's whole reply (e.data) and status, as well as its message.
+const api=async(url,opt={})=>{progress(1);try{const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opt});const j=await r.json().catch(()=>({}));if(!r.ok){const e=Error(j.error||'Request failed');e.data=j;e.status=r.status;throw e}return j}finally{progress(-1)}};
+// Forms that save something: their buttons are disabled until the save finishes, so a double click (or a
+// slow connection) never saves twice.
+const guarded=fn=>async function(e){
+  e.preventDefault();
+  const f=e.currentTarget||e.target;if(f.dataset.busy)return;
+  const buttons=[...f.querySelectorAll('button:not([type="button"])')];
+  f.dataset.busy='1';buttons.forEach(b=>b.disabled=true);
+  try{await fn.call(this,e)}finally{delete f.dataset.busy;buttons.forEach(b=>b.disabled=false)}
+};
 
 // --- image upload: resize client-side (canvas) before sending, server enforces a 10MB hard cap
 // as a backstop. The server never trusts our chosen mime type either way - it sniffs the bytes.
@@ -135,27 +150,38 @@ else if(pendingInviteToken)history.replaceState({},'',location.pathname);
 // reCAPTCHA is optional: /api/config only returns a site key once the server has one
 // configured, so a deployment with no Google keys set just skips rendering the widget and the
 // server-side check becomes a no-op too.
-let recaptchaSiteKey=null, recaptchaWidgetId=null, siteInviteOnly=false;
-function renderRecaptchaIfReady(){
-  const el=document.getElementById('recaptcha-auth');
-  if(!el||!recaptchaSiteKey||!window.grecaptcha||!grecaptcha.render)return;
+// The bot check on signing in, signing up and asking for a password reset: Cloudflare Turnstile (usually
+// invisible) or Google reCAPTCHA, whichever the server is set up with, or none.
+let captcha=null,captchaWidget=null,siteInviteOnly=false;
+function renderCaptchaIfReady(){
+  const el=document.getElementById('captcha-box');
+  if(!el||!captcha)return;
+  const ts=captcha.provider==='turnstile';
+  if(ts?!window.turnstile:!(window.grecaptcha&&grecaptcha.render))return;
+  if(ts&&captchaWidget!==null)try{turnstile.remove(captchaWidget)}catch(e){}
   el.innerHTML='';
-  recaptchaWidgetId=grecaptcha.render(el,{sitekey:recaptchaSiteKey});
+  captchaWidget=ts?turnstile.render(el,{sitekey:captcha.siteKey,appearance:'interaction-only'}):grecaptcha.render(el,{sitekey:captcha.siteKey});
 }
-function getRecaptchaToken(){return (recaptchaSiteKey&&window.grecaptcha&&recaptchaWidgetId!==null)?grecaptcha.getResponse(recaptchaWidgetId):''}
-function resetRecaptcha(){if(recaptchaSiteKey&&window.grecaptcha&&recaptchaWidgetId!==null)grecaptcha.reset(recaptchaWidgetId)}
-async function initRecaptcha(){
-  try{const cfg=await api('/api/config');recaptchaSiteKey=cfg.recaptchaSiteKey||null;siteInviteOnly=!!cfg.inviteOnly}catch(e){recaptchaSiteKey=null}
+// Turnstile works in the background, so its answer may still be on its way: wait a few seconds for it.
+async function captchaToken(){
+  if(!captcha||captchaWidget===null)return '';
+  if(captcha.provider!=='turnstile')return window.grecaptcha?grecaptcha.getResponse(captchaWidget):'';
+  for(let i=0;i<25;i++){const t=window.turnstile&&turnstile.getResponse(captchaWidget);if(t)return t;await new Promise(r=>setTimeout(r,200))}
+  return '';
+}
+function resetCaptcha(){if(!captcha||captchaWidget===null)return;try{captcha.provider==='turnstile'?turnstile.reset(captchaWidget):grecaptcha.reset(captchaWidget)}catch(e){}}
+async function initCaptcha(){
+  try{const cfg=await api('/api/config');captcha=cfg.captcha||null;siteInviteOnly=!!cfg.inviteOnly}catch(e){captcha=null}
   // The sign-up form depends on whether the site is invite only, which is only known now.
   if(!me&&authTab==='register'&&!$('#authSection').classList.contains('hidden'))renderAuth();
-  if(!recaptchaSiteKey)return;
-  window.onRecaptchaLoad=renderRecaptchaIfReady;
+  if(!captcha)return;
+  window.onCaptchaLoad=renderCaptchaIfReady;
   const s=document.createElement('script');
-  s.src='https://www.google.com/recaptcha/api.js?onload=onRecaptchaLoad&render=explicit';
+  s.src=captcha.provider==='turnstile'?'https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onCaptchaLoad&render=explicit':'https://www.google.com/recaptcha/api.js?onload=onCaptchaLoad&render=explicit';
   s.async=true;
   document.head.appendChild(s);
 }
-initRecaptcha();
+initCaptcha();
 
 async function load(){
   const m=await api('/api/me'); me=m.user;
@@ -185,48 +211,59 @@ async function showPasswordPage(token){
   if(!token){
     let cfg={};try{cfg=await api('/api/config')}catch(e){}
     $('#authPanel').innerHTML=`<h1>Forgot your password?</h1>${cfg.passwordResetEmail
-      ?`<p>Enter the email you signed up with and we'll send you a link to choose a new password.</p><form id="forgotForm"><label>Email<input id="fEmail" type="email" required autocomplete="email"></label><button>Send me a link</button></form>`
+      ?`<p>Enter the email you signed up with and we'll send you a link to choose a new password.</p><form id="forgotForm"><label>Email<input id="fEmail" type="email" required autocomplete="email"></label><div id="captcha-box"></div><button>Send me a link</button></form>`
       :`<p>Ask for a reset link: email <a href="mailto:support@activetogether.team">support@activetogether.team</a> from the address you signed up with, or ask the person who runs your challenge to contact us. The link lets you choose a new password.</p>`}<p id="authMsg" class="error"></p>${back}`;
     wireBack();
-    if($('#forgotForm'))$('#forgotForm').onsubmit=async e=>{
-      e.preventDefault();
-      try{await api('/api/password/forgot',{method:'POST',body:JSON.stringify({email:$('#fEmail').value})});
-        $('#authPanel').innerHTML=`<h1>Check your email</h1><p>If an account uses that address, a link to choose a new password is on its way. It works for an hour. Nothing after a few minutes? Check your spam folder.</p>${back}`;wireBack()}
-      catch(x){$('#authMsg').textContent=x.message}
-    };
+    if($('#forgotForm')){
+      renderCaptchaIfReady();
+      $('#forgotForm').onsubmit=guarded(async()=>{
+        try{await api('/api/password/forgot',{method:'POST',body:JSON.stringify({email:$('#fEmail').value,captchaToken:await captchaToken()})});
+          $('#authPanel').innerHTML=`<h1>Check your email</h1><p>If an account uses that address, a link to choose a new password is on its way. It works for an hour. Nothing after a few minutes? Check your spam folder.</p>${back}`;wireBack()}
+        catch(x){$('#authMsg').textContent=x.message;resetCaptcha()}
+      });
+    }
     return;
   }
   let who;
   try{who=await api(`/api/password/reset?token=${encodeURIComponent(token)}`)}
   catch(e){$('#authPanel').innerHTML=`<h1>Reset link</h1><p class="error">${esc(e.message)}</p><p><a href="/forgot" data-forgot>Ask for a new link</a></p>${back}`;wireBack();$('[data-forgot]').onclick=ev=>{ev.preventDefault();setUrl('/forgot');showPasswordPage(null)};return}
   $('#authPanel').innerHTML=`<h1>Choose a new password</h1><p>For ${esc(who.name)}'s account.</p><form id="resetForm"><label>New password<input id="rpNew" type="password" required minlength="8" autocomplete="new-password"></label><label>Type it again<input id="rpAgain" type="password" required minlength="8" autocomplete="new-password"></label><button>Save new password</button></form><p id="authMsg" class="error"></p>`;
-  $('#resetForm').onsubmit=async e=>{
-    e.preventDefault();
+  $('#resetForm').onsubmit=guarded(async()=>{
     if($('#rpNew').value!==$('#rpAgain').value){$('#authMsg').textContent="The two passwords don't match.";return}
     try{
       const r=await api('/api/password/reset',{method:'POST',body:JSON.stringify({token,password:$('#rpNew').value})});
       me=null;setUrl('/');authTab='login';showSignedOut();renderAuth();
       $('#email').value=r.email||'';$('#authMsg').className='muted';$('#authMsg').textContent='Password changed. Sign in with your new password.';$('#password').focus();
     }catch(x){$('#authMsg').textContent=x.message}
-  };
+  });
+}
+// Two-step sign-in: after the password, the code from the authenticator app (or a backup code).
+function showCodeStep(ticket,url){
+  $('#authPanel').innerHTML=`<h1>Two-step sign-in</h1><p>Enter the 6-digit code from your authenticator app, or one of your backup codes.</p><form id="codeForm"><label>Code<input id="tfCode" required autocomplete="one-time-code" inputmode="numeric" maxlength="12" spellcheck="false"></label><button>Sign in</button></form><p id="authMsg" class="error"></p><p><a href="/" data-signin>Start again</a></p>`;
+  $('[data-signin]').onclick=e=>{e.preventDefault();authTab='login';renderAuth()};
+  $('#tfCode').focus();
+  $('#codeForm').onsubmit=guarded(async()=>{
+    try{await api(url,{method:'POST',body:JSON.stringify({ticket,code:$('#tfCode').value})});await load()}
+    catch(x){if(x.data&&x.data.restart){authTab='login';renderAuth()}$('#authMsg').textContent=x.message}
+  });
 }
 function renderAuth(){
   $all('[data-authtab]').forEach(b=>b.classList.toggle('active',b.dataset.authtab===authTab));
   if(authTab==='login'){
-    $('#authPanel').innerHTML=`<h1>Welcome back</h1><p>Sign in to log activity and support your team.</p><form id="loginForm"><label>Email<input id="email" type="email" required></label><label>Password<input id="password" type="password" required></label><div id="recaptcha-auth"></div><button>Sign in</button></form><p id="authMsg" class="error"></p><p><a href="/forgot" id="forgotLink">Forgot your password?</a></p>`;
+    $('#authPanel').innerHTML=`<h1>Welcome back</h1><p>Sign in to log activity and support your team.</p><form id="loginForm"><label>Email<input id="email" type="email" required autocomplete="username" autocapitalize="off" spellcheck="false"></label><label>Password<input id="password" type="password" required autocomplete="current-password"></label><div id="captcha-box"></div><button>Sign in</button></form><p id="authMsg" class="error"></p><p><a href="/forgot" id="forgotLink">Forgot your password?</a></p>`;
     $('#forgotLink').onclick=e=>{e.preventDefault();setUrl('/forgot');showPasswordPage(null)};
-    $('#loginForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{method:'POST',body:JSON.stringify({email:$('#email').value,password:$('#password').value,recaptchaToken:getRecaptchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;resetRecaptcha()}};
+    $('#loginForm').onsubmit=guarded(async()=>{try{const r=await api('/api/login',{method:'POST',body:JSON.stringify({email:$('#email').value,password:$('#password').value,captchaToken:await captchaToken()})});if(r.twoFactor)return showCodeStep(r.ticket,'/api/login/2fa');await load()}catch(x){$('#authMsg').textContent=x.message;resetCaptcha()}});
   }else{
     // An invite link (/join/CODE) or emailed invite (?invite=) is passed along automatically; on an invite-only
     // site without one, the form asks for the code.
     const linkCode=inviteCodeFromPath(),invited=!!(linkCode||pendingInviteToken);
     const inviteBit=!siteInviteOnly?'':invited?'<p class="muted">You have an invite, so you can create an account.</p>'
       :'<label>Invite code<input id="rinvite" required autocomplete="off" placeholder="From the invite someone sent you" style="text-transform:uppercase"></label><p class="muted">Active Together is invite only: you need the invite link or code someone sent you.</p>';
-    $('#authPanel').innerHTML=`<h1>Create your account</h1><p>Then create a challenge or join one with an invite code.</p><form id="registerForm"><label>Name<input id="rname" required></label><label>Email<input id="remail" type="email" required></label><label>Password<input id="rpassword" type="password" required minlength="8"></label>${inviteBit}<div id="recaptcha-auth"></div><button>Create account</button></form><p class="muted">By creating an account you agree to our <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</p><p id="authMsg" class="error"></p>`;
-    $('#registerForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/register',{method:'POST',body:JSON.stringify({name:$('#rname').value,email:$('#remail').value,password:$('#rpassword').value,
-      invite_code:linkCode||($('#rinvite')?$('#rinvite').value.trim():undefined),invite_token:pendingInviteToken||undefined,recaptchaToken:getRecaptchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;resetRecaptcha()}};
+    $('#authPanel').innerHTML=`<h1>Create your account</h1><p>Then create a challenge or join one with an invite code.</p><form id="registerForm"><label>Name<input id="rname" required autocomplete="name"></label><label>Email<input id="remail" type="email" required autocomplete="email" autocapitalize="off" spellcheck="false"></label><label>Password<input id="rpassword" type="password" required minlength="8" autocomplete="new-password"></label>${inviteBit}<div id="captcha-box"></div><button>Create account</button></form><p class="muted">By creating an account you agree to our <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</p><p id="authMsg" class="error"></p>`;
+    $('#registerForm').onsubmit=guarded(async()=>{try{await api('/api/register',{method:'POST',body:JSON.stringify({name:$('#rname').value,email:$('#remail').value,password:$('#rpassword').value,
+      invite_code:linkCode||($('#rinvite')?$('#rinvite').value.trim():undefined),invite_token:pendingInviteToken||undefined,captchaToken:await captchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;resetCaptcha()}});
   }
-  renderRecaptchaIfReady();
+  renderCaptchaIfReady();
 }
 $all('[data-authtab]').forEach(b=>b.onclick=()=>{authTab=b.dataset.authtab;if(/^\/(forgot|reset\/)/.test(location.pathname))setUrl('/');renderAuth()});
 
@@ -235,8 +272,21 @@ async function loadDashboard(){dash=await api('/api/dashboard')}
 // One view at a time: home, a challenge, help, or (global admins) the admin page.
 function showView(id){['#homeView','#newChallengeView','#challengeView','#helpView','#adminView'].forEach(v=>$(v).classList.toggle('hidden',v!==id));window.scrollTo(0,0)}
 function showHome(){challengeBack='home';setUrl('/');showView('#homeView');renderHome()}
+// Challenges that are on today (where something can be logged now).
+const activeToday=()=>{const d=localToday();return dash.challenges.filter(c=>c.role!=='admin'&&c.start_date<=d&&d<=c.end_date)};
 function renderHome(){
   $('#hello').textContent=`Welcome, ${me.name}`;
+  // Someone added me to a challenge: say who, and let me keep it or leave.
+  const added=dash.challenges.filter(c=>c.added_by);
+  $('#addedNotices').innerHTML=added.map(c=>`<section class="card notice" data-notice="${c.id}"><div><b>${esc(c.added_by)}</b> added you to <b>${esc(c.name)}</b> (${esc(fmtRange(c.start_date,c.end_date))}).</div><div class="btnrow"><button type="button" data-noticeopen="${c.id}">Open</button><button type="button" class="ghost" data-noticekeep="${c.id}">Keep</button><button type="button" class="ghost" data-noticeleave="${c.id}">Leave</button></div></section>`).join('');
+  const ack=async id=>{await api(`/api/challenges/${id}/ack`,{method:'POST'});await loadDashboard();renderHome()};
+  $all('[data-noticeopen]').forEach(b=>b.onclick=async()=>{await ack(Number(b.dataset.noticeopen));openChallenge(Number(b.dataset.noticeopen))});
+  $all('[data-noticekeep]').forEach(b=>b.onclick=()=>ack(Number(b.dataset.noticekeep)).catch(e=>uiAlert(e.message)));
+  $all('[data-noticeleave]').forEach(b=>b.onclick=()=>leaveChallenge(dash.challenges.find(c=>c.id===Number(b.dataset.noticeleave))));
+  // People in several challenges can log one workout into all the ones it fits, from here.
+  $('#homeLogBtn').classList.toggle('hidden',activeToday().length<2);
+  // Syncing already: the sync help folds to one line.
+  $('#syncCard').classList.toggle('folded',!!dash.syncing&&!syncOpen);
   // Each challenge is one big button: name, dates, where it is in its run, and my total.
   $('#challengeList').innerHTML=dash.challenges.map(c=>{const run=runLabel(c);return `<div class="listrow challenge-row" role="button" tabindex="0" data-open="${c.id}"><div><b>${esc(c.name)}</b><div class="muted">${esc(fmtRange(c.start_date,c.end_date))} · ${c.kind==='journey'?'journey · ':''}${isIndividual(c)?'individuals':esc(c.teams.map(t=>t.name).join(', ')||'no team yet')}${c.role==='owner'?' · owner':''}</div>${run?`<span class="status ${run==='Finished'?'finished':run.startsWith('Starts')?'upcoming':'running'}">${esc(run)}</span>`:''}</div><div class="row-total"><b>${esc(fmtTotal(c,c.myMinutes,c.myDistance,c.mySteps))}</b><span class="muted">logged by me</span></div></div>`}).join('')||'<p class="muted">You have not joined a challenge yet. Use <b>+ New challenge</b> or <b>Join with a code</b> above.</p>';
   $all('[data-open]').forEach(b=>b.onclick=()=>openChallenge(Number(b.dataset.open)).catch(e=>uiAlert(e.message)));
@@ -244,6 +294,47 @@ function renderHome(){
   loadAndroidCard();
   loadIosCard();
 }
+let syncOpen=false;
+$('#syncToggle').onclick=()=>{syncOpen=!syncOpen;$('#syncCard').classList.toggle('folded',!syncOpen)};
+// Log one activity into several challenges at once: every challenge that's on that day is listed, ticked
+// when the entry has what it counts (minutes, distance or steps) and suits it (a cycling journey takes rides).
+function openHomeLog(){
+  const today=localToday();
+  $('#modalBody').innerHTML=`<h2>Log activity</h2><form id="homeLogForm">
+    <div class="two"><label>Activity<input id="hlType" required placeholder="Walking, cycling, gym..."></label><label>Date<input id="hlDate" type="date" required value="${today}" max="${today}"></label></div>
+    <div class="two"><label>Minutes<input id="hlMinutes" type="number" min="1" inputmode="numeric"></label><label>Distance<span class="with-unit"><input id="hlDistance" type="number" min="0.01" step="0.01" inputmode="decimal"><select id="hlUnit" aria-label="Distance unit"><option value="mi">miles</option><option value="km">km</option></select></span></label></div>
+    <label>Steps that day (for step challenges)<input id="hlSteps" type="number" min="1" max="200000" inputmode="numeric"></label>
+    <label>Comment (optional)<input id="hlComment" maxlength="500" placeholder="How did it go?"></label>
+    <fieldset class="targets"><legend>Count it in</legend><div id="hlTargets"></div></fieldset>
+    <button>Save activity</button></form><p id="hlMsg" class="error"></p>`;
+  const draw=()=>{
+    const d=$('#hlDate').value,type=$('#hlType').value,ride=/cycl|bik(e|ing)|\bride\b|spin/i.test(type);
+    const has={minutes:!!$('#hlMinutes').value,distance:!!$('#hlDistance').value,steps:!!$('#hlSteps').value};
+    const list=dash.challenges.filter(c=>c.role!=='admin'&&c.start_date<=d&&d<=c.end_date);
+    $('#hlTargets').innerHTML=list.map(c=>{
+      const metric=c.metric==='distance'?'distance':c.metric==='steps'?'steps':'minutes',mode=c.journey&&c.journey.mode;
+      const noTeam=!isIndividual(c)&&!c.teams.length,wrongWay=c.kind==='journey'&&metric!=='steps'&&((mode==='cycling')!==ride);
+      const why=noTeam?'join a team first':wrongWay?(mode==='cycling'?'cycling journey: rides only':"on foot: rides don't count"):`counts ${metric==='distance'?`distance (${unitShort(c)})`:metric}`;
+      const on=!noTeam&&!wrongWay&&has[metric];
+      return `<label class="check-row target"><input type="checkbox" data-target="${c.id}"${on?' checked':''}${noTeam?' disabled':''}> <span><b>${esc(c.name)}</b> <span class="muted">${esc(why)}</span></span>${!isIndividual(c)&&c.teams.length>1?`<select data-targetteam="${c.id}" aria-label="Team">${c.teams.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select>`:''}</label>`;
+    }).join('')||'<p class="muted">None of your challenges is on that day.</p>';
+  };
+  draw();
+  for(const id of ['#hlDate','#hlType','#hlMinutes','#hlDistance','#hlSteps'])$(id).addEventListener('change',draw);
+  $('#modal').showModal();$('#hlType').focus();
+  $('#homeLogForm').onsubmit=guarded(async()=>{
+    const targets=[...$all('#hlTargets [data-target]')].filter(x=>x.checked).map(x=>{const id=Number(x.dataset.target),c=dash.challenges.find(y=>y.id===id),sel=$(`[data-targetteam="${id}"]`);
+      return {challenge_id:id,...(isIndividual(c)?{}:{team_id:sel?Number(sel.value):c.teams[0]&&c.teams[0].id})}});
+    if(!targets.length){$('#hlMsg').textContent='Tick at least one challenge to count it in.';return}
+    try{
+      const r=await api('/api/activities',{method:'POST',body:JSON.stringify({targets,activity_type:$('#hlType').value||'Steps',activity_date:$('#hlDate').value,minutes:$('#hlMinutes').value||undefined,
+        ...($('#hlDistance').value?{distance:$('#hlDistance').value,distance_unit:$('#hlUnit').value}:{}),steps:$('#hlSteps').value||undefined,comment:$('#hlComment').value})});
+      $('#modal').close();await loadDashboard();renderHome();
+      $('#hello').textContent=`Logged in ${r.created} challenge${r.created===1?'':'s'}. Nice one, ${me.name.split(' ')[0]}!`;
+    }catch(x){$('#hlMsg').textContent=x.message}
+  });
+}
+$('#homeLogBtn').onclick=openHomeLog;
 async function loadIosCard(){
   try{
     const a=await api('/api/app/ios');
@@ -261,8 +352,10 @@ async function loadAndroidCard(){
 
 // The challenge, its standings and my entries in it, fetched together.
 let curMine=[];
+// Leaderboards show the top 10 and your own place; "Show all" asks for everyone (remembered for this visit).
+const fullBoards=new Set();
 async function loadChallenge(id){
-  const [c,lb,mine]=await Promise.all([api(`/api/challenges/${id}`),api(`/api/challenges/${id}/leaderboard`),api(`/api/me/activities?challenge_id=${id}&limit=50`).catch(()=>({activities:[]}))]);
+  const [c,lb,mine]=await Promise.all([api(`/api/challenges/${id}`),api(`/api/challenges/${id}/leaderboard${fullBoards.has(id)?'':'?top=10'}`),api(`/api/me/activities?challenge_id=${id}&limit=50`).catch(()=>({activities:[]}))]);
   curChallenge=c;curLeaderboard=lb;curMine=mine.activities;
 }
 async function openChallenge(id){
@@ -298,9 +391,15 @@ function renderChallenge(){
   const hint=jr&&!isSteps(c)?(jr.mode==='cycling'?'A cycling journey: only rides count.':"A journey on foot: rides don't count."):'';
   $('#journeyHint').textContent=hint;$('#journeyHint').classList.toggle('hidden',!hint);
   if(jr&&jr.mode==='cycling'&&!$('#activityType').value)$('#activityType').value='Cycling';
-  $('#challengeCode').innerHTML=`<span class="invite-box"><span class="invite-label">Invite people</span><span class="linkrow"><code>${esc(inviteUrl(c.invite_code))}</code><button type="button" data-copylink="${esc(c.invite_code)}">Copy link</button></span><span class="invite-note">Or share the code <b>${esc(c.invite_code)}</b>. Anyone with the link or code can join this challenge.${c.canManage?' <button type="button" class="linkish" id="newInviteCode">Make a new link</button>':''}</span></span>`;
-  if(c.canManage)$('#newInviteCode').onclick=()=>newInviteCode('challenges',c.id,'this challenge');
-  $('#challengeActions').innerHTML=(c.canManage?'<button class="ghost" data-editchallenge="1">Edit challenge</button><button class="ghost" data-members="1">Members</button>':'')+(c.role!=='admin'?'<button class="ghost" data-leavechallenge="1">Leave challenge</button>':'');
+  // A new challenge's owner sees the invite on the page until someone else is in; after that it's a button.
+  const memberCount=curLeaderboard.users_total??curLeaderboard.users.length,inviteOnPage=c.canManage&&memberCount<=1;
+  $('#challengeCode').innerHTML=inviteOnPage?inviteBoxHtml(c):'';
+  if(inviteOnPage)wireInviteBox($('#challengeCode'),c);
+  const inTeam=!isIndividual(c)&&c.teams.some(t=>t.mine);
+  $('#challengeActions').innerHTML=(inviteOnPage?'':'<button class="ghost" data-invite="1">Invite people</button>')+(inTeam?'<button class="ghost" data-teams="1">Teams</button>':'')
+    +(c.canManage?'<button class="ghost" data-editchallenge="1">Edit challenge</button><button class="ghost" data-members="1">Members</button>':'')+(c.role!=='admin'?'<button class="ghost" data-leavechallenge="1">Leave challenge</button>':'');
+  if(!inviteOnPage)$('[data-invite]').onclick=()=>openInvite(c);
+  if(inTeam)$('[data-teams]').onclick=()=>openTeams(c);
   if(c.canManage){$('[data-editchallenge]').onclick=()=>openEditChallenge(c);$('[data-members]').onclick=()=>openMembers(c,{admin:me.role==='global_admin'})}
   if(c.role!=='admin')$('[data-leavechallenge]').onclick=()=>leaveChallenge(c);
   $('#exportTeamsCsv').classList.toggle('hidden',!c.canManage);
@@ -326,31 +425,24 @@ function renderChallenge(){
   // A global admin looking at a challenge they have not joined manages it but has nothing to log.
   $('#logBtn').classList.toggle('hidden',visiting);$('#recentCard').classList.toggle('hidden',visiting);
   ['#teamsCard','#teamLeaderCard','#teamWrap'].forEach(s=>$(s).classList.toggle('hidden',solo));
+  // Once you're in a team, the teams card folds into the Teams button above.
+  if(!solo&&c.teams.some(t=>t.mine))$('#teamsCard').classList.add('hidden');
   if(solo)$('#exportTeamsCsv').classList.add('hidden');
   $('#boardGrid').classList.toggle('single',solo);
   $('#team').required=!solo;
   const myTeams=c.teams.filter(t=>t.mine);
   $('#team').innerHTML=myTeams.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')||'<option value="">Join a team first</option>';
-  $('#teamList').innerHTML=c.teams.map(t=>{
-    const actions=[];
-    if(!t.mine)actions.push(`<button data-jointeam="${t.id}">Join</button>`);
-    if(t.mine)actions.push(`<button class="ghost" data-leaveteam="${t.id}" data-name="${esc(t.name)}">Leave</button>`);
-    if(t.canManage)actions.push(`<button class="ghost" data-manageteam="${t.id}" data-name="${esc(t.name)}">Manage</button>`);
-    const bits=[`${t.members} member(s)`];
-    if(t.mine)bits.push('you are in this team');
-    if(t.invite_code)bits.push(`code: <b>${esc(t.invite_code)}</b> <button type="button" class="ghost" data-copylink="${esc(t.invite_code)}" title="Copy a link that joins this team">Copy invite link</button>`);
-    return `<div class="listrow"><div class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<div><b>${esc(t.name)}</b><div class="muted">${bits.join(' · ')}</div></div></div><div class="btnrow">${actions.join('')}</div></div>`;
-  }).join('')||'<p class="muted">No teams yet — create the first one.</p>';
-  $all('[data-copylink]').forEach(b=>b.onclick=()=>copyInviteLink(b.dataset.copylink,b));
-  $all('[data-jointeam]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await api(`/api/teams/${b.dataset.jointeam}/join`,{method:'POST'});await refreshChallenge()}catch(e){b.disabled=false;uiAlert(e.message)}});
-  $all('[data-manageteam]').forEach(b=>b.onclick=()=>openTeamManage(Number(b.dataset.manageteam),b.dataset.name));
-  $all('[data-leaveteam]').forEach(b=>b.onclick=async()=>{
-    if(!await uiConfirm(`Leave team "${b.dataset.name}"? What you've logged under it stays on the team's total.`,{ok:'Leave team'}))return;
-    try{await api(`/api/teams/${b.dataset.leaveteam}/leave`,{method:'POST'});await refreshChallenge()}catch(e){uiAlert(e.message)}
-  });
+  $('#teamList').innerHTML=teamRowsHtml(c);
+  wireTeamButtons($('#teamList'));
   const myTeamIds=new Set(c.teams.filter(t=>t.mine).map(t=>t.id));
-  $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader${myTeamIds.has(t.id)?' me':''}"${myTeamIds.has(t.id)?' title="Your team"':''}><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${esc(fmtTotal(c,t.minutes,t.distance,t.steps))}${journeyProgress(c,t)}</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
-  $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader${x.id===me.id?' me':''}" data-profile="${x.id}" role="button" tabindex="0" title="See ${x.id===me.id?'your':esc(x.name)+"'s"} profile"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</span><span>${esc(fmtTotal(c,x.minutes,x.distance,x.steps))}${journeyProgress(c,x)}</span></div>`).join('')||'<p class="muted">No members yet.</p>';
+  // A gap in the ranks (the top 10, then my own place further down) shows as a dotted row.
+  const gapped=(rows,draw)=>rows.map((r,i)=>(i&&r.rank>rows[i-1].rank+1?'<div class="leader-gap" aria-hidden="true">⋯</div>':'')+draw(r)).join('');
+  $('#teamLeaderboard').innerHTML=gapped(curLeaderboard.teams,t=>`<div class="leader${myTeamIds.has(t.id)?' me':''}"${myTeamIds.has(t.id)?' title="Your team"':''}><span class="rank">${t.rank}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${esc(fmtTotal(c,t.minutes,t.distance,t.steps))}${journeyProgress(c,t)}</span></div>`)||'<p class="muted">No teams yet.</p>';
+  $('#userLeaderboard').innerHTML=gapped(curLeaderboard.users,x=>`<div class="leader${x.id===me.id?' me':''}" data-profile="${x.id}" role="button" tabindex="0" title="See ${x.id===me.id?'your':esc(x.name)+"'s"} profile"><span class="rank">${x.rank}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</span><span>${esc(fmtTotal(c,x.minutes,x.distance,x.steps))}${journeyProgress(c,x)}</span></div>`)||'<p class="muted">No members yet.</p>';
+  for(const [box,shown,total] of [['#teamBoardMore',curLeaderboard.teams.length,curLeaderboard.teams_total],['#userBoardMore',curLeaderboard.users.length,curLeaderboard.users_total]]){
+    const more=total>shown;$(box).innerHTML=more?`<button type="button" class="ghost" data-showall="1">Show all ${total}</button>`:'';
+    if(more)$(box).querySelector('button').onclick=async()=>{fullBoards.add(c.id);await refreshChallenge()};
+  }
   const recent=curMine;
   $('#recent').innerHTML=recent.map(x=>{
     const timeBit=x.start_time&&x.end_time?` · ${x.start_time}–${x.end_time}`:'';
@@ -383,8 +475,8 @@ async function openEditChallenge(c,after=refreshChallenge){
     <p id="ecMsg" class="error"></p>
     <h2 style="margin-top:24px">Challenge owners</h2>
     <div id="ownersList">${membersData.members.filter(m=>m.challenge_role==='owner').map(m=>`<div class="listrow"><div><b>${esc(m.name)}</b><div class="muted">${esc(m.email)}</div></div></div>`).join('')||'<p class="muted">No owners.</p>'}</div>
-    <form id="addOwnerForm"><label>Make a member an owner (their email)<input id="addOwnerEmail" type="email" required placeholder="name@example.com"></label><button>Make owner</button></form>
-    <p class="muted">They need to be in the challenge already. To bring someone new in, share the invite link.</p>
+    <form id="addOwnerForm"><label>Add an owner by email<input id="addOwnerEmail" type="email" required placeholder="name@example.com" autocomplete="off"></label><button>Add owner</button></form>
+    <p class="muted">Anyone with an account; they're added to the challenge if they aren't in it, and told.</p>
     <p id="ownerMsg" class="error"></p>
     <div class="danger-zone"><h2>Delete challenge</h2><p class="muted">Permanently deletes this challenge with all its teams, members and logged activity, for everyone. This cannot be undone.</p><button type="button" class="danger" id="deleteChallengeBtn">Delete challenge</button><p id="deleteChallengeMsg" class="error"></p></div>`;
   $('#modal').showModal();
@@ -401,7 +493,7 @@ async function openEditChallenge(c,after=refreshChallenge){
       routePicker.show();
     };
   }
-  $('#editChallengeForm').onsubmit=async e=>{
+  $('#editChallengeForm').onsubmit=guarded(async e=>{
     e.preventDefault();
     try{
       const payload={name:$('#ecName').value.trim(),description:$('#ecDescription').innerHTML,start_date:$('#ecStart').value,end_date:$('#ecEnd').value,metric:$('#ecMetric').value,distance_unit:$('#ecUnit').value,participation:$('#ecParticipation').value};
@@ -410,7 +502,7 @@ async function openEditChallenge(c,after=refreshChallenge){
       $('#modal').close();
       await after();
     }catch(x){$('#ecMsg').textContent=x.message}
-  };
+  });
   // Typing the name is the confirmation: deleting removes everyone's activity, not just the owner's.
   $('#deleteChallengeBtn').onclick=async()=>{
     const typed=await uiPrompt(`This deletes "${c.name}" and everything logged in it, for every member. Type the challenge name to confirm.`,{title:'Delete challenge',ok:'Delete'});
@@ -424,10 +516,10 @@ async function openEditChallenge(c,after=refreshChallenge){
       if(after===refreshChallenge&&challengeBack!=='admin')showHome();else showAdmin();
     }catch(x){$('#deleteChallengeMsg').textContent=x.message}
   };
-  $('#addOwnerForm').onsubmit=async e=>{
+  $('#addOwnerForm').onsubmit=guarded(async e=>{
     e.preventDefault();
     try{await api(`/api/challenges/${c.id}/owners`,{method:'POST',body:JSON.stringify({email:$('#addOwnerEmail').value})});await openEditChallenge(c,after)}catch(x){$('#ownerMsg').textContent=x.message}
-  };
+  });
 }
 
 // If both start and finish are set, minutes is derived from the gap between them and kept in
@@ -445,11 +537,11 @@ function openEditSteps(x){
     <form id="editStepsForm"><div class="two"><label>Steps that day<input id="esSteps" type="number" min="1" max="200000" step="1" value="${x.steps??''}" required></label><label>Date<input id="esDate" type="date" value="${esc(x.activity_date)}" required></label></div>
       <label>Comment (optional)<input id="esComment" maxlength="500" value="${esc(x.comment||'')}"></label><button>Save changes</button></form><p id="esMsg" class="error"></p>`;
   $('#modal').showModal();
-  $('#editStepsForm').onsubmit=async e=>{
+  $('#editStepsForm').onsubmit=guarded(async e=>{
     e.preventDefault();
     try{await api(`/api/activities/${x.id}`,{method:'PATCH',body:JSON.stringify({steps:$('#esSteps').value,activity_date:$('#esDate').value,comment:$('#esComment').value})});$('#modal').close();await refreshChallenge()}
     catch(err){$('#esMsg').textContent=err.message}
-  };
+  });
 }
 function openEditActivity(x){
   const c=curChallenge,dist=isDistance(c);
@@ -481,20 +573,62 @@ function openEditActivity(x){
   const recalc=()=>{const m=minutesBetween($('#eaStart').value,$('#eaEnd').value);if(m)$('#eaMinutes').value=m};
   $('#eaStart').addEventListener('change',recalc);
   $('#eaEnd').addEventListener('change',recalc);
-  $('#editActivityForm').onsubmit=async e=>{
+  $('#editActivityForm').onsubmit=guarded(async e=>{
     e.preventDefault();
     try{
       await api(`/api/activities/${x.id}`,{method:'PATCH',body:JSON.stringify({activity_type:$('#eaType').value,minutes:$('#eaMinutes').value,...($('#eaDistance')?{distance:$('#eaDistance').value,distance_unit:$('#eaUnit').value}:{}),activity_date:$('#eaDate').value,start_time:$('#eaStart').value,end_time:$('#eaEnd').value,comment:$('#eaComment').value})});
       $('#modal').close();
       await refreshChallenge();
     }catch(err){$('#eaMsg').textContent=err.message}
-  };
+  });
 }
 
 // A new invite code: the old link and code stop working, for anyone who hasn't joined yet.
 async function newInviteCode(kind,id,what){
   if(!await uiConfirm(`Make a new invite link for ${what}? The current link and code stop working straight away; people already in aren't affected.`,{ok:'Make a new link'}))return false;
   try{await api(`/api/${kind}/${id}/invite-code`,{method:'POST'});await refreshChallenge();return true}catch(e){uiAlert(e.message);return false}
+}
+// The invite link and code, with Copy, the phone's share sheet where there is one, and (owners) a new link.
+const inviteBoxHtml=c=>`<span class="invite-box"><span class="invite-label">Invite people</span><span class="linkrow"><code>${esc(inviteUrl(c.invite_code))}</code><button type="button" data-copylink="${esc(c.invite_code)}">Copy link</button>${navigator.share?'<button type="button" data-share="1">Share…</button>':''}</span><span class="invite-note">Or share the code <b>${esc(c.invite_code)}</b>. Anyone with the link or code can join this challenge.${c.canManage?' <button type="button" class="linkish" data-newcode="1">Make a new link</button>':''}</span></span>`;
+function wireInviteBox(root,c){
+  root.querySelector('[data-copylink]').onclick=e=>copyInviteLink(c.invite_code,e.currentTarget);
+  const share=root.querySelector('[data-share]');
+  if(share)share.onclick=()=>navigator.share({title:`Join ${c.name} on Active Together`,text:`Join me in "${c.name}" on Active Together`,url:inviteUrl(c.invite_code)}).catch(()=>{});
+  const fresh=root.querySelector('[data-newcode]');
+  if(fresh)fresh.onclick=async()=>{if($('#modal').open)$('#modal').close();await newInviteCode('challenges',c.id,'this challenge')};
+}
+function openInvite(c){
+  $('#modalBody').innerHTML=`<h2>Invite people to ${esc(c.name)}</h2><div class="invite-dialog">${inviteBoxHtml(c)}</div>`;
+  wireInviteBox($('#modalBody'),c);
+  $('#modal').showModal();
+}
+// Teams, as a dialog once you're in one (the page shows them as a card until then).
+function teamRowsHtml(c){
+  return c.teams.map(t=>{
+    const actions=[];
+    if(!t.mine)actions.push(`<button data-jointeam="${t.id}">Join</button>`);
+    if(t.mine)actions.push(`<button class="ghost" data-leaveteam="${t.id}" data-name="${esc(t.name)}">Leave</button>`);
+    if(t.canManage)actions.push(`<button class="ghost" data-manageteam="${t.id}" data-name="${esc(t.name)}">Manage</button>`);
+    const bits=[`${t.members} member(s)`];
+    if(t.mine)bits.push('you are in this team');
+    if(t.invite_code)bits.push(`code: <b>${esc(t.invite_code)}</b> <button type="button" class="ghost" data-copylink="${esc(t.invite_code)}" title="Copy a link that joins this team">Copy invite link</button>`);
+    return `<div class="listrow"><div class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<div><b>${esc(t.name)}</b><div class="muted">${bits.join(' · ')}</div></div></div><div class="btnrow">${actions.join('')}</div></div>`;
+  }).join('')||'<p class="muted">No teams yet — create the first one.</p>';
+}
+function wireTeamButtons(root){
+  root.querySelectorAll('[data-copylink]').forEach(b=>b.onclick=()=>copyInviteLink(b.dataset.copylink,b));
+  root.querySelectorAll('[data-jointeam]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await api(`/api/teams/${b.dataset.jointeam}/join`,{method:'POST'});if($('#modal').open)$('#modal').close();await refreshChallenge()}catch(e){b.disabled=false;uiAlert(e.message)}});
+  root.querySelectorAll('[data-manageteam]').forEach(b=>b.onclick=()=>openTeamManage(Number(b.dataset.manageteam),b.dataset.name));
+  root.querySelectorAll('[data-leaveteam]').forEach(b=>b.onclick=async()=>{
+    if(!await uiConfirm(`Leave team "${b.dataset.name}"? What you've logged under it stays on the team's total.`,{ok:'Leave team'}))return;
+    try{await api(`/api/teams/${b.dataset.leaveteam}/leave`,{method:'POST'});if($('#modal').open)$('#modal').close();await refreshChallenge()}catch(e){uiAlert(e.message)}
+  });
+}
+function openTeams(c){
+  $('#modalBody').innerHTML=`<h2>Teams in ${esc(c.name)}</h2><div id="dlgTeams">${teamRowsHtml(c)}</div><button type="button" class="secondary" id="dlgNewTeam">+ New team</button>`;
+  wireTeamButtons($('#dlgTeams'));
+  $('#dlgNewTeam').onclick=()=>showFormDialog('newTeamDialog');
+  $('#modal').showModal();
 }
 async function openTeamManage(tid,tname){
   const data=await api(`/api/teams/${tid}/members`);
@@ -508,8 +642,8 @@ async function openTeamManage(tid,tname){
     </form>
     <h2 style="margin-top:24px">Members</h2>
     <div id="teamMembersList">${data.members.map(m=>`<div class="listrow"><div><b>${esc(m.name)}</b><div class="muted">${esc(m.email)} · ${esc(m.team_role)}</div></div><button class="ghost" data-removemember="${m.id}">Remove</button></div>`).join('')||'<p class="muted">No members.</p>'}</div>
-    <form id="addMemberForm"><label>Add someone already in this challenge (their email)<input id="addMemberEmail" type="email" required placeholder="name@example.com"></label><button>Add to team</button></form>
-    <p class="muted">To bring someone new in, share the team's invite link.</p>
+    <form id="addMemberForm"><label>${curChallenge&&curChallenge.canManage?'Add someone by email':'Add someone already in this challenge (their email)'}<input id="addMemberEmail" type="email" required placeholder="name@example.com" autocomplete="off"></label><button>Add to team</button></form>
+    <p class="muted">${curChallenge&&curChallenge.canManage?"Anyone with an account: they're added to the challenge too, and told.":"To bring someone new in, share the team's invite link."}</p>
     <p id="manageMsg" class="error"></p>
     <hr><div class="btnrow"><button type="button" id="newTeamCode" class="ghost">Make a new invite link</button><button id="deleteTeamBtn" class="ghost" style="color:var(--red-text)">Delete this team</button></div>`;
   $('#newTeamCode').onclick=async()=>{if(await newInviteCode('teams',tid,`the team "${tname}"`))openTeamManage(tid,tname)};
@@ -520,7 +654,7 @@ async function openTeamManage(tid,tname){
     $('#renameTeamImagePreview').src=URL.createObjectURL(f);
     $('#renameTeamImagePreview').classList.remove('hidden');
   });
-  $('#renameTeamForm').onsubmit=async e=>{
+  $('#renameTeamForm').onsubmit=guarded(async e=>{
     e.preventDefault();
     const name=$('#renameTeamName').value.trim();
     if(!name)return;
@@ -532,11 +666,11 @@ async function openTeamManage(tid,tname){
       $('#modal').close();
       await refreshChallenge();
     }catch(x){$('#manageMsg').textContent=x.message}
-  };
-  $('#addMemberForm').onsubmit=async e=>{
+  });
+  $('#addMemberForm').onsubmit=guarded(async e=>{
     e.preventDefault();
     try{await api(`/api/teams/${tid}/members`,{method:'POST',body:JSON.stringify({email:$('#addMemberEmail').value})});await openTeamManage(tid,tname);await refreshChallenge()}catch(x){$('#manageMsg').textContent=x.message}
-  };
+  });
   $all('[data-removemember]').forEach(b=>b.onclick=async()=>{
     if(!await uiConfirm('Remove this person from the team? What they logged under it stays on the team total.',{ok:'Remove'}))return;
     try{await api(`/api/teams/${tid}/members/${b.dataset.removemember}`,{method:'DELETE'});await openTeamManage(tid,tname);await refreshChallenge()}catch(x){$('#manageMsg').textContent=x.message}
@@ -837,26 +971,40 @@ $('#inviteOnly').onchange=async e=>{
 };
 function setAdminTab(t){
   adminTab=t;
-  setUrl(t==='challenges'?'/admin/challenges':'/admin',true);
+  setUrl(t==='challenges'?'/admin/challenges':t==='log'?'/admin/log':'/admin',true);
   $all('[data-admintab]').forEach(b=>b.classList.toggle('active',b.dataset.admintab===t));
   $('#adminUsers').classList.toggle('hidden',t!=='users');
   $('#adminChallenges').classList.toggle('hidden',t!=='challenges');
+  $('#adminLog').classList.toggle('hidden',t!=='log');
+  if(t==='log')renderAuditLog();
 }
 async function renderAdmin(){
   setAdminTab(adminTab);
+  // Admins without two-step sign-in are nudged to turn it on.
+  $('#adminTwoStep').classList.toggle('hidden',!!me.two_factor);
   try{
-    const [u,c]=await Promise.all([api('/api/admin/users'),api('/api/admin/challenges')]);
-    adminUsers=u.users;adminChallenges=c.challenges;
+    const c=await api('/api/admin/challenges');adminChallenges=c.challenges;
+    await loadAdminUsers();
   }catch(e){$('#adminUserList').innerHTML=$('#adminChallengeList').innerHTML=`<p class="error">${esc(e.message)}</p>`;return}
-  renderAdminUsers();renderAdminChallenges();
+  renderAdminChallenges();
+}
+// Users come from the server a page at a time (50), searched there too, so a big site stays quick.
+let adminUserTotal=0,adminUserQuery='';
+async function loadAdminUsers(more=false){
+  const q=$('#adminUserSearch').value.trim();
+  if(!more){adminUsers=[];adminUserQuery=q}
+  const r=await api(`/api/admin/users?limit=50&offset=${adminUsers.length}${q?`&q=${encodeURIComponent(q)}`:''}`);
+  if(q!==adminUserQuery)return;
+  adminUsers=adminUsers.concat(r.users);adminUserTotal=r.total;
+  renderAdminUsers();
 }
 function renderAdminUsers(){
-  const q=$('#adminUserSearch').value.trim().toLowerCase();
-  const rows=adminUsers.filter(x=>!q||`${x.name} ${x.email}`.toLowerCase().includes(q));
-  $('#adminUserCount').textContent=q?`${rows.length} of ${adminUsers.length}`:String(adminUsers.length);
+  const rows=adminUsers;
+  $('#adminUserCount').textContent=String(adminUserTotal);
+  $('#adminUsersMore').classList.toggle('hidden',adminUsers.length>=adminUserTotal);
   $('#adminUserList').innerHTML=rows.map(x=>`<div class="adminrow"><div><div class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</div>
     <div class="facts"><span>${esc(x.email)}</span><span>${plural(x.challenges,'challenge','challenges')}</span><span>${plural(x.activities,'activity','activities')}</span><span>${x.last_activity?`last active ${esc(fmtDate(x.last_activity))}`:'no activity yet'}</span>${x.tickets?`<span>${plural(x.tickets,'ticket','tickets')}</span>`:''}<span>joined ${esc(fmtDate(String(x.created_at||'').slice(0,10)))}</span></div></div>
-    <div class="btnrow">${x.deactivated_at?statusPillFor('deactivated','Deactivated'):''}${statusPillFor(x.role,x.role==='global_admin'?'Global admin':'Member')}<button class="ghost" data-edituser="${x.id}">Edit</button></div></div>`).join('')||'<p class="muted">No users match.</p>';
+    <div class="btnrow">${x.two_factor?'<span class="status" title="Two-step sign-in is on">2-step</span>':''}${x.deactivated_at?statusPillFor('deactivated','Deactivated'):''}${statusPillFor(x.role,x.role==='global_admin'?'Global admin':'Member')}<button class="ghost" data-edituser="${x.id}">Edit</button></div></div>`).join('')||'<p class="muted">No users match.</p>';
   $all('[data-edituser]').forEach(b=>{const x=adminUsers.find(x2=>x2.id===Number(b.dataset.edituser));b.onclick=()=>openEditUser(x)});
 }
 function renderAdminChallenges(){
@@ -874,23 +1022,21 @@ function renderAdminChallenges(){
 }
 // Who is in a challenge, and adding or removing anyone (global admins). People are picked from the
 // admin user list by name or email; a team challenge can put them straight into a team.
-// Who is in a challenge: its owners (from the challenge page) and global admins (from Admin) can see each
-// person's entries, delete ones that shouldn't count, and remove people. Only global admins add anyone.
+// Who is in a challenge: its owners (from the challenge page) and global admins (from Admin) can add anyone
+// with an account (who is then told), see each person's entries, delete ones that shouldn't count, and
+// remove people. Admins get name suggestions as they type.
 async function openMembers(c,{admin=false,note=''}={}){
   let d;
   try{d=await api(`/api/challenges/${c.id}/members`)}catch(e){uiAlert(e.message);return}
   const individual=c.participation==='individual';
-  const inIt=new Set(d.members.map(x=>x.id));
-  const pickable=admin?adminUsers.filter(x=>!x.deactivated_at):[];
-  const label=x=>`${x.name} <${x.email}>`;
   $('#modalBody').innerHTML=`<h2>Members of ${esc(c.name)}</h2>
     <p class="muted">${plural(d.members.length,'member','members')}${individual?' · individuals':` · ${plural(d.teams.length,'team','teams')}`}</p>
-    ${admin?`<form id="amAddForm" class="card" style="padding:14px;margin:12px 0">
-      <label>Add a person<input id="amUser" list="amUserList" required autocomplete="off" placeholder="Start typing a name or email"></label>
-      <datalist id="amUserList">${pickable.map(x=>`<option value="${esc(label(x))}">${inIt.has(x.id)?'already in':''}</option>`).join('')}</datalist>
+    <form id="amAddForm" class="card" style="padding:14px;margin:12px 0">
+      <label>Add someone by email<input id="amUser" type="${admin?'text':'email'}" ${admin?'list="amUserList" placeholder="Start typing a name or email"':'placeholder="name@example.com"'} required autocomplete="off" spellcheck="false"></label>
+      ${admin?'<datalist id="amUserList"></datalist>':''}
       <div class="two">${individual?'':`<label>Team<select id="amTeam"><option value="">No team yet</option>${d.teams.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></label>`}
       <label>Role<select id="amRole"><option value="member">Member</option><option value="owner">Owner</option></select></label></div>
-      <button>Add to challenge</button></form>`:'<p class="muted">To bring someone new in, share the invite link.</p>'}
+      <button>Add to challenge</button><p class="muted">Anyone with an account. They're told, and can leave if they didn't expect it. No account yet? Share the invite link.</p></form>
     <p id="amMsg" class="${note?'muted':'error'}">${esc(note)}</p>
     <div>${d.members.map(x=>`<div class="member-block"><div class="listrow"><div><div class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</div>
       <div class="muted">${esc(x.email)} · ${x.role==='owner'?'owner':'member'}${x.teams?` · ${esc(x.teams)}`:individual?'':' · no team'} · ${plural(x.entries,'entry','entries')}${x.deactivated_at?' · deactivated':''}</div></div>
@@ -899,15 +1045,16 @@ async function openMembers(c,{admin=false,note=''}={}){
   if(!$('#modal').open)$('#modal').showModal();
   const say=(text,ok)=>{$('#amMsg').className=ok?'muted':'error';$('#amMsg').textContent=text};
   const refresh=async msg=>{if(admin)await renderAdmin();else if(curChallenge&&curChallenge.id===c.id)await refreshChallenge();await openMembers(admin?(adminChallenges.find(x=>x.id===c.id)||c):c,{admin,note:msg})};
-  if(admin)$('#amAddForm').onsubmit=async e=>{
-    e.preventDefault();
-    const v=$('#amUser').value.trim().toLowerCase(),who=pickable.find(x=>label(x).toLowerCase()===v||x.email.toLowerCase()===v);
-    if(!who)return say('Pick someone from the list (an existing, active account).');
+  // Admins: suggestions from the server as they type ("Name <email>"); the email is what's sent.
+  if(admin){let timer;$('#amUser').addEventListener('input',()=>{clearTimeout(timer);const q=$('#amUser').value.trim();if(q.length<2||q.includes('<'))return;
+    timer=setTimeout(async()=>{try{const r=await api(`/api/admin/users?q=${encodeURIComponent(q)}&limit=8`);$('#amUserList').innerHTML=r.users.filter(x=>!x.deactivated_at).map(x=>`<option value="${esc(`${x.name} <${x.email}>`)}"></option>`).join('')}catch(e){}},250)})}
+  $('#amAddForm').onsubmit=guarded(async()=>{
+    const v=$('#amUser').value.trim(),email=(v.match(/<([^>]+)>\s*$/)||[,v])[1].trim();
     try{
-      const r=await api(`/api/admin/challenges/${c.id}/members`,{method:'POST',body:JSON.stringify({user_id:who.id,role:$('#amRole').value,team_id:$('#amTeam')?$('#amTeam').value:undefined})});
-      await refresh(r.added?`Added ${who.name}.`:`${who.name} was already in; their team and role are updated.`);
+      const r=await api(`/api/challenges/${c.id}/members`,{method:'POST',body:JSON.stringify({email,role:$('#amRole').value,team_id:$('#amTeam')?$('#amTeam').value:undefined})});
+      await refresh(r.added?`Added ${r.user.name}. They've been told.`:`${r.user.name} was already in; their team and role are updated.`);
     }catch(x){say(x.message)}
-  };
+  });
   // A member's entries, newest first, each with Delete.
   $all('[data-amentries]').forEach(b=>b.onclick=async()=>{
     const id=Number(b.dataset.amentries),box=$(`[data-amlist="${id}"]`),open=box.classList.toggle('hidden')===false;
@@ -937,15 +1084,30 @@ $('#adminBtn').onclick=()=>showAdmin();
 $('#adminBack').onclick=()=>showHome();
 $('#adminSupport').onclick=()=>showHelp();
 $all('[data-admintab]').forEach(b=>b.onclick=()=>setAdminTab(b.dataset.admintab));
-$('#adminUserSearch').oninput=renderAdminUsers;
+{let timer;$('#adminUserSearch').oninput=()=>{clearTimeout(timer);timer=setTimeout(()=>loadAdminUsers().catch(e=>uiAlert(e.message)),250)}}
+$('#adminUsersMore').onclick=()=>loadAdminUsers(true).catch(e=>uiAlert(e.message));
+$('#adminTwoStepBtn').onclick=openMyAccount;
+// The audit log: what admins and owners have done to other people's accounts and entries.
+let auditEntries=[];
+async function renderAuditLog(more=false){
+  const q=$('#auditSearch').value.trim();
+  try{
+    const r=await api(`/api/admin/audit?limit=100&offset=${more?auditEntries.length:0}${q?`&q=${encodeURIComponent(q)}`:''}`);
+    auditEntries=more?auditEntries.concat(r.entries):r.entries;
+    $('#auditList').innerHTML=auditEntries.map(e=>`<div class="listrow audit-row"><div><b>${esc(e.actor_name||'Someone')}</b> ${esc(e.action)}${e.target_name?` · <b>${esc(e.target_name)}</b>`:''}${e.challenge_name?` · ${esc(e.challenge_name)}`:''}${e.detail?`<div class="muted">${esc(e.detail)}</div>`:''}</div><span class="muted">${esc(fmtWhen(e.at))}</span></div>`).join('')||'<p class="muted">Nothing recorded yet.</p>';
+    $('#auditMore').classList.toggle('hidden',!r.more);
+  }catch(e){$('#auditList').innerHTML=`<p class="error">${esc(e.message)}</p>`}
+}
+{let timer;$('#auditSearch').oninput=()=>{clearTimeout(timer);timer=setTimeout(()=>renderAuditLog(),250)}}
+$('#auditMore').onclick=()=>renderAuditLog(true);
 $('#adminChallengeSearch').oninput=renderAdminChallenges;
 $('#adminChallengeState').onchange=renderAdminChallenges;
 $('#adminNewUserBtn').onclick=()=>{$('#newUser').classList.toggle('hidden');if(!$('#newUser').classList.contains('hidden'))$('#newUser [name=name]').focus()};
-$('#newUser').onsubmit=async e=>{
+$('#newUser').onsubmit=guarded(async e=>{
   e.preventDefault();
   try{await api('/api/admin/users',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});e.target.reset();e.target.classList.add('hidden');$('#newUserMsg').textContent='';await renderAdmin()}
   catch(x){$('#newUserMsg').textContent=x.message}
-};
+});
 
 function openEditUser(x){
   $('#modalBody').innerHTML=`<h2>Edit ${esc(x.name)}</h2>
@@ -953,16 +1115,21 @@ function openEditUser(x){
       <label>Name<input id="euName" value="${esc(x.name)}" required></label>
       <label>Email<input id="euEmail" type="email" value="${esc(x.email)}" required></label>
       <label>Role<select id="euRole"><option value="member"${x.role==='member'?' selected':''}>Member</option><option value="global_admin"${x.role==='global_admin'?' selected':''}>Global admin</option></select></label>
-      <label>Reset password (leave blank to keep current)<input id="euPassword" type="password" minlength="8"></label>
+      <label>Reset password (leave blank to keep current)<input id="euPassword" type="password" minlength="8" autocomplete="new-password"></label>
       <button>Save changes</button>
     </form>
     <p class="muted">Or <button type="button" class="linkish" id="euResetLink">make a reset link</button> for them to choose their own password (works once, for 24 hours).</p>
+    ${x.two_factor&&x.id!==me.id?'<p class="muted">Two-step sign-in is on. Lost their phone and backup codes? <button type="button" class="linkish" id="euTwoStepOff">Turn it off for them</button></p>':''}
     <p id="euMsg" class="error"></p>
     ${x.id===me.id?'':`<div class="danger-zone"><h2>${x.deactivated_at?'Deactivated':'Deactivate or delete'}</h2>
       <p class="muted">${x.deactivated_at?`Deactivated ${esc(String(x.deactivated_at).slice(0,10))}. They can't sign in; their activity still counts.`:'Deactivating signs them out everywhere and stops them signing in. Their activity stays on the leaderboards, and you can reactivate them at any time.'}</p>
       <div class="btnrow"><button type="button" class="${x.deactivated_at?'secondary':'danger'}" id="euActive">${x.deactivated_at?'Reactivate account':'Deactivate account'}</button><button type="button" class="danger" id="euDelete">Delete account</button></div>
       <p class="muted">Deleting removes the account with all their activity, routes, team memberships and tickets, for good. Challenges and teams they created stay, credited to you.</p></div>`}`;
   $('#modal').showModal();
+  if($('#euTwoStepOff'))$('#euTwoStepOff').onclick=async()=>{
+    if(!await uiConfirm(`Turn off two-step sign-in for ${x.name}? They'll sign in with just their password until they set it up again.`,{ok:'Turn off',danger:true}))return;
+    try{await api(`/api/admin/users/${x.id}`,{method:'PATCH',body:JSON.stringify({twoFactor:false})});$('#modal').close();renderAdmin()}catch(err){$('#euMsg').textContent=err.message}
+  };
   $('#euResetLink').onclick=async()=>{
     try{const r=await api(`/api/admin/users/${x.id}/reset-link`,{method:'POST'});await uiCopy(`Send this link to ${x.name}. It works once, until ${new Date(r.expiresAt).toLocaleString()}. Any earlier link stops working.`,r.url)}
     catch(err){$('#euMsg').textContent=err.message}
@@ -977,13 +1144,13 @@ function openEditUser(x){
     if(typed.trim().toLowerCase()!==x.email.toLowerCase()){$('#euMsg').textContent='The email did not match, so nothing was deleted.';return}
     try{await api(`/api/admin/users/${x.id}`,{method:'DELETE'});$('#modal').close();renderAdmin()}catch(err){$('#euMsg').textContent=err.message}
   };
-  $('#editUserForm').onsubmit=async e=>{
+  $('#editUserForm').onsubmit=guarded(async e=>{
     e.preventDefault();
     const payload={name:$('#euName').value.trim(),email:$('#euEmail').value.trim(),role:$('#euRole').value};
     const pw=$('#euPassword').value;
     if(pw)payload.password=pw;
     try{await api(`/api/admin/users/${x.id}`,{method:'PATCH',body:JSON.stringify(payload)});$('#modal').close();renderAdmin()}catch(err){$('#euMsg').textContent=err.message}
-  };
+  });
 }
 
 function openMyAccount(){
@@ -993,7 +1160,7 @@ function openMyAccount(){
       <div id="acctAvatarPreview">${avatarHtml(me.avatar_url,me.name,'imgpreview')}</div>
       <input type="file" id="acctAvatar" accept="image/*">
       <label>Name<input id="acctName" value="${esc(me.name)}" required></label>
-      <label>Email<input id="acctEmail" type="email" value="${esc(me.email)}" required></label>
+      <label>Email<input id="acctEmail" type="email" value="${esc(me.email)}" required autocomplete="email"></label>
       <label>About me (optional)<input id="acctBio" maxlength="280" value="${esc(me.bio||'')}" placeholder="A line for your profile"></label>
       <label>Profile sharing<select id="acctSharing">
         <option value="private"${me.profile_sharing==='private'?' selected':''}>Private - name and photo only</option>
@@ -1001,29 +1168,33 @@ function openMyAccount(){
         <option value="full"${me.profile_sharing==='full'?' selected':''}>Full - plus my recent activity in shared challenges</option>
       </select></label>
       <p class="muted">Only people in a challenge with you can see your profile, and only for challenges you share. Leaderboard totals are always visible to them; GPS routes never are.</p>
-      <label>New password (leave blank to keep current)<input id="acctNewPassword" type="password" minlength="8"></label>
-      <label>Current password (required to change email or password)<input id="acctCurrentPassword" type="password"></label>
+      <label class="check-row"><input type="checkbox" id="acctNotify"${me.notify_email?' checked':''}> <span>Email me when support replies to my tickets, or someone adds me to a challenge</span></label>
+      ${me.role==='global_admin'?`<label class="check-row"><input type="checkbox" id="acctNotifyAdmin"${me.notify_admin?' checked':''}> <span>Email me about new support tickets and replies (global admins)</span></label>`:''}
+      <label>New password (leave blank to keep current)<input id="acctNewPassword" type="password" minlength="8" autocomplete="new-password"></label>
+      <label>Current password (required to change email or password)<input id="acctCurrentPassword" type="password" autocomplete="current-password"></label>
       <button>Save changes</button>
     </form>
     <p id="acctMsg" class="error"></p>
+    <div class="twostep"><h2>Two-step sign-in</h2><div id="tsBody"></div></div>
     <div class="danger-zone"><h2>Delete my account</h2>
       <p class="muted">Deletes your account, everything you've logged, your routes, follows and support tickets, straight away. A challenge you own alone passes to its longest-standing member, or is deleted if nobody else is in it. This can't be undone.</p>
       <form id="deleteAccountForm"><label>Your password<input id="deletePassword" type="password" required autocomplete="current-password"></label><button class="danger">Delete my account</button></form>
       <p id="deleteMsg" class="error"></p></div>`;
   $('#modal').showModal();
-  $('#deleteAccountForm').onsubmit=async e=>{
+  renderTwoStep();
+  $('#deleteAccountForm').onsubmit=guarded(async e=>{
     e.preventDefault();
     if(!await uiConfirm('Delete your Active Together account and everything in it? This cannot be undone.',{ok:'Delete my account',danger:true}))return;
     try{await api('/api/me',{method:'DELETE',body:JSON.stringify({password:$('#deletePassword').value})});location.href='/'}catch(x){$('#deleteMsg').textContent=x.message}
-  };
+  });
   $('#acctAvatar').addEventListener('change',()=>{
     const f=$('#acctAvatar').files[0];
     if(!f)return;
     $('#acctAvatarPreview').innerHTML=`<img src="${URL.createObjectURL(f)}" class="imgpreview" alt="">`;
   });
-  $('#accountForm').onsubmit=async e=>{
+  $('#accountForm').onsubmit=guarded(async e=>{
     e.preventDefault();
-    const payload={name:$('#acctName').value.trim(),email:$('#acctEmail').value.trim(),bio:$('#acctBio').value,profileSharing:$('#acctSharing').value};
+    const payload={name:$('#acctName').value.trim(),email:$('#acctEmail').value.trim(),bio:$('#acctBio').value,profileSharing:$('#acctSharing').value,notifyEmail:$('#acctNotify').checked,...($('#acctNotifyAdmin')?{notifyAdmin:$('#acctNotifyAdmin').checked}:{})};
     // Only send email when it changed - sending it at all asks for the current password.
     if(payload.email.toLowerCase()===String(me.email).toLowerCase())delete payload.email;
     const newPassword=$('#acctNewPassword').value;
@@ -1038,9 +1209,41 @@ function openMyAccount(){
       $('#modal').close();
       renderHome();
     }catch(x){$('#acctMsg').textContent=x.message}
-  };
+  });
 }
 $('#myAccount').onclick=openMyAccount;
+// Two-step sign-in in My account: off (set up: scan a QR code, type the first code, keep the backup codes),
+// or on (new backup codes, or switch off - both need the password).
+let qrReady=null;
+const loadQr=()=>qrReady||=new Promise((ok,fail)=>{const js=document.createElement('script');js.src='/vendor/qrcode-generator-2.0.4/qrcode.js';js.onload=()=>ok(window.qrcode);js.onerror=()=>{qrReady=null;fail(Error('Could not load the QR code'))};document.head.appendChild(js)});
+const backupList=codes=>`<p><b>Your backup codes.</b> Each works once, in place of a code from the app, if you lose your phone. Keep them somewhere safe (a password manager is ideal): they won't be shown again.</p><pre class="backup-codes">${codes.map(esc).join('\n')}</pre><button type="button" class="ghost" id="tsCopyCodes">Copy the codes</button>`;
+function renderTwoStep(){
+  const box=$('#tsBody');if(!box)return;
+  if(me.two_factor){
+    box.innerHTML=`<p class="muted"><b>On.</b> Signing in asks for a code from your authenticator app (or a backup code) after your password.</p>
+      <form id="tsManage"><label>Your password<input id="tsPassword" type="password" required autocomplete="current-password"></label><div class="btnrow"><button type="button" id="tsNewCodes" class="ghost">New backup codes</button><button type="button" id="tsOff" class="danger">Turn off</button></div></form><div id="tsCodes"></div><p id="tsMsg" class="error"></p>`;
+    const pw=()=>$('#tsPassword').value;
+    $('#tsNewCodes').onclick=async()=>{try{const r=await api('/api/me/2fa/backup-codes',{method:'POST',body:JSON.stringify({password:pw()})});$('#tsCodes').innerHTML=backupList(r.backupCodes);wireCopy(r.backupCodes)}catch(x){$('#tsMsg').textContent=x.message}};
+    $('#tsOff').onclick=async()=>{if(!await uiConfirm('Turn off two-step sign-in? Signing in will only need your password.',{ok:'Turn off',danger:true}))return;
+      try{await api('/api/me/2fa/disable',{method:'POST',body:JSON.stringify({password:pw()})});me.two_factor=0;renderTwoStep()}catch(x){$('#tsMsg').textContent=x.message}};
+    return;
+  }
+  box.innerHTML=`<p class="muted">Off. With it on, signing in also needs a code from an authenticator app on your phone (Google Authenticator, Microsoft Authenticator, 1Password, the iPhone's Passwords app...), so a stolen password alone isn't enough.${me.role==='global_admin'?' <b>Recommended for global admins.</b>':''}</p><button type="button" class="secondary" id="tsStart">Set up two-step sign-in</button><p id="tsMsg" class="error"></p>`;
+  $('#tsStart').onclick=async()=>{
+    try{
+      const [r,qrcode]=await Promise.all([api('/api/me/2fa/setup',{method:'POST',body:'{}'}),loadQr()]);
+      const qr=qrcode(0,'M');qr.addData(r.uri);qr.make();
+      box.innerHTML=`<ol class="ts-steps"><li>In your authenticator app, add an account and scan this code${/iPhone|iPad|Android/i.test(navigator.userAgent)?`, or <a href="${esc(r.uri)}">open it in the app on this phone</a>`:''}:<div class="qr">${qr.createSvgTag({cellSize:4,margin:2,scalable:true})}</div><p class="muted">Can't scan? Enter this key: <code class="ts-secret">${esc(r.secret.match(/.{1,4}/g).join(' '))}</code></p></li>
+        <li><form id="tsEnable"><label>Then type the 6-digit code it shows<input id="tsCode" required inputmode="numeric" autocomplete="one-time-code" maxlength="7"></label><button>Turn on</button></form></li></ol><div id="tsCodes"></div><p id="tsMsg" class="error"></p>`;
+      $('#tsEnable').onsubmit=guarded(async()=>{
+        try{const on=await api('/api/me/2fa/enable',{method:'POST',body:JSON.stringify({code:$('#tsCode').value})});me.two_factor=1;
+          box.innerHTML=`<p><b>Two-step sign-in is on.</b></p>${backupList(on.backupCodes)}`;wireCopy(on.backupCodes)}
+        catch(x){$('#tsMsg').textContent=x.message}
+      });
+    }catch(x){$('#tsMsg').textContent=x.message}
+  };
+}
+function wireCopy(codes){const b=$('#tsCopyCodes');if(b)b.onclick=async()=>{try{await navigator.clipboard.writeText(codes.join('\n'));b.textContent='Copied'}catch(e){uiCopy('Your backup codes:',codes.join(' '))}}}
 // --- Help & support ------------------------------------------------------------------------
 const TICKET_TYPE_LABEL={bug:'Bug',feature:'Feature request',question:'Question'};
 const TICKET_STATUS_LABEL={new:'New',in_progress:'In progress',planned:'Planned',done:'Done',declined:'Declined'};
@@ -1095,15 +1298,15 @@ async function openTicket(id){
     <form id="ticketReplyForm"><label>${admin&&!t.mine?'Reply to the reporter':'Add a reply'}<textarea id="trBody" rows="3" maxlength="5000" required></textarea></label>${admin?'<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="trInternal" style="width:auto;margin:0"> Internal note (not shown to the reporter)</label>':''}<button>Send reply</button></form>
     <p id="ticketModalMsg" class="error"></p>`;
   $('#modal').showModal();
-  $('#ticketReplyForm').onsubmit=async e=>{e.preventDefault();try{await api(`/api/tickets/${id}/comments`,{method:'POST',body:JSON.stringify({body:$('#trBody').value,internal:!!($('#trInternal')&&$('#trInternal').checked)})});await openTicket(id);renderHelp()}catch(x){$('#ticketModalMsg').textContent=x.message}};
-  if(admin)$('#ticketAdminForm').onsubmit=async e=>{e.preventDefault();try{await api(`/api/tickets/${id}`,{method:'PATCH',body:JSON.stringify({status:$('#taStatus').value,resolution:$('#taResolution').value})});await openTicket(id);renderHelp()}catch(x){$('#ticketModalMsg').textContent=x.message}};
+  $('#ticketReplyForm').onsubmit=guarded(async e=>{e.preventDefault();try{await api(`/api/tickets/${id}/comments`,{method:'POST',body:JSON.stringify({body:$('#trBody').value,internal:!!($('#trInternal')&&$('#trInternal').checked)})});await openTicket(id);renderHelp()}catch(x){$('#ticketModalMsg').textContent=x.message}});
+  if(admin)$('#ticketAdminForm').onsubmit=guarded(async e=>{e.preventDefault();try{await api(`/api/tickets/${id}`,{method:'PATCH',body:JSON.stringify({status:$('#taStatus').value,resolution:$('#taResolution').value})});await openTicket(id);renderHelp()}catch(x){$('#ticketModalMsg').textContent=x.message}});
   refreshHelpBadge();
 }
 $('#helpBtn').onclick=showHelp;
 $('#helpBack').onclick=()=>showHome();
 $('#dashStatus').onchange=()=>{dashFilter.status=$('#dashStatus').value;renderHelp()};
 $('#dashType').onchange=()=>{dashFilter.type=$('#dashType').value;renderHelp()};
-$('#ticketForm').onsubmit=async e=>{
+$('#ticketForm').onsubmit=guarded(async e=>{
   e.preventDefault();
   const file=$('#ticketImage').files[0];
   try{
@@ -1116,8 +1319,10 @@ $('#ticketForm').onsubmit=async e=>{
     $('#ticketDone').textContent=`Thanks - ticket #${r.id} sent. Replies will appear here.`;
     renderHelp();
   }catch(x){$('#ticketMsg').textContent=x.message}
-};
-setInterval(()=>{if(me)refreshHelpBadge()},120000);
+});
+// Checked every two minutes while the page is on screen, and straight away when you come back to it.
+setInterval(()=>{if(me&&document.visibilityState==='visible')refreshHelpBadge()},120000);
+document.addEventListener('visibilitychange',()=>{if(me&&document.visibilityState==='visible')refreshHelpBadge()});
 
 
 $('#modalClose').onclick=()=>$('#modal').close();
@@ -1137,7 +1342,7 @@ function showFormDialog(id){
 }
 $('#modal').addEventListener('close',()=>{for(const el of $('#modalBody').querySelectorAll('[data-stash]'))$('#dialogStash').append(el)});
 $('#joinBtn').onclick=()=>{$('#joinMsg').textContent='';showFormDialog('joinDialog')};
-$('#joinForm').onsubmit=async e=>{e.preventDefault();try{const r=await api('/api/join',{method:'POST',body:JSON.stringify({code:$('#joinCode').value})});$('#joinMsg').textContent='';e.target.reset();$('#modal').close();await loadDashboard();challengeBack='home';await openChallenge(r.challengeId)}catch(x){$('#joinMsg').textContent=x.message}};
+$('#joinForm').onsubmit=guarded(async e=>{e.preventDefault();try{const r=await api('/api/join',{method:'POST',body:JSON.stringify({code:$('#joinCode').value})});$('#joinMsg').textContent='';e.target.reset();$('#modal').close();await loadDashboard();challengeBack='home';await openChallenge(r.challengeId)}catch(x){$('#joinMsg').textContent=x.message}});
 // Creating a challenge has a page of its own: a long form (with a map for journeys) that suits phones better than a dialog.
 function showNewChallenge(){setUrl('/challenges/new');showView('#newChallengeView');syncNewChallengeKind()}
 $('#newChallengeBtn').onclick=showNewChallenge;
@@ -1158,7 +1363,7 @@ function syncNewChallengeKind(){
   if(journey)newJourney.show();
 }
 newChallengeForm.querySelector('[data-kind]').addEventListener('change',syncNewChallengeKind);
-newChallengeForm.onsubmit=async e=>{
+newChallengeForm.onsubmit=guarded(async e=>{
   e.preventDefault();
   $('#newChallengeMsg').textContent='';
   const fields=Object.fromEntries(new FormData(e.target));
@@ -1178,7 +1383,7 @@ newChallengeForm.onsubmit=async e=>{
   // Back from the new challenge goes home, not to an empty form.
   setUrl('/',true);
   await openChallenge(created.id);
-};
+});
 $('#newTeamImage').addEventListener('change',()=>{
   const f=$('#newTeamImage').files[0];
   if(!f){$('#newTeamImagePreview').classList.add('hidden');return}
@@ -1187,7 +1392,8 @@ $('#newTeamImage').addEventListener('change',()=>{
 });
 $('#newTeamBtn').onclick=()=>showFormDialog('newTeamDialog');
 $('#newTicketBtn').onclick=()=>{$('#ticketMsg').textContent='';showFormDialog('ticketDialog')};
-$('#newTeamForm').onsubmit=async e=>{
+$('#newTeamForm').onsubmit=guarded(async e=>{
+  // (Also reached from the Teams dialog, which this replaces.)
   e.preventDefault();
   const file=$('#newTeamImage').files[0];
   const payload={challenge_id:curChallenge.id,name:new FormData(e.target).get('name')};
@@ -1199,12 +1405,12 @@ $('#newTeamForm').onsubmit=async e=>{
     $('#modal').close();
     await refreshChallenge();
   }catch(err){uiAlert(err.message)}
-};
+});
 $('#activityDate').value=localToday();
 $('#logBtn').onclick=()=>{$('#activityMsg').textContent='';showFormDialog('logDialog')};
 $('#startTime').addEventListener('change',()=>{const m=minutesBetween($('#startTime').value,$('#endTime').value);if(m)$('#minutes').value=m});
 $('#endTime').addEventListener('change',()=>{const m=minutesBetween($('#startTime').value,$('#endTime').value);if(m)$('#minutes').value=m});
-$('#activityForm').onsubmit=async e=>{
+$('#activityForm').onsubmit=guarded(async e=>{
   e.preventDefault();
   const solo=isIndividual(curChallenge),teamId=solo?null:$('#team').value;
   if(!solo&&!teamId){$('#activityMsg').textContent='Join a team first: see Teams in this challenge.';return}
@@ -1225,7 +1431,7 @@ $('#activityForm').onsubmit=async e=>{
     $('#activityDate').value=localToday();
     $('#modal').close();await refreshChallenge();
   }catch(x){$('#activityMsg').textContent=x.message}
-};
+});
 // --- GPX routes: read in the browser, so only the points (not the file) are uploaded -------------
 let pendingRoute=null;
 const R_EARTH=6371008.8;
@@ -1327,13 +1533,17 @@ async function route(){
     if((m=p.match(/^\/challenges\/(\d+)\/?$/)))return await openChallenge(Number(m[1]));
     if((m=p.match(/^\/help\/tickets\/(\d+)\/?$/))){showHelp();setUrl(p,true);return await openTicket(Number(m[1]))}
     if(/^\/help\/?$/.test(p))return showHelp();
-    if((m=p.match(/^\/admin(\/challenges)?\/?$/))&&me.role==='global_admin'){adminTab=m[1]?'challenges':'users';return await showAdmin()}
+    if((m=p.match(/^\/admin(\/challenges|\/log)?\/?$/))&&me.role==='global_admin'){adminTab=m[1]==='/challenges'?'challenges':m[1]==='/log'?'log':'users';return await showAdmin()}
     const code=inviteCodeFromPath();
     if(code)return await openJoinPrompt(code);
+    // Arriving at the home page with just one challenge on (or coming up): straight into it. Home is a click away.
+    const current=firstRoute&&dash.challenges.filter(c=>c.role!=='admin'&&c.end_date>=localToday());
+    if(current&&current.length===1)return await openChallenge(current[0].id);
     showHome();
   }catch(e){showHome();uiAlert(e.message)}
-  finally{routing=false}
+  finally{routing=false;firstRoute=false}
 }
+let firstRoute=true;
 window.addEventListener('popstate',()=>{if(me){if($('#modal').open)$('#modal').close();route()}});
 $('#modal').addEventListener('close',()=>{const m=location.pathname.match(/^\/help\/tickets\//);if(m)setUrl('/help',true)});
 

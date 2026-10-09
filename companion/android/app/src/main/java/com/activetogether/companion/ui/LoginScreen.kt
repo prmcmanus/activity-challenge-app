@@ -38,13 +38,35 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.autofill.AutofillNode
+import androidx.compose.ui.autofill.AutofillType
+import androidx.compose.ui.composed
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalAutofill
+import androidx.compose.ui.platform.LocalAutofillTree
 import com.activetogether.companion.R
 import com.activetogether.companion.SERVER_URL
 
+/** Tells Android's autofill (password managers) what a text field is for, and fills it when one is picked. */
+@OptIn(ExperimentalComposeUiApi::class)
+private fun Modifier.autofill(types: List<AutofillType>, onFill: (String) -> Unit): Modifier = composed {
+    val node = remember { AutofillNode(autofillTypes = types, onFill = onFill) }
+    val autofill = LocalAutofill.current
+    LocalAutofillTree.current += node
+    onGloballyPositioned { node.boundingBox = it.boundsInWindow() }
+        .onFocusChanged { if (it.isFocused) autofill?.requestAutofillForNode(node) else autofill?.cancelAutofillForNode(node) }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun LoginScreen(vm: AppViewModel) {
     var email by remember { mutableStateOf(vm.prefs.email) }
     var password by remember { mutableStateOf("") }
+    var ticket by remember { mutableStateOf<String?>(null) }
+    var code by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf(vm.message) }
 
@@ -64,18 +86,31 @@ fun LoginScreen(vm: AppViewModel) {
             vm.pendingInvite?.let { InviteSignInCard(it) }
             Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, elevation = CardDefaults.cardElevation(6.dp)) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedTextField(email, { email = it }, label = { Text("Email") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next))
-                    OutlinedTextField(password, { password = it }, label = { Text("Password") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done))
+                    if (ticket == null) {
+                        // Autofill hints, so a password manager (or Google's) fills these in.
+                        OutlinedTextField(email, { email = it }, label = { Text("Email") }, singleLine = true,
+                            modifier = Modifier.fillMaxWidth().autofill(listOf(AutofillType.EmailAddress, AutofillType.Username)) { email = it },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next))
+                        OutlinedTextField(password, { password = it }, label = { Text("Password") }, singleLine = true,
+                            modifier = Modifier.fillMaxWidth().autofill(listOf(AutofillType.Password)) { password = it },
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done))
+                    } else {
+                        // Two-step sign-in: the code from the authenticator app, or a backup code.
+                        Text("Enter the 6-digit code from your authenticator app, or one of your backup codes.", style = MaterialTheme.typography.bodyMedium)
+                        OutlinedTextField(code, { code = it }, label = { Text("Code") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Done))
+                        androidx.compose.material3.TextButton(onClick = { ticket = null; code = ""; error = null }) { Text("Start again") }
+                    }
                     error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
                     Button(
                         onClick = {
                             busy = true; error = null
-                            vm.signIn(email, password) { e -> busy = false; error = e; if (e == null) password = "" }
+                            val t = ticket
+                            if (t == null) vm.signIn(email, password) { e, next -> busy = false; error = e; if (next != null) ticket = next; if (e == null) password = "" }
+                            else vm.signInCode(t, code) { e -> busy = false; error = e; if (e == null) { code = ""; ticket = null } }
                         },
-                        enabled = !busy && email.isNotBlank() && password.isNotEmpty(),
+                        enabled = !busy && (if (ticket == null) email.isNotBlank() && password.isNotEmpty() else code.isNotBlank()),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)

@@ -15,6 +15,9 @@
 <li><b>Uploaded images:</b> an optional profile avatar, an optional team logo, and any images you insert into a challenge description.</li>
 <li><b>Challenge/team content:</b> challenge and team names, descriptions, and your membership/role in them.</li>
 <li><b>Follows:</b> who you follow and who follows you.</li>
+<li><b>Two-step sign-in (optional):</b> if you turn it on, the secret your authenticator app shares with us (to check its codes) and your backup codes, kept only in scrambled (hashed) form.</li>
+<li><b>Email preferences:</b> whether you want emails about your support tickets and about being added to a challenge.</li>
+<li><b>Activity log:</b> a record of what global admins and challenge owners do to other people's accounts and entries - adding and removing people, deleting entries or accounts, password resets, role changes - with who did it and when. Only global admins can read it.</li>
 <li><b>Device sync data (Android/iOS companion apps only):</b> if you use a companion app, it reads workout duration, date, type and start/finish time, plus the distance covered during each workout if you allow it, from Health Connect or Apple Health and uploads only that. It never reads or uploads heart rate, calories, or any other health data, and never reads records beyond exercise/workout sessions, the distance recorded during them and - only if you turn it on - their routes.</li>
 <li><b>Apple Shortcuts sync (optional):</b> if you set it up, a shortcut on your iPhone sends your daily totals of steps, exercise minutes, walking and running distance and cycling distance from Apple Health, and nothing else. It uses a personal sync key that we store only in scrambled (hashed) form; you can remove it at any time under Set up Apple Shortcuts on the website.</li>
 <li><b>GPS routes (optional):</b> a workout's route - a series of map positions with times - is stored only if you upload a GPX file on the website or switch on "Include GPS routes" in the Android app. A route is precise location data and can show where you live or work, so it is off by default, it is visible only to you (never to other members, team admins, challenge owners or in exports), and it is deleted along with the last activity entry that uses it.</li>
@@ -23,36 +26,38 @@
 <p><b>Health data</b> from Health Connect or Apple Health is read only with your permission, only to log your activity in your challenges, and is never used for advertising, never sold and never shared with anyone outside the challenges you're in.</p>
 
 <h2>Who can see what</h2>
-<p>Challenges and teams are private by default — nobody can see a challenge, its teams, its members, or its leaderboard unless they've joined it with an invite code or been added directly. Within a challenge you're a member of:</p>
+<p>Challenges and teams are private by default — nobody can see a challenge, its teams, its members, or its leaderboard unless they've joined it with an invite link or code, or been added by its owner or a global admin. Within a challenge you're a member of:</p>
 <ul>
 <li>Anyone in the challenge can see its team and individual leaderboards, including names and avatars.</li>
 <li>Your profile (name, photo and an optional "about me" line) can be opened by people who share a challenge with you, and shows only challenges you share. What else it shows is your choice in My account: <b>Private</b> (nothing more), <b>Totals</b> (your total and rank in each shared challenge - the default) or <b>Full</b> (also your recent activity in those challenges, with comments).</li>
 <li>Anyone who can open your profile sees how many followers you have and how many people you follow. Unless your profile is Private, they also see who those people are, but only the ones they share a challenge with themselves. You can only follow someone you share a challenge with.</li>
 <li>Your GPS routes are visible only to you.</li>
-<li>Anyone in a team can see that team's member list (names and emails).</li>
-<li>Only a challenge owner or a global admin can export leaderboard data as a CSV file, or add another owner.</li>
+<li>In a team, members see each other's names. The team's admins and the challenge's owners also see their email addresses.</li>
+<li>A challenge's owners can see its members' names and email addresses and each member's entries in it, delete entries that shouldn't count, remove people (what they logged in it goes too), and export the leaderboards as CSV files (the people leaderboard includes email addresses).</li>
+<li>A challenge's owners, and global admins, can add anyone who has an account to the challenge or one of its teams. If you're added, you're told - by email (unless you've turned those emails off in My account) and on your home page - and you can leave straight away, which deletes anything you've logged in it.</li>
 </ul>
-<p>A global admin (the person who runs this server) can access account records for user administration — creating accounts, resetting passwords, and similar housekeeping.</p>
+<p>A global admin (the person who runs this server) can access account records for user administration — creating accounts, resetting passwords, turning off someone's two-step sign-in if they've lost their phone, and similar housekeeping. What global admins and challenge owners do to other people's accounts and entries is recorded in the activity log.</p>
 
 <h2>Third parties</h2>
 <p>Cloudflare carries the site's traffic (its network sits between your browser or app and our server) and stores our backups (see <a href="#backups">Backups</a>). It processes that data on our behalf and doesn't use it for anything else.</p>
-<p>If you ask to reset your password, the email with the link is sent through Resend, an email delivery service. It receives your email address and the message, only to deliver it.</p>
+<p>Our emails - a password reset link you asked for, a note that someone added you to a challenge, news about your support tickets - are sent through Resend, an email delivery service. It receives your email address and the message, only to deliver it.</p>
 <p>Maps are drawn with tiles from OpenStreetMap, which your browser or app fetches directly. When someone sets up a virtual journey, the place names they search for and the start and finish points are sent from our server to OpenStreetMap's place search (Nominatim) and route planner (FOSSGIS); nothing about who is asking is included. On a journey map, everyone's position is a virtual one worked out from their total, never their real location.</p>
-<p>If reCAPTCHA is enabled on this deployment, Google receives your IP address and browser information when you register or sign in, in order to distinguish humans from bots. No other activity or account data is shared with Google or anyone else. This app sends no analytics or tracking data to any third party.</p>
+<p>Signing in on the website, creating an account and asking for a password reset use a bot check: Cloudflare Turnstile, or Google reCAPTCHA where Turnstile isn't set up. The bot check sees your IP address and browser information at that moment, to tell people from bots. No other activity or account data is shared with them or anyone else. This app sends no analytics or tracking data to any third party.</p>
 
 <h2>Data retention</h2>
 <p><b>A challenge — and everything scoped to it (its teams, memberships, activity entries and logged minutes or distance) — is automatically and permanently deleted 60 days after the challenge's end date.</b> This runs on a daily schedule with no manual step required, and cannot be undone once it happens. If you want to keep a record of a challenge's results, export the leaderboard CSVs (or take your own copy) before that window closes.</p>
 <p>A challenge's owner can also delete it at any time before then, which removes the same data immediately and permanently, for every member.</p>
 <p>You can leave a challenge at any time. Everything you logged in it is deleted straight away. Leaving just a team keeps what you logged under it on the team's total.</p>
 <p>Your account itself is not deleted when a challenge is purged — only the challenge-specific data is. Your account, and any other challenges you belong to, are unaffected.</p>
-<p>Images you've uploaded (avatars, team logos, description images) are not automatically cleaned up when a challenge is purged — this is a known gap, not a promise that they're removed. If you want an uploaded image removed, ask the server administrator.</p>
+<p>Images you've uploaded (avatars, team logos, ticket screenshots, description images) are deleted from our server within a day of nothing using them any more - when you change your photo, delete your account, or a challenge is purged - and from backups within 30 days after that.</p>
+<p>You stay signed in for 30 days on the website and 90 days in the apps after you last used them. The activity log is kept for a year.</p>
 
 <h2 id="backups">Backups</h2>
 <p>So that the site can be restored if a server fails, or moved to our standby server, we keep backup copies:</p>
 <ul>
-<li><b>What:</b> the whole database (accounts, challenges, teams, activity entries, routes, follows, support tickets and settings), and uploaded images.</li>
+<li><b>What:</b> the whole database (accounts, challenges, teams, activity entries, routes, follows, support tickets, the activity log and settings), and uploaded images.</li>
 <li><b>Where:</b> in Cloudflare's R2 storage, encrypted when stored, and on our own servers. Only the person running this site can get at them.</li>
-<li><b>How long:</b> the database backup holds the last 7 days of changes. Copies we take on our server before each update, copies set aside when the site moves between servers, and older backup sets are deleted automatically after 30 days.</li>
+<li><b>How long:</b> the database backup holds the last 7 days of changes. Copies we take on our server before each update, copies set aside when the site moves between servers, images deleted from the site, and older backup sets are deleted automatically after 30 days.</li>
 <li><b>What for:</b> only to get the site running again after a failure or a move. We don't use them to look up or recover individual entries.</li>
 </ul>
 <p>This means that when something is deleted (an entry, a challenge, or your account), it disappears from the site straight away but can remain in backups for up to 30 days, after which it's gone for good.</p>
@@ -61,7 +66,7 @@
 <p>You can delete your account yourself at any time: on the website under <b>My account</b>, or in the Android or iPhone app under <b>Me</b>, then <b>Edit</b>. It needs your password, and it immediately and permanently deletes your account, everything you've logged, your routes, your follows and your support tickets (copies in our <a href="#backups">backups</a> are gone within 30 days). A challenge you own on your own passes to its longest-standing member, or is deleted if nobody else is in it. If you can't sign in any more, ask the person administering this server and they'll delete it for you.</p>
 
 <h2>Security</h2>
-<p>Passwords are hashed (never stored in plain text), sessions are HTTP-only cookies, and rich-text challenge descriptions are filtered server-side to strip anything that could run as code. This is a small, self-hosted app run in good faith, not an audited enterprise product — treat it accordingly and don't put anything genuinely sensitive into it.</p>
+<p>Passwords are hashed (never stored in plain text), sessions are HTTP-only cookies, rich-text challenge descriptions are filtered server-side to strip anything that could run as code (and may only show pictures uploaded here), and you can turn on two-step sign-in with an authenticator app in My account. This is a small, self-hosted app run in good faith, not an audited enterprise product — treat it accordingly and don't put anything genuinely sensitive into it.</p>
 
 <h2 id="contact">Contact</h2>
 <p>Questions about this policy or your data: <a href="mailto:support@activetogether.team">support@activetogether.team</a>, or <b>Help</b> when you're signed in. More on the <a href="/support.html">Support</a> page.</p>

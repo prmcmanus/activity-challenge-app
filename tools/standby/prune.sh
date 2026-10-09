@@ -3,7 +3,8 @@
 #  - database copies taken before each update, in backups/ next to compose.yaml (and the test
 #    instance's, in ../backups);
 #  - copies a switch-over set aside on the data volume (/data/pre-takeover-*);
-#  - on the live machine, earlier backup sets in R2 (other epochs) - never the live one.
+#  - on the live machine, earlier backup sets in R2 (other epochs) - never the live one - and files deleted
+#    from the live set more than 30 days ago (kept under <epoch>/deleted/<date>).
 # Litestream itself keeps only 7 days of history in the live set.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
@@ -21,5 +22,10 @@ if [ -n "$EPOCH" ] && [ -n "$("${COMPOSE[@]}" ps -q --status running files-sync 
       [ "$e" = "$KEEP" ] && continue
       ts=$(echo "${e##*-}" | tr -d TZ)
       [ "$ts" -lt "$CUTOFF" ] && { echo "Removing old backup set $e"; rclone purge "r2:$R2_BUCKET/$e"; }
+    done
+    # Files deleted on the live machine are kept for 30 days in <epoch>/deleted/<date>, then go for good.
+    DAY=$(echo "$CUTOFF" | cut -c1-8)
+    rclone lsf --dirs-only "r2:$R2_BUCKET/$KEEP/deleted" 2>/dev/null | sed "s:/$::" | grep -E "^[0-9]{8}$" | while read -r d; do
+      [ "$d" -lt "$DAY" ] && { echo "Removing files deleted on $d"; rclone purge "r2:$R2_BUCKET/$KEEP/deleted/$d"; }
     done' || true
 fi

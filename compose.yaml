@@ -24,6 +24,12 @@ services:
       # Password reset emails through Resend (resend.com); without a key, admins make reset links instead.
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       MAIL_FROM: ${MAIL_FROM:-Active Together <no-reply@activetogether.team>}
+      MAIL_REPLY_TO: ${MAIL_REPLY_TO:-support@activetogether.team}
+      # Bot check: Cloudflare Turnstile once both keys are set (otherwise reCAPTCHA, if its keys are set).
+      TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-}
+      # Emergency only: turns off two-step sign-in for this email at start-up. Remove it again afterwards.
+      CLEAR_TWO_FACTOR_FOR: ${CLEAR_TWO_FACTOR_FOR:-}
       AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-20}
       AUTH_RATE_LIMIT_WINDOW_MS: ${AUTH_RATE_LIMIT_WINDOW_MS:-900000}
       API_RATE_LIMIT_MAX: ${API_RATE_LIMIT_MAX:-300}
@@ -34,6 +40,15 @@ services:
       - activity_data:/data
     restart: unless-stopped
     logging: *logging
+    # Answers and can read its database; the guard (tools/standby/guard.sh) restarts it if this fails.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # Time for requests in progress to finish when stopping (the app waits up to 10 seconds).
+    stop_grace_period: 15s
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -72,7 +87,9 @@ services:
       - ALL
     mem_limit: 128m
 
-  # Copies uploaded images and the app downloads to R2 every minute, and once more when stopped.
+  # Mirrors uploaded images and the app downloads to R2 every minute, and once more when stopped. A file
+  # deleted here (an image nothing uses any more) moves to deleted/<date> in R2, which prune.sh empties after
+  # 30 days; --max-delete stops a mirror that would delete a lot at once (say, an empty data volume).
   files-sync:
     image: rclone/rclone:1.75.1
     profiles: [primary]
@@ -80,7 +97,7 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        sync() { rclone copy /data "r2:$$R2_BUCKET/$$STANDBY_EPOCH/files" --include "/uploads/**" --include "/downloads/**"; }
+        sync() { rclone sync /data "r2:$$R2_BUCKET/$$STANDBY_EPOCH/files" --include "/uploads/**" --include "/downloads/**" --backup-dir "r2:$$R2_BUCKET/$$STANDBY_EPOCH/deleted/$$(date -u +%Y%m%d)" --max-delete 1000; }
         trap 'sync; exit 0' TERM INT
         while :; do sync; sleep 60 & wait $$!; done
     environment:

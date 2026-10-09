@@ -216,8 +216,14 @@ final class API: @unchecked Sendable {
 
     // Session
     /// The mobile login: the web one needs a reCAPTCHA token from a page this app never shows.
-    func login(email: String, password: String) async throws -> String {
-        try await request("/api/mobile/login", "POST", ["email": email, "password": password]).string("sessionToken")
+    /// Signing in: a session token, or (two-step sign-in) a ticket to send with the code to `loginCode`.
+    func login(email: String, password: String) async throws -> (token: String?, ticket: String?) {
+        let r = try await request("/api/mobile/login", "POST", ["email": email, "password": password])
+        return r.bool("twoFactor") ? (nil, r.string("ticket")) : (r.string("sessionToken"), nil)
+    }
+    /// The second step: the code from the authenticator app (or a backup code), with the ticket from `login`.
+    func loginCode(ticket: String, code: String) async throws -> String {
+        try await request("/api/mobile/login/2fa", "POST", ["ticket": ticket, "code": code]).string("sessionToken")
     }
     func logout() async throws { _ = try await request("/api/logout", "POST", [:]) }
     func me() async throws -> Me {

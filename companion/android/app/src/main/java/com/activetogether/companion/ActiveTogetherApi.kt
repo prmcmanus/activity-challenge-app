@@ -195,11 +195,21 @@ data class StepDay(val target: Target, val date: LocalDate, val steps: Long)
 /** A failed request, keeping the HTTP status so an expired session (401) can send the user back to sign in. */
 class ApiException(val status: Int, message: String) : IOException(message)
 
+/** The first step of signing in: a session [token], or a [ticket] when the account needs a code too. */
+data class LoginStep(val token: String?, val ticket: String?)
+
 class ActiveTogetherApi(private val token: String? = null, private val baseUrl: String = SERVER_URL) {
     // Uses the mobile-specific login endpoint, not the web /api/login: that one requires a
     // reCAPTCHA token from a page this app never renders.
-    fun login(email: String, password: String): String =
-        request("/api/mobile/login", "POST", JSONObject().put("email", email).put("password", password)).getString("sessionToken")
+    /** Signing in: a session token, or (two-step sign-in) a ticket to send with the code from [loginCode]. */
+    fun login(email: String, password: String): LoginStep {
+        val r = request("/api/mobile/login", "POST", JSONObject().put("email", email).put("password", password))
+        return if (r.optBoolean("twoFactor")) LoginStep(null, r.getString("ticket")) else LoginStep(r.getString("sessionToken"), null)
+    }
+
+    /** The second step: the code from the authenticator app (or a backup code), with the ticket from [login]. */
+    fun loginCode(ticket: String, code: String): String =
+        request("/api/mobile/login/2fa", "POST", JSONObject().put("ticket", ticket).put("code", code)).getString("sessionToken")
 
     fun logout() { request("/api/logout", "POST", JSONObject()) }
 

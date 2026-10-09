@@ -21,12 +21,20 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 
-/** OpenStreetMap needs an identifying user agent, and osmdroid caches tiles in the app's own cache. */
+/**
+ * OpenStreetMap's tile policy: an identifying user agent with a way to reach us, and the map credited on the
+ * map itself (see [osmCredit]). osmdroid caches tiles in the app's own cache, as the policy asks.
+ */
 private fun configureOsm(context: Context) {
     val c = Configuration.getInstance()
-    c.userAgentValue = "ActiveTogether/${context.packageName}"
+    c.userAgentValue = "ActiveTogether/${com.activetogether.companion.BuildConfig.VERSION_NAME} (${context.packageName}; +https://activetogether.team)"
     c.osmdroidBasePath = context.cacheDir.resolve("osmdroid")
     c.osmdroidTileCache = context.cacheDir.resolve("osmdroid/tiles")
+}
+
+/** "© OpenStreetMap contributors" in the map's bottom corner, as its licence asks. */
+private fun osmCredit(view: MapView) = org.osmdroid.views.overlay.CopyrightOverlay(view.context).apply {
+    setAlignBottom(true); setAlignRight(true); setTextSize(10)
 }
 
 /** A route drawn in the app's red over OpenStreetMap, framed to fit, with start and finish markers. */
@@ -47,6 +55,7 @@ fun RouteMap(points: List<RoutePoint>, modifier: Modifier = Modifier) {
     }
     AndroidView(factory = { map }, modifier = modifier.clipToBounds(), update = { view ->
         view.overlays.clear()
+        view.overlays.add(osmCredit(view))
         val geo = points.map { GeoPoint(it.lat, it.lon) }
         if (geo.size < 2) return@AndroidView
         view.overlays.add(Polyline(view).apply {
@@ -132,6 +141,7 @@ fun JourneyMapView(journey: com.activetogether.companion.JourneyMap, describe: (
     val density = context.resources.displayMetrics.density
     AndroidView(factory = { map }, modifier = modifier.clipToBounds(), update = { view ->
         view.overlays.clear()
+        view.overlays.add(osmCredit(view))
         val geo = journey.route.map { GeoPoint(it.lat, it.lon) }
         if (geo.size < 2) return@AndroidView
         view.overlays.add(Polyline(view).apply {

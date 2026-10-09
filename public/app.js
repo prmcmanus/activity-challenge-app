@@ -232,11 +232,9 @@ function renderChallenge(){
   $('#minutesLabel').textContent=isDistance(c)?'Minutes (optional)':'Minutes';
   const solo=isIndividual(c),visiting=c.role==='admin';
   // A global admin looking at a challenge they have not joined manages it but has nothing to log.
-  $('#logCard').classList.toggle('hidden',visiting);$('#recentCard').classList.toggle('hidden',visiting);
+  $('#logBtn').classList.toggle('hidden',visiting);$('#recentCard').classList.toggle('hidden',visiting);
   ['#teamsCard','#teamLeaderCard','#teamWrap'].forEach(s=>$(s).classList.toggle('hidden',solo));
   if(solo)$('#exportTeamsCsv').classList.add('hidden');
-  $('#logGrid').classList.toggle('single',solo||visiting);
-  $('#logGrid').classList.toggle('hidden',solo&&visiting);
   $('#boardGrid').classList.toggle('single',solo);
   $('#team').required=!solo;
   const myTeams=c.teams.filter(t=>t.mine);
@@ -956,7 +954,7 @@ setInterval(()=>{if(me)refreshHelpBadge()},120000);
 
 $('#logout').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload()};
 $('#backHome').onclick=()=>challengeBack==='admin'?showAdmin():showHome();
-// Forms used now and then (join with a code, new team, a support ticket) live in a hidden holder and are
+// Forms in a dialog (logging activity, join with a code, new team, a support ticket) live in a hidden holder and are
 // moved into the dialog when their button is pressed, and back when it closes - so their handlers stay put.
 function showFormDialog(id){
   $('#modalBody').innerHTML='';
@@ -1030,6 +1028,7 @@ $('#newTeamForm').onsubmit=async e=>{
   }catch(err){alert(err.message)}
 };
 $('#activityDate').value=new Date().toISOString().slice(0,10);
+$('#logBtn').onclick=()=>{$('#activityMsg').textContent='';showFormDialog('logDialog')};
 $('#startTime').addEventListener('change',()=>{const m=minutesBetween($('#startTime').value,$('#endTime').value);if(m)$('#minutes').value=m});
 $('#endTime').addEventListener('change',()=>{const m=minutesBetween($('#startTime').value,$('#endTime').value);if(m)$('#minutes').value=m});
 $('#activityForm').onsubmit=async e=>{
@@ -1041,7 +1040,7 @@ $('#activityForm').onsubmit=async e=>{
     if(isSteps(curChallenge)){
       await api('/api/activities',{method:'POST',body:JSON.stringify({...(solo?{}:{team_id:teamId}),challenge_id:curChallenge.id,activity_type:'Steps',steps:$('#steps').value,activity_date:$('#activityDate').value,comment:$('#activityComment').value})});
       $('#activityMsg').textContent='';e.target.reset();$('#activityDate').value=new Date().toISOString().slice(0,10);
-      await refreshChallenge();return;
+      $('#modal').close();await refreshChallenge();return;
     }
     const dist=isDistance(curChallenge)?{distance:$('#distance').value,distance_unit:$('#distanceUnit').value}:(pendingRoute&&pendingRoute.meters?{distance_m:pendingRoute.meters}:{});
     await api('/api/activities',{method:'POST',body:JSON.stringify({...(solo?{}:{team_id:teamId}),challenge_id:curChallenge.id,activity_type:$('#activityType').value,minutes:$('#minutes').value,...dist,activity_date:$('#activityDate').value,start_time:$('#startTime').value,end_time:$('#endTime').value,comment:$('#activityComment').value,...(pendingRoute?{route:pendingRoute.points}:{})})});
@@ -1051,7 +1050,7 @@ $('#activityForm').onsubmit=async e=>{
     e.target.reset();
     $('#distanceUnit').value=keepUnit;
     $('#activityDate').value=new Date().toISOString().slice(0,10);
-    await refreshChallenge();
+    $('#modal').close();await refreshChallenge();
   }catch(x){$('#activityMsg').textContent=x.message}
 };
 // --- GPX routes: read in the browser, so only the points (not the file) are uploaded -------------

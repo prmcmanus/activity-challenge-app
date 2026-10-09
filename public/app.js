@@ -157,8 +157,8 @@ initRecaptcha();
 
 async function load(){
   const m=await api('/api/me'); me=m.user;
-  if(!me){showInviteBanner();$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');$('#myProfile').classList.add('hidden');$('#menuToggle').classList.add('hidden');$('#helpBtn').classList.add('hidden');$('#adminBtn').classList.add('hidden');renderAuth();return}
-  $('#authSection').classList.add('hidden');$('#app').classList.remove('hidden');$('#logout').classList.remove('hidden');$('#myAccount').classList.remove('hidden');$('#myProfile').classList.remove('hidden');$('#menuToggle').classList.remove('hidden');$('#helpBtn').classList.remove('hidden');refreshHelpBadge();
+  if(!me){showInviteBanner();$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');$('#myProfile').classList.add('hidden');$('#homeBtn').classList.add('hidden');$('#menuToggle').classList.add('hidden');$('#helpBtn').classList.add('hidden');$('#adminBtn').classList.add('hidden');renderAuth();return}
+  $('#authSection').classList.add('hidden');$('#app').classList.remove('hidden');$('#logout').classList.remove('hidden');$('#homeBtn').classList.remove('hidden');$('#myAccount').classList.remove('hidden');$('#myProfile').classList.remove('hidden');$('#menuToggle').classList.remove('hidden');$('#helpBtn').classList.remove('hidden');refreshHelpBadge();
   if(pendingInviteToken){try{await api('/api/invites/accept',{method:'POST',body:JSON.stringify({token:pendingInviteToken})})}catch(e){await uiAlert(e.message)}pendingInviteToken=null}
   await loadDashboard();
   $('#adminBtn').classList.toggle('hidden',me.role!=='global_admin');
@@ -1043,6 +1043,10 @@ setInterval(()=>{if(me)refreshHelpBadge()},120000);
 
 
 $('#modalClose').onclick=()=>$('#modal').close();
+// Home: the logo and name, and Home in the menu. Signed in, they switch view without reloading the page.
+const goHome=e=>{if(!me)return;e.preventDefault();if($('#modal').open)$('#modal').close();showHome()};
+$('#brandHome').onclick=goHome;
+$('#homeBtn').onclick=goHome;
 $('#logout').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload()};
 $('#backHome').onclick=()=>challengeBack==='admin'?showAdmin():showHome();
 // Forms in a dialog (logging activity, join with a code, new team, a support ticket) live in a hidden holder and are

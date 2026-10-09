@@ -2460,3 +2460,46 @@ test('invite only: a global admin can require an invite to create an account; co
   }
   assert.equal((await signUp('open.again@example.com')).status, 201, 'open again once switched off');
 });
+
+test('global admins can add anyone to any challenge (with a team and role) and remove them, entries and all', async () => {
+  const login = await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }) });
+  const admin = login.headers.get('set-cookie').split(';')[0];
+  const owner = await register('Olive Owner');
+  const pat = await register('Pat Person');
+  const c = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Admin membership test', start_date: '2026-01-01', end_date: '2026-12-31' });
+  const cid = c.body.id;
+  const t = await jsonFetch(`${origin}/api/teams`, owner.cookie, 'POST', { challenge_id: cid, name: 'Blue' });
+  const other = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Elsewhere', start_date: '2026-01-01', end_date: '2026-12-31' });
+  const otherTeam = await jsonFetch(`${origin}/api/teams`, owner.cookie, 'POST', { challenge_id: other.body.id, name: 'Red' });
+  const members = `${origin}/api/admin/challenges/${cid}/members`;
+
+  assert.equal((await jsonFetch(members, owner.cookie)).status, 403, 'not for challenge owners');
+  assert.equal((await jsonFetch(members, pat.cookie, 'POST', { user_id: pat.user.id })).status, 403, 'nor for anyone else');
+  assert.equal((await jsonFetch(members, admin, 'POST', { user_id: 999999 })).status, 404);
+  assert.equal((await jsonFetch(members, admin, 'POST', { user_id: pat.user.id, team_id: otherTeam.body.id })).status, 400, 'a team from another challenge');
+
+  const added = await jsonFetch(members, admin, 'POST', { user_id: pat.user.id, team_id: t.body.id });
+  assert.equal(added.status, 201);
+  const list = await jsonFetch(members, admin);
+  const p = list.body.members.find(m => m.id === pat.user.id);
+  assert.equal(p.role, 'member');
+  assert.equal(p.teams, 'Blue');
+  assert.deepEqual(list.body.teams.map(x => x.name), ['Blue']);
+  // Pat can now log into the team, and sees the challenge on their dashboard.
+  assert.equal((await jsonFetch(`${origin}/api/activities`, pat.cookie, 'POST', { challenge_id: cid, team_id: t.body.id, activity_type: 'Walk', minutes: 30, activity_date: '2026-03-01' })).status, 201);
+  assert.ok((await jsonFetch(`${origin}/api/dashboard`, pat.cookie)).body.challenges.some(x => x.id === cid));
+  // Adding again as owner promotes rather than duplicating.
+  assert.equal((await jsonFetch(members, admin, 'POST', { user_id: pat.user.id, role: 'owner' })).status, 200);
+  assert.equal((await jsonFetch(members, admin)).body.members.find(m => m.id === pat.user.id).role, 'owner');
+
+  const removed = await jsonFetch(`${members}/${pat.user.id}`, admin, 'DELETE');
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.entriesDeleted, 1);
+  assert.equal((await jsonFetch(`${members}/${pat.user.id}`, admin, 'DELETE')).status, 404, 'already gone');
+  assert.ok(!(await jsonFetch(`${origin}/api/dashboard`, pat.cookie)).body.challenges.some(x => x.id === cid));
+  const lb = await jsonFetch(`${origin}/api/challenges/${cid}/leaderboard`, owner.cookie);
+  assert.equal(lb.body.teams.find(x => x.name === 'Blue').minutes, 0, 'their entries left the team total too');
+  // The last owner can go as well; the challenge stays, for admins to manage.
+  assert.equal((await jsonFetch(`${members}/${owner.user.id}`, admin, 'DELETE')).status, 200);
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}`, admin)).status, 200);
+});

@@ -1202,6 +1202,58 @@ async function api(req,res,url){
    return send(res,200,{challenges:rows.map(r=>({...r,state:today<r.start_date?'upcoming':today>r.end_date?'finished':'running',
      purge_date:new Date(Date.parse(r.end_date+'T00:00:00Z')+61*864e5).toISOString().slice(0,10)}))});
  }
+ // Global admins: who is in a challenge, and adding or removing anyone. Removal is what leaving does
+ // (their entries in it go too, so team totals and the individual board stay in step), and may take
+ // out the last owner - global admins can still manage an ownerless challenge.
+ if(url.pathname.match(/^\/api\/admin\/challenges\/\d+\/members(\/\d+)?$/)){
+   if(!need(res,u,['global_admin']))return;
+   const parts=url.pathname.split('/'),cid=Number(parts[4]),targetId=parts[6]?Number(parts[6]):null;
+   const c=db.prepare('SELECT id,participation FROM challenges WHERE id=?').get(cid);
+   if(!c)return send(res,404,{error:'Challenge not found'});
+   if(m==='GET'&&!targetId){
+     const members=db.prepare(`SELECT us.id,us.name,us.email,us.avatar_url,us.deactivated_at,cm.challenge_role role,cm.joined_at,
+       (SELECT group_concat(t.name,', ') FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=us.id AND t.challenge_id=cm.challenge_id) teams,
+       (SELECT COUNT(*) FROM activities a WHERE a.user_id=us.id AND a.challenge_id=cm.challenge_id) entries
+       FROM challenge_members cm JOIN users us ON us.id=cm.user_id WHERE cm.challenge_id=? ORDER BY cm.challenge_role='owner' DESC,us.name`).all(cid);
+     const teams=isIndividual(c)?[]:db.prepare('SELECT id,name FROM teams WHERE challenge_id=? ORDER BY name').all(cid);
+     return send(res,200,{members,teams});
+   }
+   if(m==='POST'&&!targetId){
+     const b=await body(req),uid=Number(b.user_id),role=b.role==='owner'?'owner':'member';
+     if(!db.prepare('SELECT 1 FROM users WHERE id=?').get(uid))return send(res,404,{error:'User not found'});
+     let teamId=null;
+     if(b.team_id!==undefined&&b.team_id!==null&&b.team_id!==''){
+       if(isIndividual(c))return send(res,400,{error:'This challenge is for individuals - it has no teams'});
+       teamId=Number(b.team_id);
+       if(!db.prepare('SELECT 1 FROM teams WHERE id=? AND challenge_id=?').get(teamId,cid))return send(res,400,{error:'That team is not part of this challenge'});
+     }
+     const existing=challengeAccess(uid,cid);
+     try{
+       db.exec('BEGIN');
+       if(!existing)db.prepare('INSERT INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,?)').run(cid,uid,role);
+       else if(role==='owner')db.prepare("UPDATE challenge_members SET challenge_role='owner' WHERE challenge_id=? AND user_id=?").run(cid,uid);
+       if(teamId)db.prepare("INSERT OR IGNORE INTO team_members(team_id,user_id,team_role) VALUES(?,?,'member')").run(teamId,uid);
+       db.exec('COMMIT');
+     }catch(e){db.exec('ROLLBACK');throw e}
+     console.log(`Admin ${u.id} added user ${uid} to challenge ${cid}${teamId?` (team ${teamId})`:''} as ${existing&&role!=='owner'?existing.challenge_role:role}`);
+     return send(res,existing?200:201,{ok:true,added:!existing});
+   }
+   if(m==='DELETE'&&targetId){
+     if(!challengeAccess(targetId,cid))return send(res,404,{error:'That person is not in this challenge'});
+     let removed;
+     try{
+       db.exec('BEGIN');
+       removed=db.prepare('DELETE FROM activities WHERE challenge_id=? AND user_id=?').run(cid,targetId).changes;
+       db.prepare('DELETE FROM team_members WHERE user_id=? AND team_id IN (SELECT id FROM teams WHERE challenge_id=?)').run(targetId,cid);
+       db.prepare('DELETE FROM challenge_members WHERE challenge_id=? AND user_id=?').run(cid,targetId);
+       db.exec('COMMIT');
+     }catch(e){db.exec('ROLLBACK');throw e}
+     pruneRoutes();
+     console.log(`Admin ${u.id} removed user ${targetId} from challenge ${cid} (${removed} entries deleted)`);
+     return send(res,200,{ok:true,entriesDeleted:removed});
+   }
+   return send(res,405,{error:'Method not allowed'});
+ }
  if(m==='POST'&&url.pathname==='/api/admin/users'){if(!need(res,u,['global_admin']))return;const b=await body(req);try{const r=db.prepare('INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,?)').run(String(b.email).toLowerCase(),b.name,hash(b.password),b.role||'member');return send(res,201,{id:Number(r.lastInsertRowid)})}catch(e){return send(res,400,{error:'Email already exists or fields are invalid'})}}
  if(m==='PATCH'&&url.pathname.match(/^\/api\/admin\/users\/\d+$/)){
    if(!need(res,u,['global_admin']))return;

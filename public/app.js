@@ -763,10 +763,50 @@ function renderAdminChallenges(){
   $('#adminChallengeCount').textContent=rows.length===adminChallenges.length?String(rows.length):`${rows.length} of ${adminChallenges.length}`;
   $('#adminChallengeList').innerHTML=rows.map(c=>`<div class="adminrow"><div><b>${esc(c.name)}</b>
     <div class="facts"><span>${esc(c.start_date)} → ${esc(c.end_date)}</span><span>${esc(MEASURE_LABEL(c))}</span><span>${c.participation==='individual'?'Individuals':plural(c.teams,'team','teams')}</span><span>${plural(c.members,'member','members')}</span><span>${plural(c.activities,'activity','activities')}</span><span>owner: ${esc(c.owners||c.creator_name||'none')}</span><span>code ${esc(c.invite_code)}</span>${c.state==='finished'?`<span title="Finished challenges and their activity are deleted 60 days after they end">deleted on ${esc(c.purge_date)}</span>`:''}</div></div>
-    <div class="btnrow">${statusPillFor(c.state,STATE_LABEL[c.state])}<button data-adminopen="${c.id}">Open</button><button class="ghost" data-adminedit="${c.id}">Edit</button></div></div>`).join('')||'<p class="muted">No challenges match.</p>';
+    <div class="btnrow">${statusPillFor(c.state,STATE_LABEL[c.state])}<button data-adminopen="${c.id}">Open</button><button class="ghost" data-adminmembers="${c.id}">Members</button><button class="ghost" data-adminedit="${c.id}">Edit</button></div></div>`).join('')||'<p class="muted">No challenges match.</p>';
+  $all('[data-adminmembers]').forEach(b=>b.onclick=()=>openAdminMembers(adminChallenges.find(c=>c.id===Number(b.dataset.adminmembers))));
   $all('[data-adminopen]').forEach(b=>b.onclick=()=>{challengeBack='admin';openChallenge(Number(b.dataset.adminopen)).catch(e=>alert(e.message))});
   $all('[data-adminedit]').forEach(b=>b.onclick=async()=>{
     try{const c=await api(`/api/challenges/${b.dataset.adminedit}`);challengeBack='admin';await openEditChallenge(c,async()=>{await loadDashboard();await renderAdmin()})}catch(e){alert(e.message)}
+  });
+}
+// Who is in a challenge, and adding or removing anyone (global admins). People are picked from the
+// admin user list by name or email; a team challenge can put them straight into a team.
+async function openAdminMembers(c,note=''){
+  let d;
+  try{d=await api(`/api/admin/challenges/${c.id}/members`)}catch(e){alert(e.message);return}
+  const inIt=new Set(d.members.map(x=>x.id));
+  const pickable=adminUsers.filter(x=>!x.deactivated_at);
+  const label=x=>`${x.name} <${x.email}>`;
+  $('#modalBody').innerHTML=`<h2>Members of ${esc(c.name)}</h2>
+    <p class="muted">${plural(d.members.length,'member','members')}${c.participation==='individual'?' · individuals':` · ${plural(d.teams.length,'team','teams')}`}</p>
+    <form id="amAddForm" class="card" style="padding:14px;margin:12px 0">
+      <label>Add a person<input id="amUser" list="amUserList" required autocomplete="off" placeholder="Start typing a name or email"></label>
+      <datalist id="amUserList">${pickable.map(x=>`<option value="${esc(label(x))}">${inIt.has(x.id)?'already in':''}</option>`).join('')}</datalist>
+      <div class="two">${c.participation==='individual'?'':`<label>Team<select id="amTeam"><option value="">No team yet</option>${d.teams.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></label>`}
+      <label>Role<select id="amRole"><option value="member">Member</option><option value="owner">Owner</option></select></label></div>
+      <button>Add to challenge</button><p id="amMsg" class="${note?'muted':'error'}">${esc(note)}</p>
+    </form>
+    <div>${d.members.map(x=>`<div class="listrow"><div><div class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</div>
+      <div class="muted">${esc(x.email)} · ${x.role==='owner'?'owner':'member'}${x.teams?` · ${esc(x.teams)}`:c.participation==='individual'?'':' · no team'} · ${plural(x.entries,'entry','entries')}${x.deactivated_at?' · deactivated':''}</div></div>
+      <div class="btnrow"><button type="button" class="ghost" data-amremove="${x.id}">Remove</button></div></div>`).join('')||'<p class="muted">Nobody is in this challenge.</p>'}</div>`;
+  if(!$('#modal').open)$('#modal').showModal();
+  const refresh=async msg=>{await renderAdmin();await openAdminMembers(adminChallenges.find(x=>x.id===c.id)||c,msg)};
+  $('#amAddForm').onsubmit=async e=>{
+    e.preventDefault();
+    const v=$('#amUser').value.trim().toLowerCase(),who=pickable.find(x=>label(x).toLowerCase()===v||x.email.toLowerCase()===v);
+    if(!who){$('#amMsg').className='error';$('#amMsg').textContent='Pick someone from the list (an existing, active account).';return}
+    try{
+      const r=await api(`/api/admin/challenges/${c.id}/members`,{method:'POST',body:JSON.stringify({user_id:who.id,role:$('#amRole').value,team_id:$('#amTeam')?$('#amTeam').value:undefined})});
+      await refresh(r.added?`Added ${who.name}.`:`${who.name} was already in; their team and role are updated.`);
+    }catch(x){$('#amMsg').className='error';$('#amMsg').textContent=x.message}
+  };
+  $all('[data-amremove]').forEach(b=>b.onclick=async()=>{
+    const x=d.members.find(m=>m.id===Number(b.dataset.amremove));
+    const lastOwner=x.role==='owner'&&d.members.filter(m=>m.role==='owner').length===1;
+    if(!confirm(`Remove ${x.name} from "${c.name}"?${x.entries?` Their ${plural(x.entries,'entry','entries')} in it will be deleted.`:''}${lastOwner?' They are its only owner, so only global admins will be able to manage it.':''}`))return;
+    try{await api(`/api/admin/challenges/${c.id}/members/${x.id}`,{method:'DELETE'});await refresh(`Removed ${x.name}.`)}
+    catch(err){$('#amMsg').className='error';$('#amMsg').textContent=err.message}
   });
 }
 const statusPillFor=(cls,label)=>`<span class="status ${esc(cls)}">${esc(label)}</span>`;

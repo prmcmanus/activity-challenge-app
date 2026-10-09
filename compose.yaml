@@ -1,8 +1,10 @@
 services:
   activity-challenge:
     build: .
+    # Published on this machine only by default: the tunnel reaches the app over the compose network, so
+    # nothing else needs the port. Set HTTP_BIND=0.0.0.0 to reach it from the local network (a test instance).
     ports:
-      - "${HTTP_PORT:-3000}:3000"
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-3000}:3000"
     environment:
       PORT: 3000
       DATA_DIR: /data

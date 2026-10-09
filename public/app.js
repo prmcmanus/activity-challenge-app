@@ -1,5 +1,44 @@
 const $=s=>document.querySelector(s), $all=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// The site's own alert / confirm / prompt, on a dialog of their own so they can sit over the main one.
+// They resolve to: nothing (alert), true or false (confirm), the text or null (prompt).
+function ask({title='',message='',ok='OK',cancel='Cancel',danger=false,input=null}){
+  return new Promise(resolve=>{
+    const dlg=$('#ask');let done=false;
+    const finish=v=>{if(done)return;done=true;if(dlg.open)dlg.close();resolve(v)};
+    $('#askBody').innerHTML=`${title?`<h2>${esc(title)}</h2>`:''}<p class="ask-text">${esc(message)}</p>${input?`<input id="askInput" value="${esc(input.value||'')}" placeholder="${esc(input.placeholder||'')}"${input.readonly?' readonly':''} autocomplete="off">`:''}
+      <div class="btnrow ask-actions">${cancel?`<button type="button" class="ghost" data-ask="no">${esc(cancel)}</button>`:''}<button type="button" class="${danger?'danger':''}" data-ask="yes">${esc(ok)}</button></div>`;
+    const yes=()=>finish(input?(input.readonly?true:$('#askInput').value):true),no=()=>finish(input?null:false);
+    $('#askBody [data-ask="yes"]').onclick=yes;
+    if(cancel)$('#askBody [data-ask="no"]').onclick=no;
+    dlg.onclose=()=>finish(input?null:cancel?false:undefined);
+    dlg.showModal();
+    if(input){const i=$('#askInput');i.focus();i.select();i.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();yes()}}}
+    else $('#askBody [data-ask="yes"]').focus();
+  });
+}
+const uiAlert=(message,title)=>ask({message,title,cancel:null});
+const uiConfirm=(message,opt={})=>ask({message,ok:'OK',...opt});
+const uiPrompt=(message,opt={})=>ask({message,ok:opt.ok||'OK',title:opt.title,input:{value:opt.value,placeholder:opt.placeholder}});
+// Something to copy, when the clipboard isn't available: shown selected, ready to copy by hand.
+const uiCopy=(message,value)=>ask({message,ok:'Done',cancel:null,input:{value,readonly:true}});
+// Dates arrive as YYYY-MM-DD and show the way the apps do: 1 Oct 2026, 1 Oct – 31 Dec 2026, Thu 8 Oct.
+const isoDate=s=>/^\d{4}-\d{2}-\d{2}$/.test(String(s||''))?new Date(s+'T00:00:00'):null;
+const fmtDate=s=>{const d=isoDate(s);return d?d.toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'}):String(s||'')};
+function fmtRange(a,b){
+  const x=isoDate(a),y=isoDate(b);if(!x||!y)return `${fmtDate(a)} – ${fmtDate(b)}`;
+  return x.getFullYear()===y.getFullYear()?`${x.toLocaleDateString(undefined,{day:'numeric',month:'short'})} – ${fmtDate(b)}`:`${fmtDate(a)} – ${fmtDate(b)}`;
+}
+const fmtDay=s=>{const d=isoDate(s);if(!d)return String(s||'');return d.toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short',...(d.getFullYear()!==new Date().getFullYear()?{year:'numeric'}:{})})};
+// Where a challenge is in its run, as the apps say it.
+function runLabel(c){
+  const today=new Date().toISOString().slice(0,10),day=864e5,diff=(a,b)=>Math.round((isoDate(b)-isoDate(a))/day);
+  if(!isoDate(c.start_date)||!isoDate(c.end_date))return '';
+  if(today<c.start_date){const n=diff(today,c.start_date);return n===1?'Starts tomorrow':`Starts in ${n} days`}
+  if(today>c.end_date)return 'Finished';
+  const n=diff(today,c.end_date);return n===0?'Last day':n===1?'1 day left':`${n} days left`;
+}
+const SOURCE_LABEL={manual:'logged by hand',health_connect:'Health Connect',health_kit:'Apple Health',shortcut:'Apple Shortcut'};
 const api=async(url,opt={})=>{const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opt});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.error||'Request failed');return j};
 
 // --- image upload: resize client-side (canvas) before sending, server enforces a 10MB hard cap
@@ -37,8 +76,10 @@ function initRichTextEditor(root){
       const cmd=btn.dataset.cmd;
       editor.focus();
       if(cmd==='createLink'){
-        const url=prompt('Link URL (https://...)');
-        if(url)document.execCommand('createLink',false,url);
+        // Remember where the cursor was: the prompt dialog takes the focus away from the editor.
+        const sel=window.getSelection(),range=sel.rangeCount?sel.getRangeAt(0).cloneRange():null;
+        const url=await uiPrompt('Link address',{placeholder:'https://...',ok:'Add link'});
+        if(url){editor.focus();if(range){sel.removeAllRanges();sel.addRange(range)}document.execCommand('createLink',false,url)}
       }else if(cmd==='insertImage'){
         const input=document.createElement('input');
         input.type='file';input.accept='image/*';
@@ -46,7 +87,7 @@ function initRichTextEditor(root){
           const file=input.files[0];
           if(!file)return;
           try{const url=await uploadImageFile(file,900,0.82);editor.focus();document.execCommand('insertHTML',false,`<img src="${url}" alt="">`)}
-          catch(e){alert(e.message)}
+          catch(e){uiAlert(e.message)}
         };
         input.click();
       }else{
@@ -118,7 +159,7 @@ async function load(){
   const m=await api('/api/me'); me=m.user;
   if(!me){showInviteBanner();$('#authSection').classList.remove('hidden');$('#app').classList.add('hidden');$('#logout').classList.add('hidden');$('#myAccount').classList.add('hidden');$('#myProfile').classList.add('hidden');$('#menuToggle').classList.add('hidden');$('#helpBtn').classList.add('hidden');$('#adminBtn').classList.add('hidden');renderAuth();return}
   $('#authSection').classList.add('hidden');$('#app').classList.remove('hidden');$('#logout').classList.remove('hidden');$('#myAccount').classList.remove('hidden');$('#myProfile').classList.remove('hidden');$('#menuToggle').classList.remove('hidden');$('#helpBtn').classList.remove('hidden');refreshHelpBadge();
-  if(pendingInviteToken){try{await api('/api/invites/accept',{method:'POST',body:JSON.stringify({token:pendingInviteToken})})}catch(e){alert(e.message)}pendingInviteToken=null}
+  if(pendingInviteToken){try{await api('/api/invites/accept',{method:'POST',body:JSON.stringify({token:pendingInviteToken})})}catch(e){await uiAlert(e.message)}pendingInviteToken=null}
   await loadDashboard();
   $('#adminBtn').classList.toggle('hidden',me.role!=='global_admin');
   $('#inviteBanner').classList.add('hidden');
@@ -151,8 +192,9 @@ function showView(id){['#homeView','#newChallengeView','#challengeView','#helpVi
 function showHome(){challengeBack='home';setUrl('/');showView('#homeView');renderHome()}
 function renderHome(){
   $('#hello').textContent=`Welcome, ${me.name}`;
-  $('#challengeList').innerHTML=dash.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.start_date} → ${c.end_date} · ${c.kind==='journey'?'journey · ':''}${isIndividual(c)?'individuals':`${c.teams.length} of your team(s)`} · ${esc(c.role)} · ${esc(fmtTotal(c,c.myMinutes,c.myDistance,c.mySteps))} logged</div></div><button data-open="${c.id}">Open</button></div>`).join('')||'<p class="muted">You have not joined a challenge yet. Use <b>+ New challenge</b> or <b>Join with a code</b> above.</p>';
-  $all('[data-open]').forEach(b=>b.onclick=()=>openChallenge(Number(b.dataset.open)));
+  // Each challenge is one big button: name, dates, where it is in its run, and my total.
+  $('#challengeList').innerHTML=dash.challenges.map(c=>{const run=runLabel(c);return `<div class="listrow challenge-row" role="button" tabindex="0" data-open="${c.id}"><div><b>${esc(c.name)}</b><div class="muted">${esc(fmtRange(c.start_date,c.end_date))} · ${c.kind==='journey'?'journey · ':''}${isIndividual(c)?'individuals':esc(c.teams.map(t=>t.name).join(', ')||'no team yet')}${c.role==='owner'?' · owner':''}</div>${run?`<span class="status ${run==='Finished'?'finished':run.startsWith('Starts')?'upcoming':'running'}">${esc(run)}</span>`:''}</div><div class="row-total"><b>${esc(fmtTotal(c,c.myMinutes,c.myDistance,c.mySteps))}</b><span class="muted">logged by me</span></div></div>`}).join('')||'<p class="muted">You have not joined a challenge yet. Use <b>+ New challenge</b> or <b>Join with a code</b> above.</p>';
+  $all('[data-open]').forEach(b=>b.onclick=()=>openChallenge(Number(b.dataset.open)).catch(e=>uiAlert(e.message)));
   loadMyActivity().catch(()=>{});
   loadAndroidCard();
   loadIosCard();
@@ -172,18 +214,21 @@ async function loadAndroidCard(){
   }catch(e){$('#androidDownload').classList.add('hidden')}
 }
 
+// The challenge, its standings and my entries in it, fetched together.
+let curMine=[];
+async function loadChallenge(id){
+  const [c,lb,mine]=await Promise.all([api(`/api/challenges/${id}`),api(`/api/challenges/${id}/leaderboard`),api(`/api/me/activities?challenge_id=${id}&limit=50`).catch(()=>({activities:[]}))]);
+  curChallenge=c;curLeaderboard=lb;curMine=mine.activities;
+}
 async function openChallenge(id){
-  curChallenge=await api(`/api/challenges/${id}`);
-  curLeaderboard=await api(`/api/challenges/${id}/leaderboard`);
+  await loadChallenge(id);
   setUrl(`/challenges/${id}`);
   showView('#challengeView');
   $('#backHome').innerHTML=challengeBack==='admin'?'&larr; Admin':'&larr; My challenges';
   renderChallenge();
 }
 async function refreshChallenge(){
-  await loadDashboard();
-  curChallenge=await api(`/api/challenges/${curChallenge.id}`);
-  curLeaderboard=await api(`/api/challenges/${curChallenge.id}/leaderboard`);
+  await Promise.all([loadDashboard(),loadChallenge(curChallenge.id)]);
   renderChallenge();
 }
 
@@ -194,7 +239,8 @@ function avatarHtml(url,name,cls){
 function renderChallenge(){
   const c=curChallenge;
   $('#challengeName').textContent=c.name;
-  $('#challengeDates').textContent=`${c.start_date} → ${c.end_date} · YOUR ROLE: ${c.role.toUpperCase()}`;
+  const run=runLabel(c);
+  $('#challengeDates').textContent=[fmtRange(c.start_date,c.end_date),run,c.role==='admin'?'Viewing as admin':`Your role: ${c.role}`].filter(Boolean).join(' · ').toUpperCase();
   // The server already sanitized this on write (POST/PATCH /api/challenges) - safe to render as-is.
   $('#challengeDescription').innerHTML=c.description||'';
   $('#challengeDescription').classList.toggle('hidden',!c.description);
@@ -250,25 +296,26 @@ function renderChallenge(){
     return `<div class="listrow"><div class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<div><b>${esc(t.name)}</b><div class="muted">${bits.join(' · ')}</div></div></div><div class="btnrow">${actions.join('')}</div></div>`;
   }).join('')||'<p class="muted">No teams yet — create the first one.</p>';
   $all('[data-copylink]').forEach(b=>b.onclick=()=>copyInviteLink(b.dataset.copylink,b));
-  $all('[data-jointeam]').forEach(b=>b.onclick=async()=>{await api(`/api/teams/${b.dataset.jointeam}/join`,{method:'POST'});await refreshChallenge()});
+  $all('[data-jointeam]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await api(`/api/teams/${b.dataset.jointeam}/join`,{method:'POST'});await refreshChallenge()}catch(e){b.disabled=false;uiAlert(e.message)}});
   $all('[data-manageteam]').forEach(b=>b.onclick=()=>openTeamManage(Number(b.dataset.manageteam),b.dataset.name));
   $all('[data-leaveteam]').forEach(b=>b.onclick=async()=>{
-    if(!confirm(`Leave team "${b.dataset.name}"? What you've logged under it stays on the team's total.`))return;
-    try{await api(`/api/teams/${b.dataset.leaveteam}/leave`,{method:'POST'});await refreshChallenge()}catch(e){alert(e.message)}
+    if(!await uiConfirm(`Leave team "${b.dataset.name}"? What you've logged under it stays on the team's total.`,{ok:'Leave team'}))return;
+    try{await api(`/api/teams/${b.dataset.leaveteam}/leave`,{method:'POST'});await refreshChallenge()}catch(e){uiAlert(e.message)}
   });
-  $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${esc(fmtTotal(c,t.minutes,t.distance,t.steps))}${journeyProgress(c,t)}</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
-  $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader" data-profile="${x.id}" title="See ${esc(x.name)}'s profile"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b></span><span>${esc(fmtTotal(c,x.minutes,x.distance,x.steps))}${journeyProgress(c,x)}</span></div>`).join('')||'<p class="muted">No members yet.</p>';
-  const recent=dash.mine.filter(a=>a.challenge_id===c.id);
+  const myTeamIds=new Set(c.teams.filter(t=>t.mine).map(t=>t.id));
+  $('#teamLeaderboard').innerHTML=curLeaderboard.teams.map((t,i)=>`<div class="leader${myTeamIds.has(t.id)?' me':''}"${myTeamIds.has(t.id)?' title="Your team"':''}><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${esc(fmtTotal(c,t.minutes,t.distance,t.steps))}${journeyProgress(c,t)}</span></div>`).join('')||'<p class="muted">No teams yet.</p>';
+  $('#userLeaderboard').innerHTML=curLeaderboard.users.map((x,i)=>`<div class="leader${x.id===me.id?' me':''}" data-profile="${x.id}" role="button" tabindex="0" title="See ${x.id===me.id?'your':esc(x.name)+"'s"} profile"><span class="rank">${i+1}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</span><span>${esc(fmtTotal(c,x.minutes,x.distance,x.steps))}${journeyProgress(c,x)}</span></div>`).join('')||'<p class="muted">No members yet.</p>';
+  const recent=curMine;
   $('#recent').innerHTML=recent.map(x=>{
     const timeBit=x.start_time&&x.end_time?` · ${x.start_time}–${x.end_time}`:'';
     const commentBit=x.comment?`<div class="muted">“${esc(x.comment)}”</div>`:'';
-    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${x.team_name?`${esc(x.team_name)} · `:''}${x.activity_date}${timeBit} · ${x.source}</div>${commentBit}</div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b>${x.has_route?`<button class="ghost" data-maproute="${x.id}">Map</button>`:''}<button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></div></div>`;
+    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${x.team_name?`${esc(x.team_name)} · `:''}${esc(fmtDay(x.activity_date))}${esc(timeBit)} · ${esc(SOURCE_LABEL[x.source]||x.source)}</div>${commentBit}</div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b>${x.has_route?`<button class="ghost" data-maproute="${x.id}">Map</button>`:''}<button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></div></div>`;
   }).join('')||'<p class="muted">No activity logged yet in this challenge.</p>';
   $all('[data-editactivity]').forEach(b=>{const x=recent.find(a=>a.id===Number(b.dataset.editactivity));b.onclick=()=>openEditActivity(x)});
   $all('[data-maproute]').forEach(b=>{const x=recent.find(a=>a.id===Number(b.dataset.maproute));b.onclick=()=>openRouteMap(x)});
   $all('[data-delactivity]').forEach(b=>b.onclick=async()=>{
-    if(!confirm('Delete this activity entry?'))return;
-    try{await api(`/api/activities/${b.dataset.delactivity}`,{method:'DELETE'});await refreshChallenge()}catch(e){alert(e.message)}
+    if(!await uiConfirm('Delete this activity entry?',{ok:'Delete',danger:true}))return;
+    try{await api(`/api/activities/${b.dataset.delactivity}`,{method:'DELETE'});await refreshChallenge()}catch(e){uiAlert(e.message)}
   });
 }
 
@@ -279,7 +326,7 @@ async function openEditChallenge(c,after=refreshChallenge){
       <label>Name<input id="ecName" value="${esc(c.name)}" required></label>
       <label>Description (optional)</label>
       <div class="rte" data-rte><div class="rte-toolbar"><button type="button" data-cmd="bold" title="Bold"><b>B</b></button><button type="button" data-cmd="italic" title="Italic"><i>I</i></button><button type="button" data-cmd="insertUnorderedList" title="Bullet list">&bull; List</button><button type="button" data-cmd="insertOrderedList" title="Numbered list">1. List</button><button type="button" data-cmd="createLink" title="Link">Link</button><button type="button" data-cmd="insertImage" title="Insert image">Image</button></div><div id="ecDescription" class="rte-editor" contenteditable="true" data-placeholder="What's this challenge about?">${c.description||''}</div></div>
-      <div class="two"><label>Start<input id="ecStart" type="date" value="${c.start_date}" required></label><label>End<input id="ecEnd" type="date" value="${c.end_date}" required></label></div>
+      <div class="two"><label>Start<input id="ecStart" type="date" value="${esc(c.start_date)}" required></label><label>End<input id="ecEnd" type="date" value="${esc(c.end_date)}" required></label></div>
       <div class="two"><label>Measure<select id="ecMetric" data-metric><option value="minutes"${isDistance(c)||isSteps(c)?'':' selected'}>Active minutes</option><option value="distance"${isDistance(c)?' selected':''}>Distance</option><option value="steps"${isSteps(c)?' selected':''}>Steps</option></select></label><label data-unitwrap>Distance unit<select id="ecUnit"><option value="mi"${unitShort(c)==='mi'?' selected':''}>Miles</option><option value="km"${unitShort(c)==='km'?' selected':''}>Kilometres</option></select></label></div>
       <p class="muted">Changing what the challenge measures re-ranks the leaderboards. Entries logged without that measure count as zero toward it.</p>
       ${c.kind==='journey'?`<div><p><b>Journey:</b> ${esc(fmtJourney(c.journey))} <button type="button" class="ghost" id="ecRoute">Change route or labels</button></p><div id="ecPicker" class="hidden"></div></div>`:''}
@@ -290,7 +337,8 @@ async function openEditChallenge(c,after=refreshChallenge){
     <p id="ecMsg" class="error"></p>
     <h2 style="margin-top:24px">Challenge owners</h2>
     <div id="ownersList">${membersData.members.filter(m=>m.challenge_role==='owner').map(m=>`<div class="listrow"><div><b>${esc(m.name)}</b><div class="muted">${esc(m.email)}</div></div></div>`).join('')||'<p class="muted">No owners.</p>'}</div>
-    <form id="addOwnerForm"><label>Add an owner by email<input id="addOwnerEmail" type="email" required placeholder="name@example.com"></label><button>Add owner</button></form>
+    <form id="addOwnerForm"><label>Make a member an owner (their email)<input id="addOwnerEmail" type="email" required placeholder="name@example.com"></label><button>Make owner</button></form>
+    <p class="muted">They need to be in the challenge already. To bring someone new in, share the invite link.</p>
     <p id="ownerMsg" class="error"></p>
     <div class="danger-zone"><h2>Delete challenge</h2><p class="muted">Permanently deletes this challenge with all its teams, members and logged activity, for everyone. This cannot be undone.</p><button type="button" class="danger" id="deleteChallengeBtn">Delete challenge</button><p id="deleteChallengeMsg" class="error"></p></div>`;
   $('#modal').showModal();
@@ -319,7 +367,7 @@ async function openEditChallenge(c,after=refreshChallenge){
   };
   // Typing the name is the confirmation: deleting removes everyone's activity, not just the owner's.
   $('#deleteChallengeBtn').onclick=async()=>{
-    const typed=prompt(`This deletes "${c.name}" and everything logged in it, for every member. Type the challenge name to confirm.`);
+    const typed=await uiPrompt(`This deletes "${c.name}" and everything logged in it, for every member. Type the challenge name to confirm.`,{title:'Delete challenge',ok:'Delete'});
     if(typed===null)return;
     if(typed.trim()!==c.name.trim()){$('#deleteChallengeMsg').textContent='The name did not match, so nothing was deleted.';return}
     try{
@@ -348,7 +396,7 @@ function minutesBetween(start,end){
 // A step-challenge entry is just a day and a count.
 function openEditSteps(x){
   $('#modalBody').innerHTML=`<h2>Edit steps</h2>
-    <form id="editStepsForm"><div class="two"><label>Steps that day<input id="esSteps" type="number" min="1" max="200000" step="1" value="${x.steps??''}" required></label><label>Date<input id="esDate" type="date" value="${x.activity_date}" required></label></div>
+    <form id="editStepsForm"><div class="two"><label>Steps that day<input id="esSteps" type="number" min="1" max="200000" step="1" value="${x.steps??''}" required></label><label>Date<input id="esDate" type="date" value="${esc(x.activity_date)}" required></label></div>
       <label>Comment (optional)<input id="esComment" maxlength="500" value="${esc(x.comment||'')}"></label><button>Save changes</button></form><p id="esMsg" class="error"></p>`;
   $('#modal').showModal();
   $('#editStepsForm').onsubmit=async e=>{
@@ -365,8 +413,8 @@ function openEditActivity(x){
   $('#modalBody').innerHTML=`<h2>Edit activity</h2>
     <form id="editActivityForm">
       <label>Activity<input id="eaType" value="${esc(x.activity_type)}" required></label>
-      <div class="two">${distField}<label>Minutes${dist?' (optional)':''}<input id="eaMinutes" type="number" min="1" value="${x.minutes??''}"${dist?'':' required'}></label><label>Date<input id="eaDate" type="date" value="${x.activity_date}" required></label></div>
-      <div class="two"><label>Start time (optional)<input id="eaStart" type="time" value="${x.start_time||''}"></label><label>Finish time (optional)<input id="eaEnd" type="time" value="${x.end_time||''}"></label></div>
+      <div class="two">${distField}<label>Minutes${dist?' (optional)':''}<input id="eaMinutes" type="number" min="1" value="${x.minutes??''}"${dist?'':' required'}></label><label>Date<input id="eaDate" type="date" value="${esc(x.activity_date)}" required></label></div>
+      <div class="two"><label>Start time (optional)<input id="eaStart" type="time" value="${esc(x.start_time||'')}"></label><label>Finish time (optional)<input id="eaEnd" type="time" value="${esc(x.end_time||'')}"></label></div>
       <label>Comment (optional)<input id="eaComment" maxlength="500" value="${esc(x.comment||'')}" placeholder="How did it go?"></label>
       <button>Save changes</button>
     </form>
@@ -409,7 +457,8 @@ async function openTeamManage(tid,tname){
     </form>
     <h2 style="margin-top:24px">Members</h2>
     <div id="teamMembersList">${data.members.map(m=>`<div class="listrow"><div><b>${esc(m.name)}</b><div class="muted">${esc(m.email)} · ${esc(m.team_role)}</div></div><button class="ghost" data-removemember="${m.id}">Remove</button></div>`).join('')||'<p class="muted">No members.</p>'}</div>
-    <form id="addMemberForm"><label>Add someone by email<input id="addMemberEmail" type="email" required placeholder="name@example.com"></label><button>Add to team</button></form>
+    <form id="addMemberForm"><label>Add someone already in this challenge (their email)<input id="addMemberEmail" type="email" required placeholder="name@example.com"></label><button>Add to team</button></form>
+    <p class="muted">To bring someone new in, share the team's invite link.</p>
     <p id="manageMsg" class="error"></p>
     <hr><button id="deleteTeamBtn" class="ghost" style="color:var(--red)">Delete this team</button>`;
   $('#modal').showModal();
@@ -437,19 +486,19 @@ async function openTeamManage(tid,tname){
     try{await api(`/api/teams/${tid}/members`,{method:'POST',body:JSON.stringify({email:$('#addMemberEmail').value})});await openTeamManage(tid,tname);await refreshChallenge()}catch(x){$('#manageMsg').textContent=x.message}
   };
   $all('[data-removemember]').forEach(b=>b.onclick=async()=>{
-    if(!confirm('Remove this person from the team?'))return;
+    if(!await uiConfirm('Remove this person from the team? What they logged under it stays on the team total.',{ok:'Remove'}))return;
     try{await api(`/api/teams/${tid}/members/${b.dataset.removemember}`,{method:'DELETE'});await openTeamManage(tid,tname);await refreshChallenge()}catch(x){$('#manageMsg').textContent=x.message}
   });
   $('#deleteTeamBtn').onclick=async()=>{
-    if(!confirm(`Delete team "${tname}"? This removes its members and any activity logged under it. This cannot be undone.`))return;
+    if(!await uiConfirm(`Delete team "${tname}"? This removes its members and any activity logged under it. This cannot be undone.`,{ok:'Delete team',danger:true}))return;
     try{await api(`/api/teams/${tid}`,{method:'DELETE'});$('#modal').close();await refreshChallenge()}catch(x){$('#manageMsg').textContent=x.message}
   };
 }
 
 // --- Leaving a challenge, and profiles with following -------------------------------------
 async function leaveChallenge(c){
-  if(!confirm(`Leave "${c.name}"? Everything you've logged in it is deleted, and you'll need an invite to join again.`))return;
-  try{await api(`/api/challenges/${c.id}/leave`,{method:'POST'});await loadDashboard();showHome()}catch(e){alert(e.message)}
+  if(!await uiConfirm(`Leave "${c.name}"? Everything you've logged in it is deleted, and you'll need an invite to join again.`,{ok:'Leave challenge',danger:true}))return;
+  try{await api(`/api/challenges/${c.id}/leave`,{method:'POST'});await loadDashboard();showHome()}catch(e){uiAlert(e.message)}
 }
 const ordinal=n=>n+(n%100>=11&&n%100<=13?'th':({1:'st',2:'nd',3:'rd'}[n%10]||'th'));
 function personButton(x){return `<button type="button" class="person" data-profile="${x.id}">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<span>${esc(x.name)}</span></button>`}
@@ -461,15 +510,15 @@ function followList(title,people,count,empty){
 // sharing level shows. People in the lists open their own profile in place.
 async function openProfile(id){
   let p;
-  try{p=await api(`/api/users/${id}/profile`)}catch(e){alert(e.message==='Not found'?"This profile isn't available.":e.message);return}
+  try{p=await api(`/api/users/${id}/profile`)}catch(e){uiAlert(e.message==='Not found'?"This profile isn't available.":e.message);return}
   const first=esc(p.name.split(' ')[0]);
   const since=p.member_since?`Member since ${new Date(p.member_since+'T00:00:00').toLocaleDateString(undefined,{month:'long',year:'numeric'})}`:'';
   const counts=`<b>${p.followers_count}</b> follower${p.followers_count===1?'':'s'} · <b>${p.following_count}</b> following${p.follows_you?' · <span class="status">Follows you</span>':''}`;
   const lists=p.followers?`<div class="follow-cols">${followList('Followers',p.followers,p.followers_count,p.self?'Nobody yet.':'No followers yet.')}${followList('Following',p.following,p.following_count,'Nobody yet.')}</div>`:'';
   let body='';
   if(p.challenges){
-    body+=`<div class="profile-section"><h3>${p.self?'My challenges':'Challenges you share'}</h3>${p.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.team?`${esc(c.team)} · `:''}${c.start_date} → ${c.end_date}</div></div><div style="text-align:right"><b>${esc(fmtTotal(c,c.minutes,c.distance,c.steps))}</b>${c.rank?`<div class="muted">${ordinal(c.rank)} of ${c.of}</div>`:''}</div></div>`).join('')||'<p class="muted">No challenges yet.</p>'}</div>`;
-    if(p.activities)body+=`<div class="profile-section"><h3>Recent activity</h3>${p.activities.map(a=>`<div class="listrow"><div><b>${esc(a.activity_type)}</b><div class="muted">${a.activity_date}${a.start_time?` · ${a.start_time}`:''} · ${esc(a.challenge_name)}</div>${a.comment?`<div class="muted">“${esc(a.comment)}”</div>`:''}</div><b>${esc(fmtEntry(a,a))}</b></div>`).join('')||'<p class="muted">Nothing logged yet.</p>'}</div>`;
+    body+=`<div class="profile-section"><h3>${p.self?'My challenges':'Challenges you share'}</h3>${p.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.team?`${esc(c.team)} · `:''}${esc(fmtRange(c.start_date,c.end_date))}</div></div><div style="text-align:right"><b>${esc(fmtTotal(c,c.minutes,c.distance,c.steps))}</b>${c.rank?`<div class="muted">${ordinal(c.rank)} of ${c.of}</div>`:''}</div></div>`).join('')||'<p class="muted">No challenges yet.</p>'}</div>`;
+    if(p.activities)body+=`<div class="profile-section"><h3>Recent activity</h3>${p.activities.map(a=>`<div class="listrow"><div><b>${esc(a.activity_type)}</b><div class="muted">${esc(fmtDay(a.activity_date))}${a.start_time?` · ${esc(a.start_time)}`:''} · ${esc(a.challenge_name)}</div>${a.comment?`<div class="muted">“${esc(a.comment)}”</div>`:''}</div><b>${esc(fmtEntry(a,a))}</b></div>`).join('')||'<p class="muted">Nothing logged yet.</p>'}</div>`;
   }else body+=`<p class="muted">${p.self?'Your profile is private: people only see your name and photo.':`${first} keeps their profile private.`}</p>`;
   $('#modalBody').innerHTML=`<div class="profile-head">${avatarHtml(p.avatar_url,p.name,'avatar-lg')}<div><h2>${esc(p.name)}</h2>${p.bio?`<div>${esc(p.bio)}</div>`:''}<div class="muted">${since}</div></div></div>
     <div class="row"><div>${counts}</div><div class="btnrow">${p.self?'<button class="ghost" id="profileEdit">Edit my account</button>':`<button id="followBtn" class="${p.is_following?'ghost':''}">${p.is_following?'Following ✓':'Follow'}</button>`}</div></div>
@@ -481,6 +530,7 @@ async function openProfile(id){
   };
 }
 document.addEventListener('click',e=>{const b=e.target.closest('[data-profile]');if(b){e.preventDefault();openProfile(Number(b.dataset.profile))}});
+document.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&e.target.matches('[role="button"]')){e.preventDefault();e.target.click()}});
 $('#myProfile').onclick=()=>openProfile(me.id);
 // Phones: the header buttons fold into a Menu dropdown, closed by choosing anything, tapping outside or Escape.
 {
@@ -500,7 +550,7 @@ const SHORTCUT_NAME='Active Together sync';
 const onIPhone=()=>/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 async function openShortcutSetup(){
   let st,cfg;
-  try{[st,cfg]=await Promise.all([api('/api/me/sync-key'),api('/api/config')])}catch(e){alert(e.message);return}
+  try{[st,cfg]=await Promise.all([api('/api/me/sync-key'),api('/api/config')])}catch(e){uiAlert(e.message);return}
   const ios=onIPhone();
   $('#modalBody').innerHTML=`<h2>Apple Shortcuts sync</h2>
     <p>Sends your day's steps, exercise minutes and distance from Apple Health, twice a day. Do this on your iPhone, once.</p>
@@ -526,12 +576,12 @@ async function openShortcutSetup(){
     try{
       const key=await newKey();
       $('#keyBox').innerHTML=`<p><b>Your sync key.</b> Copy it now; it won't be shown again. Run the shortcut and paste it when asked.</p><div class="linkrow"><code>${esc(key)}</code><button type="button" id="copyKey">Copy</button></div>`;
-      $('#copyKey').onclick=async()=>{try{await navigator.clipboard.writeText(key);$('#copyKey').textContent='Copied'}catch(err){prompt('Copy your sync key:',key)}};
+      $('#copyKey').onclick=async()=>{try{await navigator.clipboard.writeText(key);$('#copyKey').textContent='Copied'}catch(err){uiCopy('Copy your sync key:',key)}};
     }catch(err){$('#keyMsg').textContent=err.message}
   };
   if(st.exists)$('#dropKey').onclick=async e=>{
     e.preventDefault();
-    if(!confirm('Disconnect? Every shortcut using your keys stops sending until you connect again.'))return;
+    if(!await uiConfirm('Disconnect? Every shortcut using your keys stops sending until you connect again.',{ok:'Disconnect',danger:true}))return;
     try{await api('/api/me/sync-key',{method:'DELETE'});openShortcutSetup()}catch(err){$('#keyMsg').textContent=err.message}
   };
 }
@@ -753,7 +803,7 @@ function renderAdminUsers(){
   const rows=adminUsers.filter(x=>!q||`${x.name} ${x.email}`.toLowerCase().includes(q));
   $('#adminUserCount').textContent=q?`${rows.length} of ${adminUsers.length}`:String(adminUsers.length);
   $('#adminUserList').innerHTML=rows.map(x=>`<div class="adminrow"><div><div class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</div>
-    <div class="facts"><span>${esc(x.email)}</span><span>${plural(x.challenges,'challenge','challenges')}</span><span>${plural(x.activities,'activity','activities')}</span><span>${x.last_activity?`last active ${esc(x.last_activity)}`:'no activity yet'}</span>${x.tickets?`<span>${plural(x.tickets,'ticket','tickets')}</span>`:''}<span>joined ${esc(String(x.created_at||'').slice(0,10))}</span></div></div>
+    <div class="facts"><span>${esc(x.email)}</span><span>${plural(x.challenges,'challenge','challenges')}</span><span>${plural(x.activities,'activity','activities')}</span><span>${x.last_activity?`last active ${esc(fmtDate(x.last_activity))}`:'no activity yet'}</span>${x.tickets?`<span>${plural(x.tickets,'ticket','tickets')}</span>`:''}<span>joined ${esc(fmtDate(String(x.created_at||'').slice(0,10)))}</span></div></div>
     <div class="btnrow">${x.deactivated_at?statusPillFor('deactivated','Deactivated'):''}${statusPillFor(x.role,x.role==='global_admin'?'Global admin':'Member')}<button class="ghost" data-edituser="${x.id}">Edit</button></div></div>`).join('')||'<p class="muted">No users match.</p>';
   $all('[data-edituser]').forEach(b=>{const x=adminUsers.find(x2=>x2.id===Number(b.dataset.edituser));b.onclick=()=>openEditUser(x)});
 }
@@ -762,19 +812,19 @@ function renderAdminChallenges(){
   const rows=adminChallenges.filter(c=>(!st||c.state===st)&&(!q||`${c.name} ${c.owners||''} ${c.creator_name||''} ${c.invite_code}`.toLowerCase().includes(q)));
   $('#adminChallengeCount').textContent=rows.length===adminChallenges.length?String(rows.length):`${rows.length} of ${adminChallenges.length}`;
   $('#adminChallengeList').innerHTML=rows.map(c=>`<div class="adminrow"><div><b>${esc(c.name)}</b>
-    <div class="facts"><span>${esc(c.start_date)} → ${esc(c.end_date)}</span><span>${esc(MEASURE_LABEL(c))}</span><span>${c.participation==='individual'?'Individuals':plural(c.teams,'team','teams')}</span><span>${plural(c.members,'member','members')}</span><span>${plural(c.activities,'activity','activities')}</span><span>owner: ${esc(c.owners||c.creator_name||'none')}</span><span>code ${esc(c.invite_code)}</span>${c.state==='finished'?`<span title="Finished challenges and their activity are deleted 60 days after they end">deleted on ${esc(c.purge_date)}</span>`:''}</div></div>
+    <div class="facts"><span>${esc(fmtRange(c.start_date,c.end_date))}</span><span>${esc(MEASURE_LABEL(c))}</span><span>${c.participation==='individual'?'Individuals':plural(c.teams,'team','teams')}</span><span>${plural(c.members,'member','members')}</span><span>${plural(c.activities,'activity','activities')}</span><span>owner: ${esc(c.owners||c.creator_name||'none')}</span><span>code ${esc(c.invite_code)}</span>${c.state==='finished'?`<span title="Finished challenges and their activity are deleted 60 days after they end">deleted on ${esc(fmtDate(c.purge_date))}</span>`:''}</div></div>
     <div class="btnrow">${statusPillFor(c.state,STATE_LABEL[c.state])}<button data-adminopen="${c.id}">Open</button><button class="ghost" data-adminmembers="${c.id}">Members</button><button class="ghost" data-adminedit="${c.id}">Edit</button></div></div>`).join('')||'<p class="muted">No challenges match.</p>';
   $all('[data-adminmembers]').forEach(b=>b.onclick=()=>openAdminMembers(adminChallenges.find(c=>c.id===Number(b.dataset.adminmembers))));
-  $all('[data-adminopen]').forEach(b=>b.onclick=()=>{challengeBack='admin';openChallenge(Number(b.dataset.adminopen)).catch(e=>alert(e.message))});
+  $all('[data-adminopen]').forEach(b=>b.onclick=()=>{challengeBack='admin';openChallenge(Number(b.dataset.adminopen)).catch(e=>uiAlert(e.message))});
   $all('[data-adminedit]').forEach(b=>b.onclick=async()=>{
-    try{const c=await api(`/api/challenges/${b.dataset.adminedit}`);challengeBack='admin';await openEditChallenge(c,async()=>{await loadDashboard();await renderAdmin()})}catch(e){alert(e.message)}
+    try{const c=await api(`/api/challenges/${b.dataset.adminedit}`);challengeBack='admin';await openEditChallenge(c,async()=>{await loadDashboard();await renderAdmin()})}catch(e){uiAlert(e.message)}
   });
 }
 // Who is in a challenge, and adding or removing anyone (global admins). People are picked from the
 // admin user list by name or email; a team challenge can put them straight into a team.
 async function openAdminMembers(c,note=''){
   let d;
-  try{d=await api(`/api/admin/challenges/${c.id}/members`)}catch(e){alert(e.message);return}
+  try{d=await api(`/api/admin/challenges/${c.id}/members`)}catch(e){uiAlert(e.message);return}
   const inIt=new Set(d.members.map(x=>x.id));
   const pickable=adminUsers.filter(x=>!x.deactivated_at);
   const label=x=>`${x.name} <${x.email}>`;
@@ -804,7 +854,7 @@ async function openAdminMembers(c,note=''){
   $all('[data-amremove]').forEach(b=>b.onclick=async()=>{
     const x=d.members.find(m=>m.id===Number(b.dataset.amremove));
     const lastOwner=x.role==='owner'&&d.members.filter(m=>m.role==='owner').length===1;
-    if(!confirm(`Remove ${x.name} from "${c.name}"?${x.entries?` Their ${plural(x.entries,'entry','entries')} in it will be deleted.`:''}${lastOwner?' They are its only owner, so only global admins will be able to manage it.':''}`))return;
+    if(!await uiConfirm(`Remove ${x.name} from "${c.name}"?${x.entries?` Their ${plural(x.entries,'entry','entries')} in it will be deleted.`:''}${lastOwner?' They are its only owner, so only global admins will be able to manage it.':''}`,{ok:'Remove',danger:true}))return;
     try{await api(`/api/admin/challenges/${c.id}/members/${x.id}`,{method:'DELETE'});await refresh(`Removed ${x.name}.`)}
     catch(err){$('#amMsg').className='error';$('#amMsg').textContent=err.message}
   });
@@ -840,11 +890,11 @@ function openEditUser(x){
       <p class="muted">Deleting removes the account with all their activity, routes, team memberships and tickets, for good. Challenges and teams they created stay, credited to you.</p></div>`}`;
   $('#modal').showModal();
   if($('#euActive'))$('#euActive').onclick=async()=>{
-    if(!x.deactivated_at&&!confirm(`Deactivate ${x.name}? They'll be signed out and can't sign in until reactivated.`))return;
+    if(!x.deactivated_at&&!await uiConfirm(`Deactivate ${x.name}? They'll be signed out and can't sign in until reactivated.`,{ok:'Deactivate',danger:true}))return;
     try{await api(`/api/admin/users/${x.id}`,{method:'PATCH',body:JSON.stringify({active:!!x.deactivated_at})});$('#modal').close();renderAdmin()}catch(err){$('#euMsg').textContent=err.message}
   };
   if($('#euDelete'))$('#euDelete').onclick=async()=>{
-    const typed=prompt(`This permanently deletes ${x.name} (${x.email}) and everything they logged. Type their email to confirm.`);
+    const typed=await uiPrompt(`This permanently deletes ${x.name} (${x.email}) and everything they logged. Type their email to confirm.`,{title:'Delete account',ok:'Delete'});
     if(typed===null)return;
     if(typed.trim().toLowerCase()!==x.email.toLowerCase()){$('#euMsg').textContent='The email did not match, so nothing was deleted.';return}
     try{await api(`/api/admin/users/${x.id}`,{method:'DELETE'});$('#modal').close();renderAdmin()}catch(err){$('#euMsg').textContent=err.message}
@@ -885,7 +935,7 @@ function openMyAccount(){
   $('#modal').showModal();
   $('#deleteAccountForm').onsubmit=async e=>{
     e.preventDefault();
-    if(!confirm('Delete your Active Together account and everything in it? This cannot be undone.'))return;
+    if(!await uiConfirm('Delete your Active Together account and everything in it? This cannot be undone.',{ok:'Delete my account',danger:true}))return;
     try{await api('/api/me',{method:'DELETE',body:JSON.stringify({password:$('#deletePassword').value})});location.href='/'}catch(x){$('#deleteMsg').textContent=x.message}
   };
   $('#acctAvatar').addEventListener('change',()=>{
@@ -992,6 +1042,7 @@ $('#ticketForm').onsubmit=async e=>{
 setInterval(()=>{if(me)refreshHelpBadge()},120000);
 
 
+$('#modalClose').onclick=()=>$('#modal').close();
 $('#logout').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload()};
 $('#backHome').onclick=()=>challengeBack==='admin'?showAdmin():showHome();
 // Forms in a dialog (logging activity, join with a code, new team, a support ticket) live in a hidden holder and are
@@ -1065,7 +1116,7 @@ $('#newTeamForm').onsubmit=async e=>{
     $('#newTeamImagePreview').classList.add('hidden');
     $('#modal').close();
     await refreshChallenge();
-  }catch(err){alert(err.message)}
+  }catch(err){uiAlert(err.message)}
 };
 $('#activityDate').value=new Date().toISOString().slice(0,10);
 $('#logBtn').onclick=()=>{$('#activityMsg').textContent='';showFormDialog('logDialog')};
@@ -1074,7 +1125,7 @@ $('#endTime').addEventListener('change',()=>{const m=minutesBetween($('#startTim
 $('#activityForm').onsubmit=async e=>{
   e.preventDefault();
   const solo=isIndividual(curChallenge),teamId=solo?null:$('#team').value;
-  if(!solo&&!teamId){alert('Join a team first');return}
+  if(!solo&&!teamId){$('#activityMsg').textContent='Join a team first: see Teams in this challenge.';return}
   try{
     // A minutes challenge has no distance box, so a GPX file's distance goes along as extra detail.
     if(isSteps(curChallenge)){
@@ -1134,13 +1185,13 @@ $('#gpxFile').addEventListener('change',async()=>{
     $('#gpxInfo').classList.remove('hidden');
   }catch(err){$('#gpxInfo').textContent=err.message;$('#gpxInfo').classList.remove('hidden');$('#gpxFile').value=''}
 });
-// Leaflet (OpenStreetMap tiles) is loaded only the first time a map is opened.
+// Leaflet (OpenStreetMap tiles) is loaded only the first time a map is opened, from this site's own copy.
 let leafletReady=null;
 function loadLeaflet(){
   if(leafletReady)return leafletReady;
   leafletReady=new Promise((resolve,reject)=>{
-    const css=document.createElement('link');css.rel='stylesheet';css.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';document.head.appendChild(css);
-    const js=document.createElement('script');js.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';js.onload=()=>resolve(window.L);js.onerror=()=>{leafletReady=null;reject(Error('Could not load the map library'))};document.head.appendChild(js);
+    const css=document.createElement('link');css.rel='stylesheet';css.href='/vendor/leaflet-1.9.4/leaflet.css';document.head.appendChild(css);
+    const js=document.createElement('script');js.src='/vendor/leaflet-1.9.4/leaflet.js';js.onload=()=>resolve(window.L);js.onerror=()=>{leafletReady=null;reject(Error('Could not load the map library'))};document.head.appendChild(js);
   });
   return leafletReady;
 }
@@ -1151,7 +1202,7 @@ async function loadMyActivity(append=false){
   myActivity=append?myActivity.concat(r.activities):r.activities;myActivityMore=r.more;
   $('#myActivity').innerHTML=myActivity.map(x=>{
     const c={metric:x.metric,distance_unit:x.distance_unit};
-    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${esc(x.challenge_name)}${x.team_name?` · ${esc(x.team_name)}`:''} · ${x.activity_date}${x.start_time?` · ${x.start_time}`:''}</div></div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b>${x.has_route?`<button class="ghost" data-mymap="${x.id}">Map</button>`:''}</div></div>`;
+    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${esc(x.challenge_name)}${x.team_name?` · ${esc(x.team_name)}`:''} · ${esc(fmtDay(x.activity_date))}${x.start_time?` · ${esc(x.start_time)}`:''}</div></div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b>${x.has_route?`<button class="ghost" data-mymap="${x.id}">Map</button>`:''}</div></div>`;
   }).join('')||'<p class="muted">Nothing logged yet.</p>';
   $('#moreActivity').classList.toggle('hidden',!myActivityMore);
   $all('[data-mymap]').forEach(b=>{const x=myActivity.find(a=>a.id===Number(b.dataset.mymap));b.onclick=()=>openRouteMap(x,{metric:x.metric,distance_unit:x.distance_unit})});
@@ -1159,7 +1210,7 @@ async function loadMyActivity(append=false){
 $('#moreActivity').onclick=()=>loadMyActivity(true);
 async function openRouteMap(x,cc=curChallenge){
   const dlg=$('#modal');
-  $('#modalBody').innerHTML=`<h2>${esc(x.activity_type)}</h2><p class="muted">${x.activity_date}${x.start_time?` · ${x.start_time}–${x.end_time||''}`:''} · ${esc(fmtEntry(cc,x))}</p><div id="routeMap" class="route-map"></div><p class="muted">Only you can see this route.</p>`;
+  $('#modalBody').innerHTML=`<h2>${esc(x.activity_type)}</h2><p class="muted">${esc(fmtDay(x.activity_date))}${x.start_time?` · ${esc(x.start_time)}–${esc(x.end_time||'')}`:''} · ${esc(fmtEntry(cc,x))}</p><div id="routeMap" class="route-map"></div><p class="muted">Only you can see this route.</p>`;
   dlg.classList.add('wide');
   dlg.addEventListener('close',()=>dlg.classList.remove('wide'),{once:true});
   dlg.showModal();
@@ -1198,7 +1249,7 @@ async function route(){
     const code=inviteCodeFromPath();
     if(code)return await openJoinPrompt(code);
     showHome();
-  }catch(e){alert(e.message);showHome()}
+  }catch(e){showHome();uiAlert(e.message)}
   finally{routing=false}
 }
 window.addEventListener('popstate',()=>{if(me){if($('#modal').open)$('#modal').close();route()}});
@@ -1207,7 +1258,7 @@ $('#modal').addEventListener('close',()=>{const m=location.pathname.match(/^\/he
 async function copyInviteLink(code,btn){
   const url=inviteUrl(code);
   try{await navigator.clipboard.writeText(url);const was=btn.textContent;btn.textContent='Link copied';setTimeout(()=>btn.textContent=was,1800)}
-  catch(e){prompt('Copy this invite link:',url)}
+  catch(e){uiCopy('Copy this invite link:',url)}
 }
 // On an Android phone without the app's link handling (or before installing it), offer to open the invite in the app.
 const isAndroid=/Android/i.test(navigator.userAgent),isIOS=/iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -1215,7 +1266,7 @@ const appInviteLink=code=>`intent://join/${encodeURIComponent(code)}#Intent;sche
 function inviteSummary(pv){
   const c=pv.challenge,what=c.metric==='steps'?'steps':c.metric==='distance'?`distance (${c.distance_unit==='km'?'km':'miles'})`:'active minutes';
   const name=pv.team?`the team <b>${esc(pv.team.name)}</b> in <b>${esc(c.name)}</b>`:`<b>${esc(c.name)}</b>`;
-  return {name,detail:`${esc(c.start_date)} → ${esc(c.end_date)} · measures ${what} · ${c.participation==='individual'?'individuals':'teams'} · ${c.members} member${c.members===1?'':'s'}`};
+  return {name,detail:`${esc(fmtRange(c.start_date,c.end_date))} · measures ${what} · ${c.participation==='individual'?'individuals':'teams'} · ${c.members} member${c.members===1?'':'s'}`};
 }
 // Signed out on an invite link: say what it's for above the sign-in / register form.
 async function showInviteBanner(){
@@ -1230,7 +1281,7 @@ async function showInviteBanner(){
 // Signed in on an invite link: confirm before joining.
 async function openJoinPrompt(code){
   let pv;
-  try{pv=await api(`/api/join/preview?code=${encodeURIComponent(code)}`)}catch(e){showHome();alert(e.message);return}
+  try{pv=await api(`/api/join/preview?code=${encodeURIComponent(code)}`)}catch(e){showHome();uiAlert(e.message);return}
   showHome();setUrl(`/join/${code}`,true);
   const s=inviteSummary(pv),done=pv.member&&(pv.type==='challenge'||pv.inTeam);
   s.name=s.name.replace(/^the team/,'Team');

@@ -320,7 +320,7 @@ test('a team admin can rename their team; a plain member cannot rename or delete
   assert.equal(bobView.teams[0].canManage, false);
 });
 
-test('a team admin can add an existing user by email and remove members; a plain member cannot', async () => {
+test('a team admin can add a challenge member to the team by email and remove members; a plain member cannot', async () => {
   const alice = await register('Alice ManagerA');
   const dave = await register('Dave AddedByEmail');
   const bob = await register('Bob PlainMemberB');
@@ -356,7 +356,18 @@ test('a team admin can add an existing user by email and remove members; a plain
   });
   assert.equal(forbiddenAdd.status, 403);
 
-  // Alice (team admin) adds Dave directly by his registered email — no invite acceptance needed.
+  // Dave has an account but isn't in the challenge: he can't be pulled in by email, and the answer is the
+  // same as for an email with no account, so it never reveals who is registered.
+  const notInChallenge = await fetch(`${origin}/api/teams/${teamId}/members`, {
+    method: 'POST',
+    headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: dave.email }),
+  });
+  assert.equal(notInChallenge.status, 404);
+  assert.equal((await notInChallenge.json()).error, (await noAccount.json()).error);
+
+  // Once Dave has joined the challenge himself, Alice (team admin) can put him in the team by email.
+  await fetch(`${origin}/api/join`, { method: 'POST', headers: { cookie: dave.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: challengeCode }) });
   const add = await fetch(`${origin}/api/teams/${teamId}/members`, {
     method: 'POST',
     headers: { cookie: alice.cookie, 'Content-Type': 'application/json' },
@@ -365,10 +376,10 @@ test('a team admin can add an existing user by email and remove members; a plain
   assert.equal(add.status, 201);
   assert.equal((await add.json()).user.email, dave.email);
 
-  // Dave can now see the challenge and is already in the team, with no action of his own.
+  // Dave is now in the team.
   const daveDashboard = await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: dave.cookie } })).json();
   const daveChallenge = daveDashboard.challenges.find(c => c.id === challengeId);
-  assert.ok(daveChallenge, 'adding by email should also grant challenge membership');
+  assert.ok(daveChallenge);
   assert.equal(daveChallenge.teams[0].id, teamId);
 
   // The roster is visible to any team member (Bob), but only managers may act on it.
@@ -561,7 +572,7 @@ test('the mobile-only login endpoint works without a recaptcha token and sets no
 });
 
 test('registration and login are rate limited per IP', async () => {
-  const srv = await spawnServer({ AUTH_RATE_LIMIT_MAX: '3', AUTH_RATE_LIMIT_WINDOW_MS: '60000' });
+  const srv = await spawnServer({ AUTH_RATE_LIMIT_MAX: '3', REGISTER_RATE_LIMIT_MAX: '3', AUTH_RATE_LIMIT_WINDOW_MS: '60000' });
   try {
     for (let i = 0; i < 3; i++) {
       const r = await fetch(`${srv.origin}/api/register`, {
@@ -585,6 +596,13 @@ test('registration and login are rate limited per IP', async () => {
       body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }),
     });
     assert.equal(login.status, 200);
+
+    // Sign-in attempts count per network and email: one account being guessed at is blocked, while
+    // other people on the same network (an office) can still sign in.
+    const tryLogin = email => fetch(`${srv.origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password: 'wrong-password' }) });
+    for (let i = 0; i < 3; i++) assert.equal((await tryLogin('guessed@example.com')).status, 401);
+    assert.equal((await tryLogin('guessed@example.com')).status, 429);
+    assert.equal((await tryLogin('colleague@example.com')).status, 401, 'someone else on the network is not blocked');
   } finally {
     await srv.stop();
   }
@@ -1241,12 +1259,14 @@ test('challenge owners/global admins can add another owner to a challenge; a pla
   const membersAfter = await (await fetch(`${origin}/api/challenges/${challengeId}/members`, { headers: { cookie: alice.cookie } })).json();
   assert.equal(membersAfter.members.find(m => m.email === bob.email).challenge_role, 'owner');
 
-  // Bob, now an owner, can add a fresh account directly (not previously a member) as owner too.
+  // Bob, now an owner, can't pull in someone who isn't in the challenge: they join first, then he promotes them.
   const dave = await register('Dave BrandNewOwner');
-  const addNew = await fetch(`${origin}/api/challenges/${challengeId}/owners`, {
+  const promote = () => fetch(`${origin}/api/challenges/${challengeId}/owners`, {
     method: 'POST', headers: { cookie: bob.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ email: dave.email }),
   });
-  assert.equal(addNew.status, 201);
+  assert.equal((await promote()).status, 404);
+  await fetch(`${origin}/api/join`, { method: 'POST', headers: { cookie: dave.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ code: challengeCode }) });
+  assert.equal((await promote()).status, 201);
   const daveDashboard = await (await fetch(`${origin}/api/dashboard`, { headers: { cookie: dave.cookie } })).json();
   const daveChallenge = daveDashboard.challenges.find(c => c.id === challengeId);
   assert.equal(daveChallenge.role, 'owner');
@@ -2502,4 +2522,52 @@ test('global admins can add anyone to any challenge (with a team and role) and r
   // The last owner can go as well; the challenge stays, for admins to manage.
   assert.equal((await jsonFetch(`${members}/${owner.user.id}`, admin, 'DELETE')).status, 200);
   assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}`, admin)).status, 200);
+});
+
+test('security: challenge dates must be real dates, activity sources are plain words, and responses carry security headers', async () => {
+  const owner = await register('Sasha Secure');
+  const bad = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Bad dates', start_date: '2026-01-01<img src=x onerror=alert(1)>', end_date: '2026-12-31' });
+  assert.equal(bad.status, 400);
+  assert.equal((await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'No such day', start_date: '2026-02-30', end_date: '2026-12-31' })).status, 400);
+  assert.equal((await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Backwards', start_date: '2026-12-31', end_date: '2026-01-01' })).status, 400);
+  const c = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Good dates', start_date: '2026-01-01', end_date: '2026-12-31', participation: 'individual' });
+  assert.equal(c.status, 201);
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${c.body.id}`, owner.cookie, 'PATCH', { end_date: '"><script>' })).status, 400);
+  assert.equal((await jsonFetch(`${origin}/api/activities`, owner.cookie, 'POST', { challenge_id: c.body.id, activity_type: 'Walk', minutes: 20, activity_date: '2026-03-01', source: '<b>x</b>' })).status, 400);
+
+  const page = await fetch(`${origin}/`);
+  assert.match(page.headers.get('content-security-policy'), /script-src 'self'/);
+  assert.equal(page.headers.get('x-frame-options'), 'DENY');
+  assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
+  // Static files can be cached and revalidated.
+  const etag = page.headers.get('etag');
+  assert.ok(etag);
+  assert.equal((await fetch(`${origin}/`, { headers: { 'If-None-Match': etag } })).status, 304);
+  assert.equal((await fetch(`${origin}/vendor/leaflet-1.9.4/leaflet.js`)).status, 200);
+});
+
+test('CSV exports neutralise spreadsheet formulas, and an admin deleting a sole owner hands the challenge on', async () => {
+  const login = await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }) });
+  const admin = login.headers.get('set-cookie').split(';')[0];
+  const owner = await register('=HYPERLINK Owner');
+  const heir = await register('Hana Heir');
+  const c = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Formula test', start_date: '2026-01-01', end_date: '2026-12-31', participation: 'individual' });
+  await jsonFetch(`${origin}/api/join`, heir.cookie, 'POST', { code: c.body.invite_code });
+  const csv = await (await fetch(`${origin}/api/challenges/${c.body.id}/leaderboard/export?type=users`, { headers: { cookie: owner.cookie } })).text();
+  assert.ok(csv.includes("'=HYPERLINK Owner"), csv);
+
+  assert.equal((await jsonFetch(`${origin}/api/admin/users/${owner.user.id}`, admin, 'DELETE')).status, 200);
+  const members = await jsonFetch(`${origin}/api/admin/challenges/${c.body.id}/members`, admin);
+  assert.deepEqual(members.body.members.map(m => [m.id, m.role]), [[heir.user.id, 'owner']]);
+});
+
+test('my activities can be listed for one challenge', async () => {
+  const me = await register('Mia Many');
+  const a = await jsonFetch(`${origin}/api/challenges`, me.cookie, 'POST', { name: 'A', start_date: '2026-01-01', end_date: '2026-12-31', participation: 'individual' });
+  const b = await jsonFetch(`${origin}/api/challenges`, me.cookie, 'POST', { name: 'B', start_date: '2026-01-01', end_date: '2026-12-31', participation: 'individual' });
+  await jsonFetch(`${origin}/api/activities`, me.cookie, 'POST', { challenge_id: a.body.id, activity_type: 'Walk', minutes: 20, activity_date: '2026-03-01' });
+  for (let i = 1; i <= 3; i++) await jsonFetch(`${origin}/api/activities`, me.cookie, 'POST', { challenge_id: b.body.id, activity_type: 'Run', minutes: 10 * i, activity_date: `2026-03-0${i + 1}` });
+  const onlyA = await jsonFetch(`${origin}/api/me/activities?challenge_id=${a.body.id}&limit=2`, me.cookie);
+  assert.deepEqual(onlyA.body.activities.map(x => x.activity_type), ['Walk']);
+  assert.equal((await jsonFetch(`${origin}/api/me/activities?limit=10`, me.cookie)).body.activities.length, 4);
 });

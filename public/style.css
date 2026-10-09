@@ -19,3 +19,6 @@ header .brand{display:flex;align-items:center;gap:10px;white-space:nowrap;min-wi
 footer{max-width:1100px;margin:0 auto 40px;padding:0 20px;text-align:center}
 footer a{color:var(--muted);font-size:13px;text-decoration:underline}
 @media(max-width:760px){.grid{grid-template-columns:1fr}.hero{align-items:flex-start;gap:20px;flex-direction:column}.adminform{grid-template-columns:1fr}.row{align-items:flex-start;gap:10px}.two{grid-template-columns:1fr}}
+#ask{max-width:440px;z-index:10}.ask-text{white-space:pre-wrap;line-height:1.5;margin:0 0 12px}#ask input{margin-bottom:4px}.ask-actions{justify-content:flex-end;margin-top:16px;gap:8px}.ask-actions button{padding:10px 16px;font-size:14px}
+.leader.me{background:#fff7d6;border-radius:8px;padding-left:8px;padding-right:8px;margin:0 -8px;border-bottom-color:transparent}.leader[data-profile]{cursor:pointer}.leader[data-profile]:focus-visible,.challenge-row:focus-visible{outline:3px solid var(--yellow);outline-offset:2px}
+.challenge-row{cursor:pointer;align-items:center;border-radius:10px;padding:12px 10px;margin:0 -10px}.challenge-row:hover{background:#fafafa}.challenge-row .status{margin-top:6px}.row-total{text-align:right;display:flex;flex-direction:column;gap:2px}.row-total b{color:var(--red);font-size:17px}

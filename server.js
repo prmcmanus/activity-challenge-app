@@ -86,6 +86,11 @@ CREATE TABLE IF NOT EXISTS ticket_comments(id INTEGER PRIMARY KEY,ticket_id INTE
 db.exec(`CREATE TABLE IF NOT EXISTS follows(follower_id INTEGER NOT NULL,followee_id INTEGER NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(follower_id,followee_id),FOREIGN KEY(follower_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(followee_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS follows_followee ON follows(followee_id);`);
+// Lookups the leaderboards, dashboards and membership checks make on every page.
+db.exec(`CREATE INDEX IF NOT EXISTS challenge_members_user ON challenge_members(user_id);
+CREATE INDEX IF NOT EXISTS teams_challenge ON teams(challenge_id);
+CREATE INDEX IF NOT EXISTS team_members_user ON team_members(user_id);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);`);
 // A challenge measures active minutes (the original behaviour, and the default for every
 // existing challenge), distance, or steps. Distance is stored on activities in metres whatever the
 // challenge's display unit, so changing a challenge between miles and km never rewrites history.
@@ -131,6 +136,10 @@ relaxActivityColumns();
 // Steps for a step challenge: one entry per day (a phone counts steps all day, not per workout).
 // Added after the rebuild above so an old table is reshaped before it gains the column.
 ensureColumn('activities','steps','INTEGER');
+// After the rebuild above, which would drop indexes on the old table.
+db.exec(`CREATE INDEX IF NOT EXISTS activities_challenge ON activities(challenge_id);
+CREATE INDEX IF NOT EXISTS activities_team ON activities(team_id);
+CREATE INDEX IF NOT EXISTS activities_user_date ON activities(user_id,activity_date);`);
 
 // --- uploaded images (avatars, team logos, description images) --------------------------
 // Stored under DATA_DIR (the persistent volume), never under the app's own public/ dir, which
@@ -198,14 +207,25 @@ function sanitizeHtml(html){
   return out;
 }
 
-const hash=p=>{const salt=crypto.randomBytes(16).toString('hex');return salt+':'+crypto.scryptSync(p,salt,64).toString('hex')};
-const verify=(p,h)=>{const [s,k]=h.split(':');return crypto.timingSafeEqual(Buffer.from(k,'hex'),crypto.scryptSync(p,s,64))};
+// Passwords: scrypt, run off the main thread so a sign-in never stalls everyone else's requests.
+const scryptAsync=(p,salt)=>new Promise((resolve,reject)=>crypto.scrypt(String(p),salt,64,(e,k)=>e?reject(e):resolve(k)));
+const hashSync=p=>{const salt=crypto.randomBytes(16).toString('hex');return salt+':'+crypto.scryptSync(p,salt,64).toString('hex')};
+const hash=async p=>{const salt=crypto.randomBytes(16).toString('hex');return salt+':'+(await scryptAsync(p,salt)).toString('hex')};
+const verify=async(p,h)=>{const [s,k]=String(h).split(':');const key=Buffer.from(k||'','hex');const got=await scryptAsync(p,s||'');return key.length===got.length&&crypto.timingSafeEqual(key,got)};
+// Checked against when an email has no account, so a wrong email takes as long as a wrong password.
+const DUMMY_HASH=hashSync(crypto.randomBytes(16).toString('hex'));
 
 // --- bot/abuse precautions ---------------------------------------------------------------
 // In-memory, per-IP, fixed-window counters. Resets on restart, which is an acceptable escape
 // hatch for a self-hosted app this size (matches how ITCM's login lockout works).
 const API_RATE_LIMIT_MAX=Number(process.env.API_RATE_LIMIT_MAX||300), API_RATE_LIMIT_WINDOW_MS=Number(process.env.API_RATE_LIMIT_WINDOW_MS||60_000);
 const AUTH_RATE_LIMIT_MAX=Number(process.env.AUTH_RATE_LIMIT_MAX||20), AUTH_RATE_LIMIT_WINDOW_MS=Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS||15*60_000);
+// Sign-in attempts count per network and email, so a whole office behind one address can sign in on a Monday
+// morning; a network as a whole gets five times that, which still stops one address trying many accounts.
+// Sign-ups get three times the per-network limit, for a team all registering at once.
+const LOGIN_NETWORK_MAX=Number(process.env.LOGIN_NETWORK_RATE_LIMIT_MAX||AUTH_RATE_LIMIT_MAX*5);
+const REGISTER_RATE_LIMIT_MAX=Number(process.env.REGISTER_RATE_LIMIT_MAX||AUTH_RATE_LIMIT_MAX*3);
+const loginLimited=(kind,ip,email)=>hitRateLimit(`${kind}:${ip}:${String(email||'').toLowerCase().trim()}`,AUTH_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS)|hitRateLimit(`${kind}net:${ip}`,LOGIN_NETWORK_MAX,AUTH_RATE_LIMIT_WINDOW_MS);
 const UPLOAD_RATE_LIMIT_MAX=Number(process.env.UPLOAD_RATE_LIMIT_MAX||30), UPLOAD_RATE_LIMIT_WINDOW_MS=Number(process.env.UPLOAD_RATE_LIMIT_WINDOW_MS||15*60_000);
 const rateBuckets=new Map();
 function hitRateLimit(key,max,windowMs){const now=Date.now(),b=rateBuckets.get(key);if(!b||b.resetAt<=now){rateBuckets.set(key,{count:1,resetAt:now+windowMs});return false}b.count++;return b.count>max}
@@ -229,7 +249,7 @@ async function verifyRecaptcha(token,ip){
     return j.success===true;
   }catch(e){console.error('reCAPTCHA verification request failed',e);return false}
 }
-function attemptLogin(email,password){const x=db.prepare('SELECT * FROM users WHERE email=?').get(String(email||'').toLowerCase());if(!x||!verify(password||'',x.password_hash))return null;if(x.deactivated_at)return {deactivated:true};const t=startSession(x.id);return {sessionToken:t,user:{id:x.id,email:x.email,name:x.name,role:x.role,avatarUrl:x.avatar_url}}}
+async function attemptLogin(email,password){const x=db.prepare('SELECT * FROM users WHERE email=?').get(String(email||'').toLowerCase().trim());const ok=await verify(password||'',x?x.password_hash:DUMMY_HASH);if(!x||!ok)return null;if(x.deactivated_at)return {deactivated:true};const t=startSession(x.id);return {sessionToken:t,user:{id:x.id,email:x.email,name:x.name,role:x.role,avatarUrl:x.avatar_url}}}
 
 // Excludes 0/O/1/I/L to avoid transcription mistakes when someone reads a code aloud or off a screen.
 const CODE_ALPHABET='ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -275,7 +295,7 @@ function validateImageUrl(v){
 const seedEmail=(process.env.SEED_ADMIN_EMAIL||'admin@example.com').toLowerCase(), seedPass=process.env.SEED_ADMIN_PASSWORD||'ChangeMe123!';
 let seedAdmin=db.prepare('SELECT id FROM users WHERE email=?').get(seedEmail);
 if(!seedAdmin){
-  db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'global_admin')").run(seedEmail,'Administrator',hash(seedPass));
+  db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'global_admin')").run(seedEmail,'Administrator',hashSync(seedPass));
   seedAdmin=db.prepare('SELECT id FROM users WHERE email=?').get(seedEmail);
 }
 if(!db.prepare('SELECT id FROM challenges LIMIT 1').get()){
@@ -305,6 +325,10 @@ function purgeExpiredChallenges(){
 }
 purgeExpiredChallenges();
 setInterval(purgeExpiredChallenges,24*60*60*1000).unref();
+// Sessions past their expiry can never be used again.
+const purgeSessions=()=>db.prepare("DELETE FROM sessions WHERE expires_at<=datetime('now')").run();
+purgeSessions();
+setInterval(purgeSessions,24*60*60*1000).unref();
 
 const send=(res,status,data,headers={})=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers});res.end(JSON.stringify(data))};
 // 1MB default cap on every request body; the image upload route raises it explicitly, since a
@@ -337,12 +361,15 @@ function shortcutDate(v){
   if((m=t.match(/\b([A-Za-z]{3,})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b/)))return ymd(m[2],m[1],m[3]);
   return null;
 }
-const csvEscape=v=>{const s=String(v??'');return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
+// Text a spreadsheet would run as a formula (=, +, -, @, tab, CR first) is prefixed with ' so it shows as text.
+const csvEscape=v=>{let s=String(v??'');if(typeof v==='string'&&/^[=+\-@\t\r]/.test(s))s="'"+s;return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
 const cookies=req=>Object.fromEntries((req.headers.cookie||'').split(';').filter(Boolean).map(x=>x.trim().split('=')));
 function sessionToken(req){const bearer=(req.headers.authorization||'').match(/^Bearer (.+)$/i);return bearer?.[1]||cookies(req).session||null}
 function auth(req){const t=sessionToken(req);if(!t)return null;return db.prepare(`SELECT u.id,u.email,u.name,u.role,u.avatar_url,u.bio,u.profile_sharing FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>datetime('now') AND u.deactivated_at IS NULL`).get(crypto.createHash('sha256').update(t).digest('hex'))||null}
 const need=(res,u,roles)=>{if(!u){send(res,401,{error:'Sign in required'});return false}if(roles&&!roles.includes(u.role)){send(res,403,{error:'Not authorised'});return false}return true};
-const setSessionCookie=t=>({'Set-Cookie':`session=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800`});
+const SECURE=ORIGIN.startsWith('https:')?'; Secure':'';
+const setSessionCookie=t=>({'Set-Cookie':`session=${t}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800${SECURE}`});
+const clearSessionCookie={'Set-Cookie':`session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${SECURE}`};
 function startSession(uid){const t=crypto.randomBytes(32).toString('hex'),th=crypto.createHash('sha256').update(t).digest('hex');db.prepare("INSERT INTO sessions VALUES(?,?,datetime('now','+7 days'))").run(th,uid);return t}
 
 function teamAccess(uid,tid){return db.prepare('SELECT team_role FROM team_members WHERE user_id=? AND team_id=?').get(uid,tid)}
@@ -471,6 +498,13 @@ const ROUTE_BODY_MAX=8e6;
 // An activity counts only if it happened while the challenge was running - a device sync used to
 // bring in a month of older workouts. Dates are YYYY-MM-DD strings, so they compare as text.
 const DATE_RE=/^\d{4}-\d{2}-\d{2}$/;
+// A real calendar date as YYYY-MM-DD (not 2026-02-31, and nothing else in the string).
+const isDate=v=>typeof v==='string'&&DATE_RE.test(v)&&new Date(v+'T00:00:00Z').toISOString().slice(0,10)===v;
+function challengeDatesError(start,end){
+  if(!isDate(start)||!isDate(end))return 'Start and end dates must be real dates (YYYY-MM-DD)';
+  if(end<start)return 'The end date must be on or after the start date';
+  return null;
+}
 function requireInWindow(challenge,date){
   if(!DATE_RE.test(String(date||'')))throw new Error('Activity date must be YYYY-MM-DD');
   if(date<challenge.start_date||date>challenge.end_date)throw new Error(`This challenge runs from ${challenge.start_date} to ${challenge.end_date} - the activity date must fall within it`);
@@ -736,6 +770,27 @@ function ticketView(t,viewer){
 const TICKET_SELECT=`SELECT t.*,u.name reporter_name,u.email reporter_email,u.avatar_url reporter_avatar,
   (SELECT COUNT(*) FROM ticket_comments c WHERE c.ticket_id=t.id AND c.internal=0) comment_count FROM tickets t JOIN users u ON u.id=t.user_id`;
 // Milliseconds, so a reply in the same second as a view still counts as new.
+// Deleting an account, by its owner or an admin: a challenge they own alone passes to its longest-standing
+// member (or is deleted if nobody else is in it), their activity goes, and what they created is credited to heirId.
+function deleteAccount(id,heirId){
+  try{
+    db.exec('BEGIN');
+    const solo=db.prepare(`SELECT challenge_id FROM challenge_members cm WHERE cm.user_id=? AND cm.challenge_role='owner'
+      AND NOT EXISTS (SELECT 1 FROM challenge_members o WHERE o.challenge_id=cm.challenge_id AND o.challenge_role='owner' AND o.user_id!=?)`).all(id,id);
+    for(const {challenge_id:cid} of solo){
+      const next=db.prepare('SELECT user_id FROM challenge_members WHERE challenge_id=? AND user_id!=? ORDER BY joined_at,user_id LIMIT 1').get(cid,id);
+      if(next)db.prepare("UPDATE challenge_members SET challenge_role='owner' WHERE challenge_id=? AND user_id=?").run(cid,next.user_id);
+      else{db.prepare('DELETE FROM activities WHERE challenge_id=?').run(cid);db.prepare('DELETE FROM challenges WHERE id=?').run(cid)}
+    }
+    db.prepare('DELETE FROM activities WHERE user_id=?').run(id);
+    db.prepare('UPDATE challenges SET created_by=? WHERE created_by=?').run(heirId,id);
+    db.prepare('UPDATE teams SET created_by=? WHERE created_by=?').run(heirId,id);
+    db.prepare('UPDATE invites SET created_by=? WHERE created_by=?').run(heirId,id);
+    db.prepare('DELETE FROM users WHERE id=?').run(id);
+    db.exec('COMMIT');
+  }catch(e){db.exec('ROLLBACK');throw e}
+  pruneRoutes();
+}
 const nowIso=()=>new Date().toISOString().replace('T',' ').slice(0,23);
 
 async function api(req,res,url){
@@ -750,19 +805,19 @@ async function api(req,res,url){
    return send(res,200,{inviteOnly:inviteOnly()});
  }
  if(m==='POST'&&url.pathname==='/api/register'){
-   if(hitRateLimit('register:'+ip,AUTH_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many registration attempts from this network. Please try again later.'});
+   if(hitRateLimit('register:'+ip,REGISTER_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many registration attempts from this network. Please try again later.'});
    const b=await body(req),email=String(b.email||'').toLowerCase().trim(),name=String(b.name||'').trim();
    if(!name||!email||!b.password||String(b.password).length<8)return send(res,400,{error:'Name, email and a password of at least 8 characters are required'});
    // Invite only: a new account needs the invite code (or emailed invite) someone shared.
    if(inviteOnly()&&!validInvite(b.invite_code,b.invite_token))return send(res,403,{error:b.invite_code?"That invite code wasn't recognised. Check it, or ask for a new invite link.":'Active Together is invite only. Use the invite link or code someone sent you to create an account.',inviteRequired:true});
    if(!(await verifyRecaptcha(b.recaptchaToken,ip)))return send(res,400,{error:'Captcha verification failed. Please try again.'});
-   try{const r=db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'member')").run(email,name,hash(b.password));const uid=Number(r.lastInsertRowid),t=startSession(uid);return send(res,201,{ok:true,sessionToken:t,user:{id:uid,email,name,role:'member'}},setSessionCookie(t))}catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
+   try{const r=db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'member')").run(email,name,await hash(b.password));const uid=Number(r.lastInsertRowid),t=startSession(uid);return send(res,201,{ok:true,sessionToken:t,user:{id:uid,email,name,role:'member'}},setSessionCookie(t))}catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
  }
  if(m==='POST'&&url.pathname==='/api/login'){
-   if(hitRateLimit('login:'+ip,AUTH_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many sign-in attempts from this network. Please try again later.'});
    const b=await body(req);
+   if(loginLimited('login',ip,b.email))return send(res,429,{error:'Too many sign-in attempts. Please wait a few minutes and try again.'});
    if(!(await verifyRecaptcha(b.recaptchaToken,ip)))return send(res,400,{error:'Captcha verification failed. Please try again.'});
-   const result=attemptLogin(b.email,b.password);
+   const result=await attemptLogin(b.email,b.password);
    if(!result)return send(res,401,{error:'Invalid email or password'});
    if(result.deactivated)return send(res,403,{error:DEACTIVATED_MSG});
    return send(res,200,{ok:true,...result},setSessionCookie(result.sessionToken));
@@ -771,13 +826,14 @@ async function api(req,res,url){
  // captcha widget in. Deliberately not recaptcha-gated; relies on the same per-IP rate limit
  // below plus the normal password check for abuse resistance instead.
  if(m==='POST'&&url.pathname==='/api/mobile/login'){
-   if(hitRateLimit('mobilelogin:'+ip,AUTH_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many sign-in attempts from this network. Please try again later.'});
-   const b=await body(req),result=attemptLogin(b.email,b.password);
+   const b=await body(req);
+   if(loginLimited('mobilelogin',ip,b.email))return send(res,429,{error:'Too many sign-in attempts. Please wait a few minutes and try again.'});
+   const result=await attemptLogin(b.email,b.password);
    if(!result)return send(res,401,{error:'Invalid email or password'});
    if(result.deactivated)return send(res,403,{error:DEACTIVATED_MSG});
    return send(res,200,{ok:true,...result});
  }
- if(m==='POST'&&url.pathname==='/api/logout'){if(u){const t=sessionToken(req);db.prepare('DELETE FROM sessions WHERE token_hash=?').run(crypto.createHash('sha256').update(t).digest('hex'))}return send(res,200,{ok:true},{'Set-Cookie':'session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})}
+ if(m==='POST'&&url.pathname==='/api/logout'){if(u){const t=sessionToken(req);db.prepare('DELETE FROM sessions WHERE token_hash=?').run(crypto.createHash('sha256').update(t).digest('hex'))}return send(res,200,{ok:true},clearSessionCookie)}
  if(m==='GET'&&url.pathname==='/api/me')return send(res,200,{user:u});
  if(m==='PATCH'&&url.pathname==='/api/me'){
    if(!need(res,u))return;
@@ -789,10 +845,10 @@ async function api(req,res,url){
    const changingSensitive=email!==undefined||!!b.newPassword;
    if(changingSensitive){
      const current=db.prepare('SELECT password_hash FROM users WHERE id=?').get(u.id);
-     if(!b.currentPassword||!verify(b.currentPassword,current.password_hash))return send(res,400,{error:'Current password is required and must be correct to change your email or password'});
+     if(!b.currentPassword||!(await verify(b.currentPassword,current.password_hash)))return send(res,400,{error:'Current password is required and must be correct to change your email or password'});
    }
    let passwordHash;
-   if(b.newPassword){if(String(b.newPassword).length<8)return send(res,400,{error:'New password must be at least 8 characters'});passwordHash=hash(b.newPassword)}
+   if(b.newPassword){if(String(b.newPassword).length<8)return send(res,400,{error:'New password must be at least 8 characters'});passwordHash=await hash(b.newPassword)}
    let avatarUrl;
    try{avatarUrl=validateImageUrl(b.avatarUrl)}catch(e){return send(res,400,{error:e.message})}
    const bio=b.bio!==undefined?(String(b.bio).trim().slice(0,280)||null):undefined;
@@ -829,6 +885,7 @@ async function api(req,res,url){
    if(!need(res,u))return;
    const b=await body(req);
    if(!b.name||!b.start_date||!b.end_date)return send(res,400,{error:'name, start_date and end_date are required'});
+   const datesErr=challengeDatesError(b.start_date,b.end_date);if(datesErr)return send(res,400,{error:datesErr});
    const description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):null;
    let measure,journey=null,route=null;
    try{
@@ -840,7 +897,7 @@ async function api(req,res,url){
    return send(res,201,{id,invite_code});
  }
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),ca=challengeAccess(u.id,cid)||(isAdmin(u)?{challenge_role:'admin'}:null);if(!ca)return send(res,403,{error:'You need an invite code to view this challenge'});const c=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!c)return send(res,404,{error:'Challenge not found'});const teams=db.prepare(`SELECT t.id,t.name,t.image_url,t.invite_code,(SELECT COUNT(*) FROM team_members z WHERE z.team_id=t.id) members,tm.team_role FROM teams t LEFT JOIN team_members tm ON tm.team_id=t.id AND tm.user_id=? WHERE t.challenge_id=? ORDER BY t.name`).all(u.id,cid).map(t=>{const mine=t.team_role!=null,canManage=u.role==='global_admin'||t.team_role==='team_admin'||ca.challenge_role==='owner';return {id:t.id,name:t.name,image_url:t.image_url,members:t.members,mine,canManage,invite_code:(mine||canManage)?t.invite_code:undefined}});return send(res,200,{...publicChallenge(c),role:ca.challenge_role,canManage:canManageChallenge(u,cid),teams})}
- if(m==='PATCH'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner can edit this challenge'});const b=await body(req),name=b.name!==undefined?String(b.name).trim():challenge.name,start_date=b.start_date!==undefined?b.start_date:challenge.start_date,end_date=b.end_date!==undefined?b.end_date:challenge.end_date,description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):challenge.description;if(!name||!start_date||!end_date)return send(res,400,{error:'name, start_date and end_date are required'});let measure,journey=null,route=null;try{measure=parseChallengeMeasure(b);if(b.journey!==undefined||isJourney(challenge)){journey=b.journey!==undefined?parseJourney(b):{mode:challenge.journey_mode};checkJourneyMeasure(measure.metric||challenge.metric,journey.mode);if(b.journey!==undefined){if(isJourney(challenge)&&sameWay(challenge,journey))saveJourneyNames(challenge,journey);else route=await buildRoute(journey)}}}catch(e){return send(res,400,{error:e.message})}if(route)saveJourney(cid,journey,route);db.prepare('UPDATE challenges SET name=?,start_date=?,end_date=?,description=?,metric=?,distance_unit=?,participation=? WHERE id=?').run(name,start_date,end_date,description,measure.metric||challenge.metric,measure.distance_unit||challenge.distance_unit,measure.participation||challenge.participation,cid);return send(res,200,{ok:true})}
+ if(m==='PATCH'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner can edit this challenge'});const b=await body(req),name=b.name!==undefined?String(b.name).trim():challenge.name,start_date=b.start_date!==undefined?b.start_date:challenge.start_date,end_date=b.end_date!==undefined?b.end_date:challenge.end_date,description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):challenge.description;if(!name||!start_date||!end_date)return send(res,400,{error:'name, start_date and end_date are required'});const datesErr=challengeDatesError(start_date,end_date);if(datesErr)return send(res,400,{error:datesErr});let measure,journey=null,route=null;try{measure=parseChallengeMeasure(b);if(b.journey!==undefined||isJourney(challenge)){journey=b.journey!==undefined?parseJourney(b):{mode:challenge.journey_mode};checkJourneyMeasure(measure.metric||challenge.metric,journey.mode);if(b.journey!==undefined){if(isJourney(challenge)&&sameWay(challenge,journey))saveJourneyNames(challenge,journey);else route=await buildRoute(journey)}}}catch(e){return send(res,400,{error:e.message})}if(route)saveJourney(cid,journey,route);db.prepare('UPDATE challenges SET name=?,start_date=?,end_date=?,description=?,metric=?,distance_unit=?,participation=? WHERE id=?').run(name,start_date,end_date,description,measure.metric||challenge.metric,measure.distance_unit||challenge.distance_unit,measure.participation||challenge.participation,cid);return send(res,200,{ok:true})}
  // Owners and global admins can delete a challenge outright: its activities first (they reference
  // teams with no cascade), then the challenge, which cascades to members, teams, team members and
  // invites. Same order the 60-day retention purge uses.
@@ -878,7 +935,10 @@ async function api(req,res,url){
    return send(res,200,{ok:true});
  }
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/members$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!db.prepare('SELECT id FROM challenges WHERE id=?').get(cid))return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only a challenge owner can view this'});const members=db.prepare('SELECT us.id,us.name,us.email,cm.challenge_role FROM challenge_members cm JOIN users us ON us.id=cm.user_id WHERE cm.challenge_id=? ORDER BY cm.challenge_role,us.name').all(cid);return send(res,200,{members})}
- if(m==='POST'&&url.pathname.match(/^\/api\/challenges\/\d+\/owners$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!db.prepare('SELECT id FROM challenges WHERE id=?').get(cid))return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only a challenge owner can add another owner'});const b=await body(req),email=String(b.email||'').toLowerCase().trim();if(!email)return send(res,400,{error:'Email is required'});const found=db.prepare('SELECT id,name,email FROM users WHERE email=?').get(email);if(!found)return send(res,404,{error:'No account found for that email. Ask them to register first.'});const existing=db.prepare('SELECT 1 FROM challenge_members WHERE challenge_id=? AND user_id=?').get(cid,found.id);if(existing)db.prepare("UPDATE challenge_members SET challenge_role='owner' WHERE challenge_id=? AND user_id=?").run(cid,found.id);else db.prepare("INSERT INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'owner')").run(cid,found.id);return send(res,201,{ok:true,user:found})}
+ if(m==='POST'&&url.pathname.match(/^\/api\/challenges\/\d+\/owners$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!db.prepare('SELECT id FROM challenges WHERE id=?').get(cid))return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only a challenge owner can add another owner'});const b=await body(req),email=String(b.email||'').toLowerCase().trim();if(!email)return send(res,400,{error:'Email is required'});const found=db.prepare('SELECT id,name,email FROM users WHERE email=?').get(email);
+   // Only global admins add people who aren't in the challenge yet; everyone else promotes an existing member. The
+   // same answer for "no account" and "not in this challenge", so this never reveals who has an account.
+   if(!found||(!isAdmin(u)&&!challengeAccess(found.id,cid)))return send(res,404,{error:"Nobody in this challenge has that email. They need to join first - share the challenge's invite link."});const existing=db.prepare('SELECT 1 FROM challenge_members WHERE challenge_id=? AND user_id=?').get(cid,found.id);if(existing)db.prepare("UPDATE challenge_members SET challenge_role='owner' WHERE challenge_id=? AND user_id=?").run(cid,found.id);else db.prepare("INSERT INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'owner')").run(cid,found.id);return send(res,201,{ok:true,user:found})}
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard\/export$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner or a global admin can export the leaderboard'});const type=url.searchParams.get('type')==='users'?'users':'teams';const lb=leaderboard(challenge),metric=challengeMetric(challenge),dist=metric==='distance',unitName=challengeUnit(challenge)==='km'?'Kilometres':'Miles';
    // A minutes challenge exports exactly as before; a distance challenge leads with distance and
    // keeps minutes alongside, since synced entries usually carry both.
@@ -954,7 +1014,7 @@ async function api(req,res,url){
    return send(res,200,{ok:true});
  }
  if(m==='GET'&&url.pathname.match(/^\/api\/teams\/\d+\/members$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});const manage=canManageTeam(u,team);if(!teamAccess(u.id,tid)&&!manage)return send(res,403,{error:'You need to be in this team to view its members'});const members=db.prepare('SELECT u.id,u.name,u.email,tm.team_role FROM team_members tm JOIN users u ON u.id=tm.user_id WHERE tm.team_id=? ORDER BY u.name').all(tid);return send(res,200,{members,canManage:manage})}
- if(m==='POST'&&url.pathname.match(/^\/api\/teams\/\d+\/members$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can add members'});const b=await body(req),email=String(b.email||'').toLowerCase().trim();if(!email)return send(res,400,{error:'Email is required'});const found=db.prepare('SELECT id,name,email FROM users WHERE email=?').get(email);if(!found)return send(res,404,{error:'No account found for that email. Ask them to register first, or share the invite code instead.'});db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(team.challenge_id,found.id);db.prepare("INSERT OR IGNORE INTO team_members(team_id,user_id,team_role) VALUES(?,?,'member')").run(tid,found.id);return send(res,201,{ok:true,user:found})}
+ if(m==='POST'&&url.pathname.match(/^\/api\/teams\/\d+\/members$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can add members'});const b=await body(req),email=String(b.email||'').toLowerCase().trim();if(!email)return send(res,400,{error:'Email is required'});const found=db.prepare('SELECT id,name,email FROM users WHERE email=?').get(email);if(!found||(!isAdmin(u)&&!challengeAccess(found.id,team.challenge_id)))return send(res,404,{error:"Nobody in this challenge has that email. To bring someone new in, share the team's invite link."});db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(team.challenge_id,found.id);db.prepare("INSERT OR IGNORE INTO team_members(team_id,user_id,team_role) VALUES(?,?,'member')").run(tid,found.id);return send(res,201,{ok:true,user:found})}
  if(m==='DELETE'&&url.pathname.match(/^\/api\/teams\/\d+\/members\/\d+$/)){if(!need(res,u))return;const parts=url.pathname.split('/'),tid=Number(parts[3]),targetId=Number(parts[5]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can remove members'});db.prepare('DELETE FROM team_members WHERE team_id=? AND user_id=?').run(tid,targetId);return send(res,200,{ok:true})}
  if(m==='POST'&&url.pathname.match(/^\/api\/teams\/\d+\/invite$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),ta=teamAccess(u.id,tid);if(u.role!=='global_admin'&&ta?.team_role!=='team_admin')return send(res,403,{error:'Team admin required'});const b=await body(req),token=crypto.randomBytes(24).toString('hex'),exp=new Date(Date.now()+7*864e5).toISOString();db.prepare('INSERT INTO invites(team_id,email,token,team_role,expires_at,created_by) VALUES(?,?,?,?,?,?)').run(tid,String(b.email).toLowerCase(),token,b.team_role||'member',exp,u.id);return send(res,201,{inviteUrl:`${ORIGIN}/?invite=${token}`,expiresAt:exp})}
  if(m==='POST'&&url.pathname==='/api/invites/accept'){if(!need(res,u))return;const b=await body(req),inv=db.prepare("SELECT * FROM invites WHERE token=? AND accepted_at IS NULL AND expires_at>datetime('now')").get(b.token);if(!inv)return send(res,400,{error:'Invite invalid or expired'});if(inv.email!==u.email)return send(res,403,{error:'This invite was issued to another email address'});const team=db.prepare('SELECT challenge_id FROM teams WHERE id=?').get(inv.team_id);db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(team.challenge_id,u.id);db.prepare('INSERT OR REPLACE INTO team_members(team_id,user_id,team_role) VALUES(?,?,?)').run(inv.team_id,u.id,inv.team_role);db.prepare("UPDATE invites SET accepted_at=datetime('now') WHERE id=?").run(inv.id);return send(res,200,{ok:true,challengeId:team.challenge_id,teamId:inv.team_id})}
@@ -1032,7 +1092,9 @@ async function api(req,res,url){
    let route;
    try{route=parseRoute(b.route)}catch(e){return send(res,400,{error:e.message})}
    const comment=b.comment!==undefined?(String(b.comment).trim().slice(0,500)||null):null;
-   const source=b.source||'manual',sourceRef=b.source_ref||(route?'gpx-'+crypto.randomUUID():null);
+   const source=b.source||'manual';
+   if(!/^[a-z_]{1,30}$/.test(source))return send(res,400,{error:'source must be a short lower-case word'});
+   const sourceRef=b.source_ref||(route?'gpx-'+crypto.randomUUID():null);
    try{
      db.exec('BEGIN');
      const routeId=route?saveRoute(u.id,source,sourceRef,route):null;
@@ -1047,7 +1109,8 @@ async function api(req,res,url){
  if(m==='GET'&&url.pathname==='/api/me/activities'){
    if(!need(res,u))return;
    const limit=Math.min(Math.max(Number(url.searchParams.get('limit'))||50,1),200),offset=Math.max(Number(url.searchParams.get('offset'))||0,0);
-   const rows=db.prepare(`SELECT a.id,a.challenge_id,a.team_id,a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.end_time,a.comment,a.source,a.route_id,t.name team_name,c.name challenge_name,c.metric,c.distance_unit FROM activities a LEFT JOIN teams t ON t.id=a.team_id JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=? ORDER BY a.activity_date DESC,a.start_time DESC,a.id DESC LIMIT ? OFFSET ?`).all(u.id,limit+1,offset);
+   const cid=Number(url.searchParams.get('challenge_id'))||null;
+   const rows=db.prepare(`SELECT a.id,a.challenge_id,a.team_id,a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.end_time,a.comment,a.source,a.route_id,t.name team_name,c.name challenge_name,c.metric,c.distance_unit FROM activities a LEFT JOIN teams t ON t.id=a.team_id JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=?${cid?' AND a.challenge_id=?':''} ORDER BY a.activity_date DESC,a.start_time DESC,a.id DESC LIMIT ? OFFSET ?`).all(...(cid?[u.id,cid]:[u.id]),limit+1,offset);
    const more=rows.length>limit;
    const activities=rows.slice(0,limit).map(({route_id,...a})=>({...a,distance:a.distance_m==null?null:metersToUnit(a.distance_m,a.distance_unit),has_route:route_id!=null}));
    return send(res,200,{activities,more});
@@ -1254,7 +1317,7 @@ async function api(req,res,url){
    }
    return send(res,405,{error:'Method not allowed'});
  }
- if(m==='POST'&&url.pathname==='/api/admin/users'){if(!need(res,u,['global_admin']))return;const b=await body(req);try{const r=db.prepare('INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,?)').run(String(b.email).toLowerCase(),b.name,hash(b.password),b.role||'member');return send(res,201,{id:Number(r.lastInsertRowid)})}catch(e){return send(res,400,{error:'Email already exists or fields are invalid'})}}
+ if(m==='POST'&&url.pathname==='/api/admin/users'){if(!need(res,u,['global_admin']))return;const b=await body(req);if(!String(b.name||'').trim()||!String(b.email||'').trim()||String(b.password||'').length<8||!['member','global_admin',undefined,''].includes(b.role))return send(res,400,{error:'Name, email, a password of at least 8 characters and a valid role are required'});try{const r=db.prepare('INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,?)').run(String(b.email).toLowerCase(),b.name,await hash(b.password),b.role||'member');return send(res,201,{id:Number(r.lastInsertRowid)})}catch(e){return send(res,400,{error:'Email already exists or fields are invalid'})}}
  if(m==='PATCH'&&url.pathname.match(/^\/api\/admin\/users\/\d+$/)){
    if(!need(res,u,['global_admin']))return;
    const id=Number(url.pathname.split('/').pop()),b=await body(req),target=db.prepare('SELECT id,role,deactivated_at FROM users WHERE id=?').get(id);
@@ -1267,7 +1330,7 @@ async function api(req,res,url){
    const email=b.email!==undefined?String(b.email).toLowerCase().trim():undefined;
    if(email!==undefined&&!email)return send(res,400,{error:'Email cannot be empty'});
    let passwordHash;
-   if(b.password){if(String(b.password).length<8)return send(res,400,{error:'Password must be at least 8 characters'});passwordHash=hash(b.password)}
+   if(b.password){if(String(b.password).length<8)return send(res,400,{error:'Password must be at least 8 characters'});passwordHash=await hash(b.password)}
    try{
      updateUserFields(id,{name,email,passwordHash});
      if(b.role!==undefined)db.prepare('UPDATE users SET role=? WHERE id=?').run(b.role,id);
@@ -1277,37 +1340,19 @@ async function api(req,res,url){
    if(passwordHash||deactivating)db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
    return send(res,200,{ok:true})
  }
- // Delete an account for good: its activity and routes, memberships and tickets go with it.
- // Challenges and teams it created stay (other people are in them), credited to the admin doing the delete.
  // Delete my own account, confirmed with my password - both app stores require this in the app. The
  // same clean-up as an admin deletion; a challenge I own alone passes to its longest-standing member,
  // or is deleted with me if nobody else is in it.
  if((m==='DELETE'&&url.pathname==='/api/me')||(m==='POST'&&url.pathname==='/api/me/delete')){
    if(!need(res,u))return;
    const b=await body(req),row=db.prepare('SELECT password_hash FROM users WHERE id=?').get(u.id);
-   if(!b.password||!verify(String(b.password),row.password_hash))return send(res,400,{error:'Enter your current password to delete your account'});
+   if(!b.password||!(await verify(String(b.password),row.password_hash)))return send(res,400,{error:'Enter your current password to delete your account'});
    if(u.email===seedEmail)return send(res,400,{error:"This is the site's built-in admin account from the server settings - it can't be deleted."});
    const heir=db.prepare("SELECT id FROM users WHERE role='global_admin' AND deactivated_at IS NULL AND id!=? ORDER BY id LIMIT 1").get(u.id);
    if(!heir)return send(res,400,{error:"You're the only global admin - make someone else an admin first"});
-   try{
-     db.exec('BEGIN');
-     const solo=db.prepare(`SELECT challenge_id FROM challenge_members cm WHERE cm.user_id=? AND cm.challenge_role='owner'
-       AND NOT EXISTS (SELECT 1 FROM challenge_members o WHERE o.challenge_id=cm.challenge_id AND o.challenge_role='owner' AND o.user_id!=?)`).all(u.id,u.id);
-     for(const {challenge_id:cid} of solo){
-       const next=db.prepare('SELECT user_id FROM challenge_members WHERE challenge_id=? AND user_id!=? ORDER BY joined_at,user_id LIMIT 1').get(cid,u.id);
-       if(next)db.prepare("UPDATE challenge_members SET challenge_role='owner' WHERE challenge_id=? AND user_id=?").run(cid,next.user_id);
-       else{db.prepare('DELETE FROM activities WHERE challenge_id=?').run(cid);db.prepare('DELETE FROM challenges WHERE id=?').run(cid)}
-     }
-     db.prepare('DELETE FROM activities WHERE user_id=?').run(u.id);
-     db.prepare('UPDATE challenges SET created_by=? WHERE created_by=?').run(heir.id,u.id);
-     db.prepare('UPDATE teams SET created_by=? WHERE created_by=?').run(heir.id,u.id);
-     db.prepare('UPDATE invites SET created_by=? WHERE created_by=?').run(heir.id,u.id);
-     db.prepare('DELETE FROM users WHERE id=?').run(u.id);
-     db.exec('COMMIT');
-   }catch(e){db.exec('ROLLBACK');throw e}
-   pruneRoutes();
+   deleteAccount(u.id,heir.id);
    console.log(`User ${u.id} deleted their own account`);
-   return send(res,200,{ok:true},{'Set-Cookie':'session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'});
+   return send(res,200,{ok:true},clearSessionCookie);
  }
  if(m==='DELETE'&&url.pathname.match(/^\/api\/admin\/users\/\d+$/)){
    if(!need(res,u,['global_admin']))return;
@@ -1315,16 +1360,8 @@ async function api(req,res,url){
    if(!target)return send(res,404,{error:'User not found'});
    const err=adminUserChangeError(u,target,{removesAdmin:true});if(err)return send(res,400,{error:err});
    if(target.email===seedEmail)return send(res,400,{error:'This is the built-in admin account from the server settings - it would be re-created on restart. Deactivate it instead.'});
-   try{
-     db.exec('BEGIN');
-     db.prepare('DELETE FROM activities WHERE user_id=?').run(id);
-     db.prepare('UPDATE challenges SET created_by=? WHERE created_by=?').run(u.id,id);
-     db.prepare('UPDATE teams SET created_by=? WHERE created_by=?').run(u.id,id);
-     db.prepare('UPDATE invites SET created_by=? WHERE created_by=?').run(u.id,id);
-     db.prepare('DELETE FROM users WHERE id=?').run(id);
-     db.exec('COMMIT');
-   }catch(e){db.exec('ROLLBACK');throw e}
-   pruneRoutes();
+   // Gone for good, as deleting your own account works; what they created is credited to the admin doing it.
+   deleteAccount(id,u.id);
    return send(res,200,{ok:true});
  }
 
@@ -1515,7 +1552,18 @@ function androidRelease(){
   catch(e){return null}
 }
 const UPLOAD_MIME={png:'image/png',jpg:'image/jpeg',gif:'image/gif',webp:'image/webp'};
-const server=http.createServer(async(req,res)=>{try{const url=new URL(req.url,ORIGIN);if(url.pathname.startsWith('/api/'))return await api(req,res,url);
+// Sent with every response. Scripts only from this site (plus Google's reCAPTCHA when it's on); no framing by
+// other sites; images from anywhere over https, since challenge descriptions may link pictures.
+const SECURITY_HEADERS={
+  'Content-Security-Policy':["default-src 'self'","script-src 'self' https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/",
+    "style-src 'self' 'unsafe-inline'","img-src 'self' data: blob: https:","connect-src 'self'","font-src 'self' data:",
+    "frame-src https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/","object-src 'none'","base-uri 'self'","form-action 'self'","frame-ancestors 'none'"].join('; '),
+  'X-Frame-Options':'DENY','X-Content-Type-Options':'nosniff','Referrer-Policy':'strict-origin-when-cross-origin',
+  'Permissions-Policy':'camera=(), microphone=(), geolocation=(), payment=()',
+  ...(ORIGIN.startsWith('https:')?{'Strict-Transport-Security':'max-age=31536000'}:{}),
+};
+const STATIC_TYPES={'.json':'application/json','.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'application/javascript; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon','.png':'image/png','.txt':'text/plain; charset=utf-8'};
+const server=http.createServer(async(req,res)=>{try{for(const [k,v] of Object.entries(SECURITY_HEADERS))res.setHeader(k,v);const url=new URL(req.url,ORIGIN);if(url.pathname.startsWith('/api/'))return await api(req,res,url);
  if(url.pathname.startsWith('/uploads/')){
    const rel=path.normalize(url.pathname.slice('/uploads/'.length)).replace(/^\.\.(\/|\\|$)/,'');
    const f=path.join(UPLOADS_DIR,rel);
@@ -1527,7 +1575,11 @@ const server=http.createServer(async(req,res)=>{try{const url=new URL(req.url,OR
  let p=url.pathname==='/'?'index.html':url.pathname.slice(1);p=path.normalize(p).replace(/^\.\.(\/|\\|$)/,'');let f=path.join(__dirname,'public',p);if(!f.startsWith(path.join(__dirname,'public')))return send(res,404,{error:'Not found'});
  // Page addresses (/challenges/12, /join/ABC123, /help...) all load the app, which reads the path itself.
  if(!fs.existsSync(f)||!fs.statSync(f).isFile()){if(req.method==='GET'&&!path.extname(p))f=path.join(__dirname,'public','index.html');else return send(res,404,{error:'Not found'})}
- const ext=path.extname(f),types={'.json':'application/json','.html':'text/html; charset=utf-8','.css':'text/css','.js':'application/javascript','.svg':'image/svg+xml','.ico':'image/x-icon','.png':'image/png'};res.writeHead(200,{'Content-Type':types[ext]||'application/octet-stream','Cache-Control':'no-store'});fs.createReadStream(f).pipe(res)}catch(e){console.error(e);send(res,500,{error:'Server error'})}});// Node's default keepAliveTimeout is 5s, which races a client that reuses a pooled keep-alive
+ // Browsers keep a copy but check it each time: unchanged files come back as a small 304.
+ const st=fs.statSync(f),etag=`"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+ const headers={'Content-Type':STATIC_TYPES[path.extname(f)]||'application/octet-stream','Cache-Control':'no-cache','ETag':etag};
+ if(req.headers['if-none-match']===etag){res.writeHead(304,headers);return res.end()}
+ res.writeHead(200,headers);fs.createReadStream(f).pipe(res)}catch(e){console.error(e);if(!res.headersSent)send(res,500,{error:'Server error'})}});// Node's default keepAliveTimeout is 5s, which races a client that reuses a pooled keep-alive
 // connection right as the server decides to close it - the client's write lands on a socket the
 // server is already tearing down, seen as a bare ECONNRESET with no HTTP response at all.
 // headersTimeout must exceed keepAliveTimeout or Node logs a warning and clamps it back down.

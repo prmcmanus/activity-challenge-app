@@ -81,6 +81,8 @@ data class Challenge(
     val measuresSteps: Boolean = false,
     val mySteps: Double = 0.0,
     val journey: Journey? = null,
+    /** Who added me, when an owner or admin put me in (rather than me joining) and I haven't said Keep or Open yet. */
+    val addedBy: String? = null,
 ) {
     fun contains(day: LocalDate) = !day.isBefore(startDate) && !day.isAfter(endDate)
     /** Whether an activity of this type counts here: journeys are either rides only or everything but rides. */
@@ -130,6 +132,17 @@ fun inviteCodeFrom(uri: android.net.Uri?): String? {
     }
     return code?.uppercase()?.filter { it.isLetterOrDigit() }?.takeIf { it.length in 4..32 }
 }
+
+/** Someone in a challenge, as its owners see them. role is owner | member; teams is a list of names, or null. */
+data class Member(val id: Int, val name: String, val email: String, val avatarUrl: String?, val role: String, val teams: String?,
+    val entries: Int, val deactivated: Boolean)
+data class ChallengeMembers(val members: List<Member>, val teams: List<MyTeam>)
+/** One of a member's entries, for an owner checking them. amount is already in the challenge's measure. */
+data class MemberEntry(val id: Int, val type: String, val minutes: Double?, val distance: Double?, val steps: Int?, val date: LocalDate,
+    val startTime: String?, val comment: String?, val source: String, val teamName: String?)
+/** Someone in a team. email only comes back for whoever manages it. role is team_admin | member. */
+data class TeamMember(val id: Int, val name: String, val email: String?, val role: String)
+data class TeamMembers(val members: List<TeamMember>, val canManage: Boolean)
 
 /** Global admins: every account, and how involved it is. */
 data class AdminUser(val id: Int, val name: String, val email: String, val role: String, val avatarUrl: String?, val createdAt: String,
@@ -262,6 +275,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
                 measuresSteps = c.optString("metric") == "steps",
                 mySteps = c.optDouble("mySteps", 0.0),
                 journey = parseJourney(c.optJSONObject("journey")),
+                addedBy = if (c.isNull("added_by")) null else c.optString("added_by").takeIf { it.isNotBlank() },
             )
         }
     }
@@ -327,6 +341,54 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
     fun leaveTeam(teamId: Int) { request("/api/teams/$teamId/leave", "POST", JSONObject()) }
     /** Leaves the challenge and its teams, deleting everything I logged in it. */
     fun leaveChallenge(id: Int) { request("/api/challenges/$id/leave", "POST", JSONObject()) }
+
+    /** I've seen that someone added me: stop showing the notice. */
+    fun ackAdded(challengeId: Int) { request("/api/challenges/$challengeId/ack", "POST", JSONObject()) }
+
+    // --- Owners: people, teams and invite codes ---
+    fun challengeMembers(id: Int): ChallengeMembers {
+        val r = request("/api/challenges/$id/members")
+        fun str(o: JSONObject, k: String) = if (o.isNull(k)) null else o.optString(k).takeIf { it.isNotBlank() }
+        val m = r.getJSONArray("members"); val t = r.optJSONArray("teams") ?: JSONArray()
+        return ChallengeMembers((0 until m.length()).map { i -> m.getJSONObject(i).let { x ->
+            Member(x.getInt("id"), x.getString("name"), x.optString("email"), str(x, "avatar_url"), x.optString("role", "member"), str(x, "teams"),
+                x.optInt("entries"), !x.isNull("deactivated_at"))
+        } }, (0 until t.length()).map { i -> t.getJSONObject(i).let { MyTeam(it.getInt("id"), it.getString("name")) } })
+    }
+    /** Put someone with an account in (as member or owner, optionally into a team). Returns whether they were new, and their name. */
+    fun addMember(challengeId: Int, email: String, owner: Boolean, teamId: Int?): Pair<Boolean, String> =
+        request("/api/challenges/$challengeId/members", "POST", JSONObject().put("email", email.trim()).put("role", if (owner) "owner" else "member")
+            .apply { teamId?.let { put("team_id", it) } }).let { it.optBoolean("added") to it.getJSONObject("user").getString("name") }
+    /** Takes them out of the challenge; what they logged in it goes too. */
+    fun removeMember(challengeId: Int, userId: Int) { request("/api/challenges/$challengeId/members/$userId", "DELETE") }
+    fun memberEntries(challengeId: Int, userId: Int): List<MemberEntry> {
+        val a = request("/api/challenges/$challengeId/members/$userId/activities").getJSONArray("activities")
+        return (0 until a.length()).map { i -> a.getJSONObject(i).let { e ->
+            fun str(k: String) = if (e.isNull(k)) null else e.optString(k).takeIf { it.isNotBlank() }
+            MemberEntry(e.getInt("id"), e.optString("activity_type"), if (e.isNull("minutes")) null else e.optDouble("minutes"),
+                if (e.isNull("distance")) null else e.optDouble("distance"), if (e.isNull("steps")) null else e.optInt("steps"),
+                LocalDate.parse(e.getString("activity_date")), str("start_time"), str("comment"), e.optString("source"), str("team_name"))
+        } }
+    }
+    fun teamMembers(teamId: Int): TeamMembers {
+        val r = request("/api/teams/$teamId/members"); val a = r.getJSONArray("members")
+        return TeamMembers((0 until a.length()).map { i -> a.getJSONObject(i).let { m ->
+            TeamMember(m.getInt("id"), m.getString("name"), if (m.isNull("email")) null else m.optString("email").takeIf { it.isNotBlank() }, m.optString("team_role", "member"))
+        } }, r.optBoolean("canManage"))
+    }
+    /** Returns the name of whoever was added. */
+    fun addTeamMember(teamId: Int, email: String): String =
+        request("/api/teams/$teamId/members", "POST", JSONObject().put("email", email.trim())).getJSONObject("user").getString("name")
+    /** What they logged under the team stays on its total. */
+    fun removeTeamMember(teamId: Int, userId: Int) { request("/api/teams/$teamId/members/$userId", "DELETE") }
+    fun renameTeam(teamId: Int, name: String) { request("/api/teams/$teamId", "PATCH", JSONObject().put("name", name.trim())) }
+    /** Deletes the team and everything logged under it. */
+    fun deleteTeam(teamId: Int) { request("/api/teams/$teamId", "DELETE") }
+    /** A new invite code for a challenge (team = false) or team; the old link stops working. Global admins may choose [code]. */
+    fun newInviteCode(team: Boolean, id: Int, code: String? = null): String =
+        request("/api/${if (team) "teams" else "challenges"}/$id/invite-code", "POST", JSONObject().apply { code?.let { put("code", it) } }).getString("invite_code")
+    /** Global admins: a free code to start from. */
+    fun suggestInviteCode(): String = request("/api/invite-codes/suggest").getString("code")
 
     fun follow(userId: Int) { request("/api/users/$userId/follow", "POST", JSONObject()) }
     fun unfollow(userId: Int) { request("/api/users/$userId/follow", "DELETE") }

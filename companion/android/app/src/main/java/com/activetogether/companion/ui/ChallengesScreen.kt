@@ -26,6 +26,10 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.IconButton
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -92,6 +96,8 @@ private fun stateLabel(c: Challenge): String {
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChallengesScreen(vm: AppViewModel, newChallenge: () -> Unit, join: () -> Unit, open: (Challenge) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var leaving by remember { mutableStateOf<Challenge?>(null) }
     // Box and list both fill the screen: with only a card or two, a pull on the empty space below
     // them otherwise lands outside the list and nothing happens.
     PullToRefreshBox(isRefreshing = vm.topRefreshing, onRefresh = { vm.refreshTop() }, modifier = Modifier.fillMaxSize()) {
@@ -107,6 +113,17 @@ fun ChallengesScreen(vm: AppViewModel, newChallenge: () -> Unit, join: () -> Uni
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = newChallenge, modifier = Modifier.weight(1f)) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("New challenge") }
                     OutlinedButton(onClick = join, modifier = Modifier.weight(1f)) { Icon(Icons.Default.GroupAdd, null); Spacer(Modifier.width(6.dp)); Text("Join with code") }
+                }
+            }
+            // Someone added me to a challenge: say who, and let me keep it or leave.
+            items(vm.challenges.filter { it.addedBy != null }, key = { "added-${it.id}" }) { c ->
+                SectionCard {
+                    Text("${c.addedBy} added you to ${c.name} (${fmtRange(c.startDate, c.endDate)}).", style = MaterialTheme.typography.bodyLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { scope.launch { vm.ackAdded(c.id); open(c) } }) { Text("Open") }
+                        OutlinedButton(onClick = { scope.launch { vm.ackAdded(c.id) } }) { Text("Keep") }
+                        TextButton(onClick = { leaving = c }) { Text("Leave") }
+                    }
                 }
             }
             if (vm.challenges.isEmpty() && !vm.loadingChallenges) {
@@ -137,11 +154,20 @@ fun ChallengesScreen(vm: AppViewModel, newChallenge: () -> Unit, join: () -> Uni
             }
         }
     }
+    leaving?.let { c ->
+        AlertDialog(
+            onDismissRequest = { leaving = null },
+            title = { Text("Leave ${c.name}?") },
+            text = { Text("Anything you've logged in it is deleted, and you'll need an invite to join again.") },
+            confirmButton = { TextButton(onClick = { leaving = null; scope.launch { vm.leaveChallenge(c.id) } }) { Text("Leave challenge") } },
+            dismissButton = { TextButton(onClick = { leaving = null }) { Text("Cancel") } },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, left: () -> Unit, openProfile: (Int) -> Unit) {
+fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, left: () -> Unit, members: () -> Unit, manageTeam: (Int) -> Unit, openProfile: (Int) -> Unit) {
     LaunchedEffect(challengeId) { vm.loadLeaderboard(challengeId); vm.loadDetail(challengeId) }
     // A global admin can open a challenge they haven't joined; it's not on their dashboard, so it comes from the full record.
     val c = vm.challenges.firstOrNull { it.id == challengeId } ?: vm.details[challengeId]?.asChallenge() ?: run { Loading(); return }
@@ -154,6 +180,7 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
     var refreshing by remember { mutableStateOf(false) }
     var leavingTeam by remember { mutableStateOf<TeamInfo?>(null) }
     var leavingChallenge by remember { mutableStateOf(false) }
+    var newCode by remember { mutableStateOf(false) }
 
     PullToRefreshBox(isRefreshing = refreshing, onRefresh = { scope.launch { refreshing = true; vm.refreshChallenge(challengeId); refreshing = false } }, modifier = Modifier.fillMaxSize()) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -170,18 +197,32 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
         // A virtual journey: the map of where everyone has got to. Reloaded with the leaderboard.
         if (c.journey != null) item {
             var map by remember(challengeId) { mutableStateOf<com.activetogether.companion.JourneyMap?>(null) }
+            var full by remember { mutableStateOf(false) }
             LaunchedEffect(challengeId, board) { vm.call { it.journey(challengeId) }?.let { map = it } }
+            val describe = { mk: com.activetogether.companion.JourneyMarker ->
+                val total = if (c.measuresSteps) "${fmtSteps(mk.steps)} steps" else "${fmtNum(mk.distance)} ${if (c.distanceUnit == "km") "km" else "mi"}"
+                val unitWord = if (c.measuresSteps) "steps" else if (c.distanceUnit == "km") "km" else "mi"
+                "$total · ${Math.round(mk.progress * 100)}%" + (mk.finishedOn?.let { " · finished $it" }
+                    ?: mk.nextName?.let { n -> " · next: $n, ${mk.nextRemaining?.let { r -> if (r >= 10) Math.round(r).toString() else fmtNum(r) } ?: ""} $unitWord to go" } ?: "")
+            }
             SectionCard("Journey map", action = {
                 map?.let { m -> Text("${m.markers.count { it.finishedOn != null }} of ${m.markers.size} finished", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                if (map != null) IconButton(onClick = { full = true }) { Icon(Icons.Default.Fullscreen, "Full screen") }
             }) {
                 val m = map
                 if (m == null) Loading(Modifier.padding(8.dp))
-                else JourneyMapView(m, describe = { mk ->
-                    val total = if (c.measuresSteps) "${fmtSteps(mk.steps)} steps" else "${fmtNum(mk.distance)} ${if (c.distanceUnit == "km") "km" else "mi"}"
-                    val unitWord = if (c.measuresSteps) "steps" else if (c.distanceUnit == "km") "km" else "mi"
-                    "$total · ${Math.round(mk.progress * 100)}%" + (mk.finishedOn?.let { " · finished $it" }
-                        ?: mk.nextName?.let { n -> " · next: $n, ${mk.nextRemaining?.let { r -> if (r >= 10) Math.round(r).toString() else fmtNum(r) } ?: ""} $unitWord to go" } ?: "")
-                }, modifier = Modifier.fillMaxWidth().height(320.dp))
+                else JourneyMapView(m, describe = describe, modifier = Modifier.fillMaxWidth().height(320.dp))
+                // The same map filling the screen, with a close button over it.
+                if (full && m != null) androidx.compose.ui.window.Dialog(onDismissRequest = { full = false },
+                    properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+                    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize()) {
+                        JourneyMapView(m, describe = describe, modifier = Modifier.fillMaxSize())
+                        androidx.compose.material3.FilledTonalButton(onClick = { full = false },
+                            modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp)) {
+                            Icon(Icons.Default.Close, null); Spacer(Modifier.width(6.dp)); Text("Close")
+                        }
+                    }
+                }
                 Text(if (c.journey.cycling) "A cycling journey: only rides count. Positions are virtual, never anyone's real location."
                     else "A journey on foot: rides don't count. Positions are virtual, never anyone's real location.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -201,6 +242,11 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                     }
                     OutlinedButton(onClick = { shareInvite(context, detail.name, detail.inviteCode) }) { Icon(Icons.Default.Share, null); Spacer(Modifier.width(6.dp)); Text("Share") }
                 }
+                // Owners: the people in it, and a new code if the old one got around.
+                if (detail.canManage) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = members) { Icon(Icons.Default.Groups, null); Spacer(Modifier.width(6.dp)); Text("Members") }
+                    TextButton(onClick = { newCode = true }) { Text("New invite code") }
+                }
             }
         }
         if (detail != null && !c.individual) item {
@@ -219,6 +265,7 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                         }
                         if (!t.mine && detail.role != "admin") TextButton(onClick = { scope.launch { vm.joinTeam(challengeId, t.id) } }) { Text("Join") }
                         if (t.mine) TextButton(onClick = { leavingTeam = t }) { Text("Leave") }
+                        if (t.canManage) TextButton(onClick = { manageTeam(t.id) }) { Text("Manage") }
                     }
                     if (i < detail.teams.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
@@ -266,6 +313,9 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
             }
         }
     }
+    }
+    if (newCode && detail != null) NewInviteCodeDialog(vm, team = false, id = challengeId, what = "this challenge", dismiss = { newCode = false }) { code ->
+        newCode = false; scope.launch { vm.afterManage(challengeId); vm.message = "New invite code: $code" }
     }
     leavingTeam?.let { t ->
         AlertDialog(

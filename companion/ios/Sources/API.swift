@@ -101,6 +101,8 @@ struct Challenge: Identifiable, Hashable {
     let measure: Measure, distanceUnit: String, individual: Bool, role: String
     let myTeams: [MyTeam], myMinutes: Double, myDistance: Double, mySteps: Double
     var journey: Journey? = nil
+    /// Who added me, when an owner or admin put me in (rather than me joining) and I haven't said Keep or Open yet.
+    var addedBy: String? = nil
     var measuresDistance: Bool { measure == .distance }
     /// Whether an activity of this type counts here: journeys are either rides only or everything but rides.
     func accepts(_ type: String) -> Bool { guard let journey else { return true }; return journey.cycling == isCyclingType(type) }
@@ -169,6 +171,16 @@ struct InvitePreview {
 }
 
 struct AppRelease { let version: String; let build: Int }
+
+/// Someone in a challenge, as its owners see them. role is owner | member; teams is a list of names, or nil.
+struct Member: Identifiable, Hashable { let id: Int, name: String, email: String, avatarURL: String?, role: String, teams: String?, entries: Int, deactivated: Bool }
+struct ChallengeMembers { let members: [Member]; let teams: [MyTeam] }
+/// One of a member's entries, for an owner checking them.
+struct MemberEntry: Identifiable, Hashable {
+    let id: Int, type: String, minutes: Double?, distance: Double?, steps: Int?, date: Day, startTime: String?, comment: String?, source: String, teamName: String?
+}
+/// Someone in a team. email only comes back for whoever manages it. role is team_admin | member.
+struct TeamMember: Identifiable, Hashable { let id: Int, name: String, email: String?, role: String }
 
 struct AdminUser: Identifiable, Hashable {
     let id: Int, name: String, email: String, role: String, avatarURL: String?, createdAt: String
@@ -264,7 +276,8 @@ final class API: @unchecked Sendable {
             Challenge(id: c.int("id"), name: c.string("name"), descriptionHTML: c.string("description"), startDate: c.day("start_date"), endDate: c.day("end_date"),
                       measure: Measure(c.str("metric")), distanceUnit: unit(c), individual: c.str("participation") == "individual", role: c.str("role") ?? "member",
                       myTeams: c.arr("teams").map { MyTeam(id: $0.int("id"), name: $0.string("name")) },
-                      myMinutes: c.double("myMinutes"), myDistance: c.double("myDistance"), mySteps: c.double("mySteps"), journey: Journey(c.obj("journey")))
+                      myMinutes: c.double("myMinutes"), myDistance: c.double("myDistance"), mySteps: c.double("mySteps"), journey: Journey(c.obj("journey")),
+                      addedBy: c.str("added_by"))
         }
     }
     func challengeDetail(_ id: Int) async throws -> ChallengeDetail {
@@ -309,6 +322,54 @@ final class API: @unchecked Sendable {
     func leaveTeam(_ id: Int) async throws { _ = try await request("/api/teams/\(id)/leave", "POST", [:]) }
     /// Leaves the challenge and its teams, deleting everything I logged in it.
     func leaveChallenge(_ id: Int) async throws { _ = try await request("/api/challenges/\(id)/leave", "POST", [:]) }
+    /// I've seen that someone added me: stop showing the notice.
+    func ackAdded(_ challengeId: Int) async throws { _ = try await request("/api/challenges/\(challengeId)/ack", "POST", [:]) }
+
+    // Owners: people, teams and invite codes
+    func challengeMembers(_ id: Int) async throws -> ChallengeMembers {
+        let r = try await request("/api/challenges/\(id)/members")
+        return ChallengeMembers(members: r.arr("members").map { x in
+            Member(id: x.int("id"), name: x.string("name"), email: x.string("email"), avatarURL: x.str("avatar_url"), role: x.str("role") ?? "member",
+                   teams: x.str("teams"), entries: x.int("entries"), deactivated: x.has("deactivated_at"))
+        }, teams: r.arr("teams").map { MyTeam(id: $0.int("id"), name: $0.string("name")) })
+    }
+    /// Put someone with an account in (as member or owner, optionally into a team). Returns whether they were new, and their name.
+    func addMember(challengeId: Int, email: String, owner: Bool, teamId: Int?) async throws -> (Bool, String) {
+        var b: [String: Any] = ["email": email.trimmingCharacters(in: .whitespaces), "role": owner ? "owner" : "member"]
+        if let teamId { b["team_id"] = teamId }
+        let r = try await request("/api/challenges/\(challengeId)/members", "POST", b)
+        return (r.bool("added"), r.obj("user")?.string("name") ?? "")
+    }
+    /// Takes them out of the challenge; what they logged in it goes too.
+    func removeMember(challengeId: Int, userId: Int) async throws { _ = try await request("/api/challenges/\(challengeId)/members/\(userId)", "DELETE") }
+    func memberEntries(challengeId: Int, userId: Int) async throws -> [MemberEntry] {
+        try await request("/api/challenges/\(challengeId)/members/\(userId)/activities").arr("activities").map { e in
+            MemberEntry(id: e.int("id"), type: e.string("activity_type"), minutes: e.doubleOrNil("minutes"), distance: e.doubleOrNil("distance"),
+                        steps: e.intOrNil("steps"), date: e.day("activity_date"), startTime: e.str("start_time"), comment: e.str("comment"),
+                        source: e.string("source"), teamName: e.str("team_name"))
+        }
+    }
+    func teamMembers(_ teamId: Int) async throws -> [TeamMember] {
+        try await request("/api/teams/\(teamId)/members").arr("members").map { TeamMember(id: $0.int("id"), name: $0.string("name"), email: $0.str("email"), role: $0.str("team_role") ?? "member") }
+    }
+    /// Returns the name of whoever was added.
+    func addTeamMember(_ teamId: Int, email: String) async throws -> String {
+        try await request("/api/teams/\(teamId)/members", "POST", ["email": email.trimmingCharacters(in: .whitespaces)]).obj("user")?.string("name") ?? ""
+    }
+    /// What they logged under the team stays on its total.
+    func removeTeamMember(_ teamId: Int, userId: Int) async throws { _ = try await request("/api/teams/\(teamId)/members/\(userId)", "DELETE") }
+    func renameTeam(_ teamId: Int, name: String) async throws { _ = try await request("/api/teams/\(teamId)", "PATCH", ["name": name.trimmingCharacters(in: .whitespaces)]) }
+    /// Deletes the team and everything logged under it.
+    func deleteTeam(_ teamId: Int) async throws { _ = try await request("/api/teams/\(teamId)", "DELETE") }
+    /// A new invite code for a challenge or team; the old link stops working. Global admins may choose `code`.
+    func newInviteCode(team: Bool, id: Int, code: String? = nil) async throws -> String {
+        var b: [String: Any] = [:]
+        if let code { b["code"] = code }
+        return try await request("/api/\(team ? "teams" : "challenges")/\(id)/invite-code", "POST", b).string("invite_code")
+    }
+    /// Global admins: a free code to start from.
+    func suggestInviteCode() async throws -> String { try await request("/api/invite-codes/suggest").string("code") }
+
     func follow(_ userId: Int) async throws { _ = try await request("/api/users/\(userId)/follow", "POST", [:]) }
     func unfollow(_ userId: Int) async throws { _ = try await request("/api/users/\(userId)/follow", "DELETE") }
     func invitePreview(_ code: String) async throws -> InvitePreview {

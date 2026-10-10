@@ -334,6 +334,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return true
     }
 
+    /** Keep (or open) a challenge someone added me to: the notice goes. */
+    suspend fun ackAdded(id: Int) {
+        call { it.ackAdded(id) } ?: return
+        challenges = challenges.map { if (it.id == id) it.copy(addedBy = null) else it }
+    }
+
+    /** After an owner or team admin changes people, teams or codes: the challenge page, my list and the board. */
+    suspend fun afterManage(challengeId: Int) = afterTeamChange(challengeId)
+
     private suspend fun afterTeamChange(challengeId: Int) {
         call { it.challenges() }?.let { challenges = it }
         loadDetail(challengeId)

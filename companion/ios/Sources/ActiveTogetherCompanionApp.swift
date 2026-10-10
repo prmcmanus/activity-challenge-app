@@ -25,6 +25,7 @@ enum Route: Hashable {
     case challenge(Int), editChallenge(Int), newChallenge, join, invite(String)
     case activity(Int), editActivity(Int), log
     case user(Int), editProfile, help, newTicket, ticket(Int), support, admin
+    case members(Int), manageTeam(Int, Int)
 }
 
 enum Tab: Hashable { case challenges, activity, sync, me }
@@ -105,6 +106,8 @@ struct RootView: View {
         case .ticket(let id): TicketView(ticketId: id)
         case .support: SupportDashboardView()
         case .admin: AdminView()
+        case .members(let id): ChallengeMembersView(challengeId: id)
+        case .manageTeam(let c, let t): TeamManageView(challengeId: c, teamId: t)
         }
     }
 }

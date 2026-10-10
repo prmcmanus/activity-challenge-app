@@ -65,6 +65,8 @@ fun AppRoot(vm: AppViewModel) {
         route == "challenge/new" -> "New challenge"
         route == "challenge/{id}/edit" -> "Edit challenge"
         route == "join" -> "Join a challenge"
+        route == "challenge/{id}/members" -> "Members"
+        route.startsWith("team/") -> "Manage team"
         route.startsWith("challenge/") -> "Challenge"
         route.endsWith("/edit") -> "Edit activity"
         route.startsWith("activity/") -> "Activity"
@@ -124,7 +126,14 @@ fun AppRoot(vm: AppViewModel) {
             composable("join") { JoinScreen(vm) { id -> nav.navigate("challenge/$id") { popUpTo("challenges") } } }
             composable("challenge/{id}", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
                 val id = it.arguments!!.getInt("id")
-                ChallengeDetailScreen(vm, id, edit = { nav.navigate("challenge/$id/edit") }, left = { nav.popBackStack("challenges", inclusive = false) }) { uid -> nav.navigate("user/$uid") }
+                ChallengeDetailScreen(vm, id, edit = { nav.navigate("challenge/$id/edit") }, left = { nav.popBackStack("challenges", inclusive = false) },
+                    members = { nav.navigate("challenge/$id/members") }, manageTeam = { tid -> nav.navigate("team/$id/$tid") }) { uid -> nav.navigate("user/$uid") }
+            }
+            composable("challenge/{id}/members", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
+                ChallengeMembersScreen(vm, it.arguments!!.getInt("id"))
+            }
+            composable("team/{cid}/{tid}", arguments = listOf(navArgument("cid") { type = NavType.IntType }, navArgument("tid") { type = NavType.IntType })) {
+                TeamManageScreen(vm, it.arguments!!.getInt("cid"), it.arguments!!.getInt("tid")) { nav.popBackStack() }
             }
             composable("challenge/{id}/edit", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
                 // Saved: back to the challenge. Deleted: back to the admin list if that's where it was opened from, else the challenge list.

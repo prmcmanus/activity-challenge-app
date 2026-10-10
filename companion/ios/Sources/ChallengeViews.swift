@@ -22,6 +22,7 @@ private func measureIcon(_ m: Measure) -> String { switch m { case .steps: "shoe
 struct ChallengesView: View {
     @Environment(AppModel.self) private var model
     @Environment(Router.self) private var router
+    @State private var leaving: Challenge?
 
     var body: some View {
         Page(refresh: { await model.refreshTop() }) {
@@ -37,11 +38,26 @@ struct ChallengesView: View {
             if model.challenges.isEmpty && !model.loadingChallenges {
                 SectionCard { EmptyNote("You're not in a challenge yet. Start one, or join with an invite code someone shared with you.") }
             }
+            // Someone added me to a challenge: say who, and let me keep it or leave.
+            ForEach(model.challenges.filter { $0.addedBy != nil }) { c in
+                SectionCard {
+                    Text("\(c.addedBy ?? "Someone") added you to \(c.name) (\(fmtRange(c.startDate, c.endDate))).")
+                    HStack {
+                        Button("Open") { Task { await model.ackAdded(c.id); router.push(.challenge(c.id)) } }.buttonStyle(.borderedProminent)
+                        Button("Keep") { Task { await model.ackAdded(c.id) } }.buttonStyle(.bordered)
+                        Button("Leave", role: .destructive) { leaving = c }
+                    }
+                }
+            }
             ForEach(model.challenges.sorted { ($0.isActive ? 0 : 1, $1.startDate) < ($1.isActive ? 0 : 1, $0.startDate) }) { c in
                 Button { router.push(.challenge(c.id)) } label: { ChallengeCard(c: c) }.buttonStyle(.plain)
             }
         }
         .navigationTitle("Active Together").navigationBarTitleDisplayMode(.inline)
+        .alert("Leave \(leaving?.name ?? "the challenge")?", isPresented: Binding(get: { leaving != nil }, set: { if !$0 { leaving = nil } }), presenting: leaving) { c in
+            Button("Leave challenge", role: .destructive) { Task { _ = await model.leaveChallenge(c.id) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in Text("Anything you've logged in it is deleted, and you'll need an invite to join again.") }
     }
 }
 
@@ -78,6 +94,7 @@ struct ChallengeDetailView: View {
     @State private var newTeam = ""
     @State private var leavingTeam: TeamInfo?
     @State private var leavingChallenge = false
+    @State private var newCode = false
 
     var body: some View {
         // A global admin can open a challenge they haven't joined; it's not on their dashboard, so it comes from the full record.
@@ -117,6 +134,13 @@ struct ChallengeDetailView: View {
                                   message: Text("Join my challenge \"\(d.name)\" on Active Together (or use invite code \(d.inviteCode))")) { Label("Share", systemImage: "square.and.arrow.up") }
                             .buttonStyle(.bordered)
                     }
+                    // Owners: the people in it, and a new code if the old one got around.
+                    if d.canManage {
+                        HStack {
+                            Button { router.push(.members(c.id)) } label: { Label("Members", systemImage: "person.3") }.buttonStyle(.bordered)
+                            Button("New invite code") { newCode = true }
+                        }
+                    }
                 })
                 if !c.individual { teams(c, d) }
             }
@@ -155,6 +179,11 @@ struct ChallengeDetailView: View {
             Button("Leave team", role: .destructive) { Task { await model.leaveTeam(c.id, t.id) } }
             Button("Cancel", role: .cancel) {}
         } message: { _ in Text("What you've logged under this team stays on its total. You stay in the challenge.") }
+        .sheet(isPresented: $newCode) {
+            NewInviteCodeSheet(team: false, id: c.id, what: "this challenge") { code in
+                Task { await model.refreshChallenge(c.id); model.message = "New invite code: \(code)" }
+            }
+        }
         .alert("Leave \(c.name)?", isPresented: $leavingChallenge) {
             Button("Leave challenge", role: .destructive) { Task { if await model.leaveChallenge(c.id) { router.popToRoot() } } }
             Button("Cancel", role: .cancel) {}
@@ -176,6 +205,7 @@ struct ChallengeDetailView: View {
                     Spacer()
                     if !t.mine && d.role != "admin" { Button("Join") { Task { await model.joinTeam(c.id, t.id) } } }
                     if t.mine { Button("Leave") { leavingTeam = t }.foregroundStyle(.secondary) }
+                    if t.canManage { Button("Manage") { router.push(.manageTeam(c.id, t.id)) } }
                 }
             }
             if d.role != "admin" {
@@ -424,60 +454,85 @@ struct JourneyCard: View {
     @State private var map: JourneyMap?
     @State private var selected: Int?
 
+    @State private var full = false
+
     var body: some View {
-        SectionCard("Journey map") {
+        SectionCard(title: "Journey map", action: {
+            if map != nil { Button { full = true } label: { Label("Full screen", systemImage: "arrow.up.left.and.arrow.down.right") }.labelStyle(.iconOnly) }
+        }, content: {
             if let m = map {
                 Text("\(m.markers.filter { $0.finishedOn != nil }.count) of \(m.markers.count) finished").font(.caption).foregroundStyle(.secondary)
-                let offsets = fanOut(m.markers)
-                Map(initialPosition: .automatic) {
-                    MapPolyline(coordinates: m.route.map { CLLocationCoordinate2D(latitude: $0[0], longitude: $0[1]) }).stroke(Color.brandRed, lineWidth: 4)
-                    Annotation("Start: \(m.journey.fromName)", coordinate: CLLocationCoordinate2D(latitude: m.journey.fromLat, longitude: m.journey.fromLon)) {
-                        Circle().fill(.white).frame(width: 12, height: 12).overlay(Circle().stroke(.black, lineWidth: 4)).shadow(radius: 1)
-                    }
-                    .annotationTitles(.hidden)
-                    ForEach(Array(m.journey.via.enumerated()), id: \.offset) { i, s in
-                        Annotation("Stop \(i + 1): \(s.name)", coordinate: CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)) {
-                            Text("\(i + 1)").font(.caption2.bold()).foregroundStyle(.white).frame(width: 20, height: 20)
-                                .background(Circle().fill(.black)).overlay(Circle().stroke(.white, lineWidth: 2))
-                        }
-                        .annotationTitles(.hidden)
-                    }
-                    Annotation("Finish: \(m.journey.toName)", coordinate: CLLocationCoordinate2D(latitude: m.journey.toLat, longitude: m.journey.toLon), anchor: .bottomLeading) {
-                        Text("🏁").font(.title2)
-                    }
-                    .annotationTitles(.hidden)
-                    ForEach(m.markers) { mk in
-                        Annotation(mk.name, coordinate: CLLocationCoordinate2D(latitude: mk.lat, longitude: mk.lon)) {
-                            Avatar(url: mk.imageURL, name: mk.name, size: 36)
-                                .overlay(Circle().stroke(mk.finishedOn != nil ? Color.brandYellow : .white, lineWidth: 3))
-                                .shadow(radius: 2)
-                                .offset(offsets[mk.id] ?? .zero)
-                                .onTapGesture { selected = mk.id }
-                        }
-                        .annotationTitles(.hidden)
-                    }
-                }
-                .mapStyle(.standard(pointsOfInterest: .excludingAll))
-                .frame(height: 300).clipShape(RoundedRectangle(cornerRadius: 12))
-                if let s = m.markers.first(where: { $0.id == selected }) {
-                    HStack {
-                        Avatar(url: s.imageURL, name: s.name)
-                        VStack(alignment: .leading) {
-                            Text(s.name).font(.headline)
-                            Text(describe(s)).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                } else {
-                    Text("Tap a photo to see how they're doing.").font(.caption).foregroundStyle(.secondary)
-                }
+                mapView(m).frame(height: 300).clipShape(RoundedRectangle(cornerRadius: 12))
+                selection(m)
                 Text(m.journey.cycling ? "A cycling journey: only rides count. Positions are virtual, never anyone's real location."
                      : "A journey on foot: rides don't count. Positions are virtual, never anyone's real location.").font(.caption).foregroundStyle(.secondary)
             } else {
                 ProgressView().frame(maxWidth: .infinity)
             }
+        })
+        // The same map filling the screen, with Close and whoever's tapped over it.
+        .fullScreenCover(isPresented: $full) {
+            if let m = map {
+                ZStack(alignment: .topTrailing) {
+                    mapView(m).ignoresSafeArea()
+                    Button { full = false } label: { Label("Close", systemImage: "xmark") }
+                        .buttonStyle(.borderedProminent).tint(Color(.systemBackground)).foregroundStyle(.primary).shadow(radius: 3).padding()
+                }
+                .overlay(alignment: .bottom) {
+                    selection(m).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
+                }
+            }
         }
         // Reloaded whenever the challenge's figures change (pull to refresh, a new entry).
         .task(id: challenge) { if let m = await model.call({ try await $0.journey(challenge.id) }) { map = m } }
+    }
+
+    private func mapView(_ m: JourneyMap) -> some View {
+        let offsets = fanOut(m.markers)
+        return Map(initialPosition: .automatic) {
+            MapPolyline(coordinates: m.route.map { CLLocationCoordinate2D(latitude: $0[0], longitude: $0[1]) }).stroke(Color.brandRed, lineWidth: 4)
+            Annotation("Start: \(m.journey.fromName)", coordinate: CLLocationCoordinate2D(latitude: m.journey.fromLat, longitude: m.journey.fromLon)) {
+                Circle().fill(.white).frame(width: 12, height: 12).overlay(Circle().stroke(.black, lineWidth: 4)).shadow(radius: 1)
+            }
+            .annotationTitles(.hidden)
+            ForEach(Array(m.journey.via.enumerated()), id: \.offset) { i, s in
+                Annotation("Stop \(i + 1): \(s.name)", coordinate: CLLocationCoordinate2D(latitude: s.lat, longitude: s.lon)) {
+                    Text("\(i + 1)").font(.caption2.bold()).foregroundStyle(.white).frame(width: 20, height: 20)
+                        .background(Circle().fill(.black)).overlay(Circle().stroke(.white, lineWidth: 2))
+                }
+                .annotationTitles(.hidden)
+            }
+            Annotation("Finish: \(m.journey.toName)", coordinate: CLLocationCoordinate2D(latitude: m.journey.toLat, longitude: m.journey.toLon), anchor: .bottomLeading) {
+                Text("🏁").font(.title2)
+            }
+            .annotationTitles(.hidden)
+            ForEach(m.markers) { mk in
+                Annotation(mk.name, coordinate: CLLocationCoordinate2D(latitude: mk.lat, longitude: mk.lon)) {
+                    Avatar(url: mk.imageURL, name: mk.name, size: 36)
+                        .overlay(Circle().stroke(mk.finishedOn != nil ? Color.brandYellow : .white, lineWidth: 3))
+                        .shadow(radius: 2)
+                        .offset(offsets[mk.id] ?? .zero)
+                        .onTapGesture { selected = mk.id }
+                }
+                .annotationTitles(.hidden)
+            }
+        }
+        .mapStyle(.standard(pointsOfInterest: .excludingAll))
+    }
+
+    @ViewBuilder private func selection(_ m: JourneyMap) -> some View {
+        if let s = m.markers.first(where: { $0.id == selected }) {
+            HStack {
+                Avatar(url: s.imageURL, name: s.name)
+                VStack(alignment: .leading) {
+                    Text(s.name).font(.headline)
+                    Text(describe(s)).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            Text("Tap a photo to see how they're doing.").font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     private func describe(_ s: JourneyMarker) -> String {

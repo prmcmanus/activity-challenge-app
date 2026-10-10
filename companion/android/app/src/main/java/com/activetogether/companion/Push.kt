@@ -47,7 +47,11 @@ object Push {
         val open = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP).putExtra("url", url ?: "/")
         val pi = PendingIntent.getActivity(context, (url ?: title).hashCode(), open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val n = NotificationCompat.Builder(context, CHANNEL).setSmallIcon(R.drawable.ic_stat_notify).setContentTitle(title).setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body)).setAutoCancel(true).setContentIntent(pi).build()
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body)).setAutoCancel(true).setContentIntent(pi)
+            // On a locked phone, only that there's news - the text shows once it's unlocked.
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(NotificationCompat.Builder(context, CHANNEL).setSmallIcon(R.drawable.ic_stat_notify).setContentTitle("Active Together").setContentText("New update").build())
+            .build()
         runCatching { NotificationManagerCompat.from(context).notify((url ?: title).hashCode(), n) }
     }
 }

@@ -108,13 +108,20 @@ private fun FollowList(title: String, people: List<Person>, count: Int, openProf
 }
 
 /** A profile: the header, then followers, then whatever the person's sharing level shows. Used for anyone, including me. */
-fun LazyListScope.profileItems(p: Profile, openProfile: (Int) -> Unit = {}, follow: (() -> Unit)? = null, header: @Composable () -> Unit = {}) {
+fun LazyListScope.profileItems(p: Profile, openProfile: (Int) -> Unit = {}, follow: (() -> Unit)? = null, vm: AppViewModel? = null, header: @Composable () -> Unit = {}) {
     item {
         Hero(if (p.memberSince.isNotBlank()) "Member since ${runCatching { LocalDate.parse(p.memberSince).let { "${it.month.name.lowercase().replaceFirstChar(Char::uppercase)} ${it.year}" } }.getOrDefault(p.memberSince)}" else "Profile",
             p.name, trailing = { Avatar(p.avatarUrl, p.name, size = 72.dp) },
             below = { p.bio?.let { Text(it, color = Color.White.copy(alpha = 0.92f), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 6.dp)) } })
     }
     item { header() }
+    // Streaks and personal bests.
+    p.stats?.let { st ->
+        val bits = listOfNotNull(st.streak.takeIf { it > 0 }?.let { "🔥 $it-day streak" }, st.longestStreak.takeIf { it > 1 }?.let { "best run $it days" },
+            st.bestMinutes.takeIf { it > 0 }?.let { "longest ${fmtNum(it)} min" }, st.bestMi.takeIf { it > 0 }?.let { "furthest ${fmtNum(it)} mi" },
+            st.bestSteps.takeIf { it > 0 }?.let { "most steps ${fmtSteps(it)}" })
+        if (bits.isNotEmpty()) item { SectionCard { Text(bits.joinToString(" · "), style = MaterialTheme.typography.titleSmall) } }
+    }
     item {
         var tab by remember(p.id) { mutableIntStateOf(0) }
         SectionCard {
@@ -157,7 +164,7 @@ fun LazyListScope.profileItems(p: Profile, openProfile: (Int) -> Unit = {}, foll
             challenges.forEachIndexed { i, c ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(c.name, style = MaterialTheme.typography.titleMedium)
+                        Text(c.name, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable { vm?.openChallenge(c.id) })
                         Text(listOfNotNull(c.team, fmtRange(c.startDate, c.endDate)).joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Column(horizontalAlignment = Alignment.End) {
@@ -177,13 +184,16 @@ fun LazyListScope.profileItems(p: Profile, openProfile: (Int) -> Unit = {}, foll
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(a.type, style = MaterialTheme.typography.titleMedium)
-                            Text(listOfNotNull(fmtDay(a.date), a.startTime, a.challengeName).joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(listOfNotNull(fmtDay(a.date), a.startTime).joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(a.challengeName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable { vm?.openChallenge(a.challengeId) })
                             a.comment?.let { Text("“$it”", style = MaterialTheme.typography.bodySmall) }
                         }
                         val d = a.distance?.let { "${fmtNum(it)} ${if (a.distanceUnit == "km") "km" else "mi"}" }
                         val m = a.minutes?.let { "${fmtNum(it)} min" }
                         Text(a.steps?.takeIf { a.measuresSteps || (a.minutes == null && a.distance == null) }?.let { "${fmtSteps(it)} steps" }
                             ?: (if (a.measuresDistance) listOf(d, m) else listOf(m, d)).filterNotNull().joinToString(" · "), fontWeight = FontWeight.Bold)
+                        if (vm != null && !p.self && a.id > 0) { var k by remember(a.id) { mutableStateOf(a.kudos to a.kudosMine) }; KudosButton(vm, a.id, k.first, k.second) { n, mine -> k = n to mine } }
+                        else if (a.kudos > 0) Text("  👏 ${a.kudos}", style = MaterialTheme.typography.bodySmall)
                     }
                     if (i < acts.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
@@ -211,7 +221,7 @@ fun UserProfileScreen(vm: AppViewModel, userId: Int, openProfile: (Int) -> Unit)
         val p = profile
         if (p == null) { if (missing) LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding) { item { SectionCard { EmptyNote("This profile isn't available.") } } } else Loading(); return@PullToRefreshBox }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            profileItems(p, openProfile, follow = if (p.self) null else ({
+            profileItems(p, openProfile, vm = vm, follow = if (p.self) null else ({
                 scope.launch { if (vm.call { if (p.isFollowing) it.unfollow(p.id) else it.follow(p.id) } != null) load() }
             }))
         }
@@ -237,7 +247,7 @@ fun MeScreen(vm: AppViewModel, edit: () -> Unit, help: () -> Unit, admin: () -> 
     PullToRefreshBox(modifier = Modifier.fillMaxSize(), isRefreshing = loading, onRefresh = { load() }) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(12.dp)) {
             val p = profile
-            if (p == null) item { Loading() } else profileItems(p, openProfile) {
+            if (p == null) item { Loading() } else profileItems(p, openProfile, vm = vm) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Default.Visibility, null, tint = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.width(8.dp))
                     Text("How people in your challenges see you · sharing: ${sharingLabel(me?.sharing ?: "summary")}",
@@ -376,9 +386,18 @@ fun EditProfileScreen(vm: AppViewModel, done: () -> Unit) {
         }
         me?.pendingEmail?.let { Text("Changing to $it: open the link we sent there to finish.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         SectionCard("Notifications") {
-            SettingRow("Phone notifications", "Replies to your tickets, being added to a challenge, challenges starting and ending, and a weekly summary.",
+            SettingRow("Phone notifications", "News about your challenges and tickets on this phone.",
                 checked = me?.notifyPush != false) { on -> scope.launch { vm.setNotifyPush(on) } }
+            if (me?.notifyPush != false) {
+                val kinds = listOf("replies" to "Replies to my tickets", "added" to "Someone adds me to a challenge", "challenge" to "Challenges starting and ending",
+                    "weekly" to "My weekly summary", "kudos" to "👏 on my activity") + if (me?.isAdmin == true || me?.adminNeedsTwoFactor == true) listOf("admin" to "New support tickets and server errors") else emptyList()
+                kinds.forEach { (k, label) ->
+                    SettingRow(label, "", checked = me?.pushPrefs?.get(k) != false) { on -> scope.launch { vm.call { it.setPushPrefs(mapOf(k to on)) }?.let { vm.updateMe(it) } } }
+                }
+            }
         }
+        TwoStepCard(vm)
+        PasskeysCard(vm)
         DevicesCard(vm)
         val sensitive = newPassword.isNotEmpty() || (me != null && email.trim().lowercase() != me.email)
         if (sensitive) {
@@ -431,6 +450,86 @@ fun EditProfileScreen(vm: AppViewModel, done: () -> Unit) {
             },
             dismissButton = { TextButton(enabled = !working, onClick = { deleting = false }) { Text("Cancel") } },
         )
+    }
+}
+
+/** Passkeys: sign in with this phone's screen lock instead of a password. */
+@Composable
+private fun PasskeysCard(vm: AppViewModel) {
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var list by remember { mutableStateOf<List<com.activetogether.companion.Passkey>?>(null) }
+    var note by remember { mutableStateOf<String?>(null) }
+    suspend fun load() { list = vm.call { it.passkeys() } }
+    LaunchedEffect(Unit) { load() }
+    SectionCard("Passkeys") {
+        EmptyNote("Sign in with your fingerprint, face or PIN instead of a password.")
+        list?.forEach { k ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(k.name, style = MaterialTheme.typography.titleSmall)
+                    Text("Added ${k.createdAt.take(10)}" + (k.lastUsedAt?.let { " · last used ${it.take(10)}" } ?: ""), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                TextButton(onClick = { scope.launch { if (vm.call { it.removePasskey(k.id) } != null) load() } }) { Text("Remove") }
+            }
+        }
+        OutlinedButton(onClick = { scope.launch { val e = vm.addPasskey(context); note = e?.takeIf { it.isNotEmpty() }; if (e == null) { vm.message = "Passkey added"; load() } } }) { Text("Add a passkey on this phone") }
+        note?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    }
+}
+
+/** Two-step sign-in: set it up with an authenticator app (on this phone or another), keep the backup codes; new codes, or off. */
+@Composable
+private fun TwoStepCard(vm: AppViewModel) {
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val me = vm.me ?: return
+    var secret by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var code by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var codes by remember { mutableStateOf<List<String>?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    fun copy(text: String) { (context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Active Together", text)); vm.message = "Copied" }
+    SectionCard("Two-step sign-in") {
+        val shown = codes
+        when {
+            shown != null -> {
+                Text("Your backup codes. Each works once instead of a code from the app, if you lose your phone. Keep them somewhere safe: they won't be shown again.", style = MaterialTheme.typography.bodyMedium)
+                Text(shown.joinToString("\n"), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { copy(shown.joinToString("\n")) }) { Text("Copy the codes") }
+                    Button(onClick = { codes = null; scope.launch { vm.refreshMe() } }) { Text("Done") }
+                }
+            }
+            me.twoFactor -> {
+                Text("On: signing in asks for a code from your authenticator app after your password.", style = MaterialTheme.typography.bodyMedium)
+                if (!me.hasPassword) EmptyNote("Set a password first to make new backup codes or switch this off.")
+                else {
+                    OutlinedTextField(password, { password = it }, label = { Text("Your password") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(enabled = password.isNotEmpty(), onClick = { scope.launch { vm.call { it.twoStepNewBackupCodes(password) }?.let { codes = it; password = "" } } }) { Text("New backup codes") }
+                        TextButton(enabled = password.isNotEmpty(), onClick = { scope.launch { if (vm.call { it.twoStepDisable(password) } != null) { password = ""; vm.refreshMe(); vm.message = "Two-step sign-in is off" } } }) { Text("Turn off") }
+                    }
+                }
+            }
+            secret == null -> {
+                Text("Off. Turn it on so a stolen password isn't enough to sign in as you" + (if (me.adminNeedsTwoFactor) " - global admins need it for the admin tools." else "."), style = MaterialTheme.typography.bodyMedium)
+                Button(onClick = { scope.launch { vm.call { it.twoStepSetup() }?.let { secret = it } } }) { Text("Set it up") }
+            }
+            else -> {
+                val (sec, uri) = secret!!
+                Text("1. Add Active Together to an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password...):", style = MaterialTheme.typography.bodyMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(uri))) }.onFailure { error = "No authenticator app on this phone: copy the key into one instead." } }) { Text("Open in authenticator app") }
+                    TextButton(onClick = { copy(sec) }) { Text("Copy the key") }
+                }
+                Text(sec.chunked(4).joinToString(" "), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                Text("2. Type the 6-digit code it shows:", style = MaterialTheme.typography.bodyMedium)
+                OutlinedTextField(code, { code = it.filter(Char::isDigit).take(6) }, label = { Text("Code") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+                Button(enabled = code.length == 6, onClick = { scope.launch { vm.call { it.twoStepEnable(code) }?.let { codes = it; secret = null; code = "" } } }) { Text("Turn on") }
+            }
+        }
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     }
 }
 

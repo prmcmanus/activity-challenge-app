@@ -285,7 +285,8 @@ fun TicketScreen(vm: AppViewModel, id: Int) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         StatusPill(t.status); Spacer(Modifier.width(8.dp))
                         Text("${ticketTypeLabel(t.type)} · #${t.id} · ${if (t.mine) "you" else t.reporterName + (t.reporterEmail?.let { " ($it)" } ?: "")}",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = if (!t.mine && t.reporterId > 0) Modifier.clickable { vm.openProfile(t.reporterId) } else Modifier)
                     }
                     Text(t.title, style = MaterialTheme.typography.titleLarge)
                     Text(t.description, style = MaterialTheme.typography.bodyMedium)
@@ -320,7 +321,8 @@ fun TicketScreen(vm: AppViewModel, id: Int) {
                 val bg = when { c.internal -> Color(0x33D40511); c.fromSupport -> Color(0x33FFCC00); else -> MaterialTheme.colorScheme.surfaceVariant }
                 Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(bg).padding(12.dp)) {
                     Text(listOfNotNull(c.authorName, if (c.fromSupport) "Support" else null, if (c.internal) "internal note - only admins see this" else null, fmtWhen(c.createdAt)).joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = if (c.authorId > 0) Modifier.clickable { vm.openProfile(c.authorId) } else Modifier)
                     Text(c.body, style = MaterialTheme.typography.bodyMedium)
                 }
             }

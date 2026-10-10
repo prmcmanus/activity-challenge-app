@@ -98,7 +98,7 @@ fun AdminScreen(vm: AppViewModel, openChallenge: (Int) -> Unit) {
                 else {
                     val rows = list.filter { q.isEmpty() || "${it.name} ${it.email}".lowercase().contains(q) }
                     if (rows.isEmpty()) item { SectionCard { EmptyNote("No users match.") } }
-                    items(rows, key = { it.id }) { u -> UserCard(u, isMe = u.id == vm.me?.id) { editing = u } }
+                    items(rows, key = { it.id }) { u -> UserCard(vm, u, isMe = u.id == vm.me?.id) { editing = u } }
                 }
             } else {
                 item {
@@ -146,13 +146,14 @@ fun AdminScreen(vm: AppViewModel, openChallenge: (Int) -> Unit) {
 }
 
 @Composable
-private fun UserCard(u: AdminUser, isMe: Boolean, edit: () -> Unit) {
+private fun UserCard(vm: AppViewModel, u: AdminUser, isMe: Boolean, edit: () -> Unit) {
     SectionCard(modifier = Modifier.clickable(onClick = edit)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Avatar(u.avatarUrl, u.name)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                Text(u.name + if (isMe) " (you)" else "", style = MaterialTheme.typography.titleMedium)
+                Text(u.name + if (isMe) " (you)" else "", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable { vm.openProfile(u.id) })
                 Text(u.email, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Column(horizontalAlignment = Alignment.End) {

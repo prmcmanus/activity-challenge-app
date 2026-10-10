@@ -81,6 +81,14 @@ private fun progressText(s: com.activetogether.companion.Standing) = when {
     else -> ""
 }
 
+/** 👏 on someone's entry: a toggle with the count. */
+@Composable
+fun KudosButton(vm: AppViewModel, activityId: Int, count: Int, mine: Boolean, changed: (Int, Boolean) -> Unit) {
+    val scope = rememberCoroutineScope()
+    androidx.compose.material3.FilterChip(selected = mine, onClick = { scope.launch { vm.call { it.kudos(activityId, !mine) }?.let { n -> changed(n, !mine) } } },
+        label = { Text("👏" + if (count > 0) " $count" else "") }, modifier = Modifier.padding(start = 6.dp))
+}
+
 /** "3rd of 7 · 14 min behind Priya", my team's place, and my last 7 days - as on the website. */
 private fun standingText(c: Challenge, s: com.activetogether.companion.MyStanding): String {
     fun amt(v: Double) = fmtMeasure(c.measuresDistance, v, v, c.distanceUnit, c.measuresSteps, v)
@@ -121,6 +129,17 @@ fun ChallengesScreen(vm: AppViewModel, newChallenge: () -> Unit, join: () -> Uni
                 })
             }
             if (vm.update != null) item { UpdateBanner(vm) }
+            // Getting started, until it's all done or hidden.
+            val st = vm.setup
+            if (st != null && !vm.prefs.setupHidden) {
+                val steps = listOfNotNull(st.challenge to "Join a challenge (with the code someone sent you) or start your own", st.syncing to "Sync from your phone: open the Sync tab",
+                    st.push to "Allow notifications, for news about your challenges", if (vm.config?.emailEnabled == true) st.email to "Confirm your email address (we sent you a link)" else null)
+                if (steps.any { !it.first }) item {
+                    SectionCard("Getting started", action = { TextButton(onClick = { vm.prefs.setupHidden = true; vm.takeDash() }) { Text("Hide") } }) {
+                        steps.forEach { (ok, text) -> Text((if (ok) "✅ " else "⬜ ") + text, style = MaterialTheme.typography.bodyMedium, color = if (ok) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface) }
+                    }
+                }
+            }
             // An email address to confirm (or a new one waiting to be), with the link sent again on request.
             val m = vm.me
             if (m != null && vm.config?.emailEnabled == true && (!m.emailVerified || m.pendingEmail != null)) item {
@@ -219,7 +238,7 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                     Text(listOfNotNull(measureLabel(c), if (c.individual) "Individuals" else c.myTeams.joinToString { it.name }.ifBlank { null }, "Role: ${c.role}").joinToString(" · "),
                         color = Color.White.copy(alpha = 0.9f), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
                     c.journey?.let { Text("🗺 " + journeyLine(it), color = Color.White, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp)) }
-                    board?.me?.let { s -> Text(standingText(c, s), color = Color.White, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp)) }
+                    board?.me?.let { s -> Text(standingText(c, s) + (vm.stats?.streak?.takeIf { it > 0 }?.let { "\n🔥 $it-day streak" } ?: ""), color = Color.White, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp)) }
                 })
         }
         // A virtual journey: the map of where everyone has got to. Reloaded with the leaderboard.
@@ -305,6 +324,14 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
         }
         item {
             SectionCard("Leaderboard") {
+                if (c.journey == null) {
+                    val period = vm.periods[challengeId] ?: "all"
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        listOf("all" to "All time", "month" to "This month", "week" to "This week").forEachIndexed { i, (k, l) ->
+                            SegmentedButton(period == k, { vm.setPeriod(challengeId, k) }, SegmentedButtonDefaults.itemShape(i, 3)) { Text(l, maxLines = 1) }
+                        }
+                    }
+                }
                 if (!c.individual) {
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                         SegmentedButton(tab == 0, { tab = 0 }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("Teams") }
@@ -333,6 +360,30 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                         }
                     }
                 }
+            }
+        }
+        // Latest entries: mine, and from people who share their full activity, with 👏.
+        item {
+            var feed by remember(challengeId) { mutableStateOf<List<com.activetogether.companion.FeedEntry>>(emptyList()) }
+            var shown by remember(challengeId) { mutableIntStateOf(6) }
+            LaunchedEffect(challengeId, board) { vm.call { it.feed(challengeId) }?.let { feed = it } }
+            if (feed.isNotEmpty()) SectionCard("Latest activity") {
+                EmptyNote("Yours, and from people who share their full activity.")
+                feed.take(shown).forEachIndexed { i, e ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Avatar(e.avatarUrl, e.name)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(e.name, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable { vm.openProfile(e.userId) })
+                            Text(listOfNotNull(e.type, fmtDay(e.date), e.teamName, e.comment?.let { "“$it”" }).joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text(fmtMeasure(c.measuresDistance, e.minutes ?: 0.0, e.distance ?: 0.0, c.distanceUnit, c.measuresSteps, (e.steps ?: 0).toDouble()), fontWeight = FontWeight.Bold)
+                        if (e.userId == vm.me?.id) { if (e.kudos > 0) Text("  👏 ${e.kudos}", style = MaterialTheme.typography.bodySmall) }
+                        else KudosButton(vm, e.id, e.kudos, e.kudosMine) { n, mine -> feed = feed.map { x -> if (x.id == e.id) x.copy(kudos = n, kudosMine = mine) else x } }
+                    }
+                    if (i < minOf(shown, feed.size) - 1) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+                if (feed.size > shown) TextButton(onClick = { shown += 10 }) { Text("Show more") }
             }
         }
         if (detail != null && detail.role != "admin") item {

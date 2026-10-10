@@ -68,6 +68,7 @@ fun AppRoot(vm: AppViewModel) {
         vm.pendingRoute = null
         Regex("^/challenges/(\\d+)").find(url)?.let { nav.navigate("challenge/${it.groupValues[1]}") { launchSingleTop = true } }
         Regex("^/help/tickets/(\\d+)").find(url)?.let { nav.navigate("ticket/${it.groupValues[1]}") { launchSingleTop = true } }
+        Regex("^/users/(\\d+)").find(url)?.let { nav.navigate("user/${it.groupValues[1]}") { launchSingleTop = true } }
     }
     // Android 13 and later ask before an app shows notifications: once, when the server can send them.
     val notifyPermission = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { }

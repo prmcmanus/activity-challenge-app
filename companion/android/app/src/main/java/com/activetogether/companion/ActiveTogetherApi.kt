@@ -16,7 +16,8 @@ data class Me(val id: Int, val name: String, val email: String, val avatarUrl: S
               /** The email address has been confirmed (by the link we emailed); pendingEmail is a new one waiting to be. */
               val emailVerified: Boolean = true, val pendingEmail: String? = null,
               /** A global admin whose powers wait for two-step sign-in to be turned on (on the website). */
-              val adminNeedsTwoFactor: Boolean = false, val notifyPush: Boolean = true) {
+              val adminNeedsTwoFactor: Boolean = false, val notifyPush: Boolean = true,
+              val twoFactor: Boolean = false, val pushPrefs: Map<String, Boolean> = emptyMap()) {
     val isAdmin: Boolean get() = role == "global_admin"
 }
 
@@ -35,15 +36,28 @@ data class PushConfig(val appId: String, val apiKey: String, val projectId: Stri
 /** Help & support. type: bug | feature | question; status: new | in_progress | planned | done | declined. */
 data class Ticket(val id: Int, val type: String, val title: String, val description: String, val status: String, val resolution: String?,
     val imageUrl: String?, val clientInfo: String?, val createdAt: String, val updatedAt: String, val reporterName: String, val reporterEmail: String?,
-    val commentCount: Int, val unread: Boolean, val mine: Boolean)
-data class TicketComment(val id: Int, val body: String, val internal: Boolean, val createdAt: String, val authorName: String, val fromSupport: Boolean)
+    val commentCount: Int, val unread: Boolean, val mine: Boolean, val reporterId: Int = 0)
+data class TicketComment(val id: Int, val body: String, val internal: Boolean, val createdAt: String, val authorName: String, val fromSupport: Boolean, val authorId: Int = 0)
 data class TicketList(val tickets: List<Ticket>, val counts: Map<String, Int>, val openByType: Map<String, Int>)
 
 data class ProfileChallenge(val id: Int, val name: String, val startDate: LocalDate, val endDate: LocalDate, val measuresDistance: Boolean,
     val distanceUnit: String, val team: String?, val minutes: Double, val distance: Double, val rank: Int, val of: Int,
     val measuresSteps: Boolean = false, val steps: Double = 0.0)
+/** Streaks and personal bests across every challenge. */
+data class UserStats(val streak: Int, val longestStreak: Int, val bestMinutes: Double, val bestKm: Double, val bestMi: Double, val bestSteps: Int)
+/** Getting started: what's done. */
+data class SetupState(val challenge: Boolean, val syncing: Boolean, val push: Boolean, val email: Boolean)
+/** The dashboard's extras, kept from the last time it loaded. */
+object Dash { @Volatile var stats: UserStats? = null; @Volatile var setup: SetupState? = null }
+/** A challenge's recent entry, as its feed shows it, with its 👏. */
+data class FeedEntry(val id: Int, val userId: Int, val name: String, val avatarUrl: String?, val type: String, val minutes: Double?, val distance: Double?, val steps: Int?,
+                     val date: LocalDate, val comment: String?, val teamName: String?, val kudos: Int, val kudosMine: Boolean)
+data class Passkey(val id: String, val name: String, val createdAt: String, val lastUsedAt: String?)
+internal fun parseStats(o: JSONObject?) = o?.let { UserStats(it.optInt("streak"), it.optInt("longestStreak"), it.optDouble("bestMinutes", 0.0), it.optDouble("bestDistanceKm", 0.0), it.optDouble("bestDistanceMi", 0.0), it.optInt("bestSteps")) }
+
 data class ProfileActivity(val type: String, val minutes: Double?, val distance: Double?, val distanceUnit: String, val measuresDistance: Boolean,
-    val date: LocalDate, val startTime: String?, val comment: String?, val challengeName: String, val steps: Int? = null, val measuresSteps: Boolean = false)
+    val date: LocalDate, val startTime: String?, val comment: String?, val challengeName: String, val steps: Int? = null, val measuresSteps: Boolean = false,
+    val id: Int = 0, val challengeId: Int = 0, val kudos: Int = 0, val kudosMine: Boolean = false)
 /** Someone in a followers or following list. */
 data class Person(val id: Int, val name: String, val avatarUrl: String?)
 /** Someone's profile as a challenge-mate sees it. challenges/activities are null when their sharing level hides them.
@@ -51,7 +65,7 @@ data class Person(val id: Int, val name: String, val avatarUrl: String?)
 data class Profile(val id: Int, val name: String, val avatarUrl: String?, val bio: String?, val memberSince: String, val sharing: String, val self: Boolean,
     val challenges: List<ProfileChallenge>?, val activities: List<ProfileActivity>?,
     val followersCount: Int = 0, val followingCount: Int = 0, val isFollowing: Boolean = false, val followsYou: Boolean = false,
-    val followers: List<Person>? = null, val following: List<Person>? = null)
+    val followers: List<Person>? = null, val following: List<Person>? = null, val stats: UserStats? = null)
 
 data class MyTeam(val id: Int, val name: String)
 
@@ -286,7 +300,10 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
     }
 
     fun challenges(): List<Challenge> {
-        val arr = request("/api/dashboard").getJSONArray("challenges")
+        val d = request("/api/dashboard")
+        Dash.stats = parseStats(d.optJSONObject("stats"))
+        Dash.setup = d.optJSONObject("setup")?.let { SetupState(it.optBoolean("challenge"), it.optBoolean("syncing"), it.optBoolean("push"), it.optBoolean("email")) }
+        val arr = d.getJSONArray("challenges")
         return (0 until arr.length()).map { i ->
             val c = arr.getJSONObject(i)
             val teams = c.optJSONArray("teams") ?: JSONArray()
@@ -412,6 +429,42 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
             r.optBoolean("passwordResetEmail"))
     }
 
+    // --- Feed, 👏, and counting an entry in another challenge ---
+    fun feed(challengeId: Int): List<FeedEntry> {
+        val a = request("/api/challenges/$challengeId/feed").getJSONArray("activities")
+        return (0 until a.length()).map { i -> a.getJSONObject(i).let { x ->
+            FeedEntry(x.getInt("id"), x.getInt("user_id"), x.optString("name"), if (x.isNull("avatar_url")) null else x.optString("avatar_url").takeIf { it.isNotBlank() }, x.optString("activity_type"),
+                if (x.isNull("minutes")) null else x.optDouble("minutes"), if (x.isNull("distance")) null else x.optDouble("distance"), if (x.isNull("steps")) null else x.optInt("steps"),
+                LocalDate.parse(x.getString("activity_date")), if (x.isNull("comment")) null else x.optString("comment").takeIf { it.isNotBlank() },
+                if (x.isNull("team_name")) null else x.optString("team_name"), x.optInt("kudos"), x.optInt("kudos_mine") == 1 || x.optBoolean("kudos_mine"))
+        } }
+    }
+    /** Gives (or takes back) 👏; returns how many the entry now has. */
+    fun kudos(activityId: Int, on: Boolean): Int = request("/api/activities/$activityId/kudos", if (on) "POST" else "DELETE").optInt("kudos")
+    fun copyActivity(activityId: Int, challengeId: Int, teamId: Int?) {
+        request("/api/activities/$activityId/copy", "POST", JSONObject().put("challenge_id", challengeId).apply { teamId?.let { put("team_id", it) } })
+    }
+
+    // --- Passkeys, two-step sign-in, forgotten password, which notifications ---
+    /** The options to make a passkey, as the WebAuthn JSON Credential Manager takes. */
+    fun passkeyCreateOptions(): String = request("/api/me/passkeys/options", "POST", JSONObject()).toString()
+    fun savePasskey(registrationJson: String, name: String) { request("/api/me/passkeys", "POST", JSONObject().put("name", name).put("credential", JSONObject(registrationJson))) }
+    fun passkeys(): List<Passkey> = request("/api/me/passkeys").getJSONArray("passkeys").let { a -> (0 until a.length()).map { i -> a.getJSONObject(i).let {
+        Passkey(it.getString("id"), it.optString("name", "Passkey"), it.optString("created_at"), if (it.isNull("last_used_at")) null else it.optString("last_used_at")) } } }
+    fun removePasskey(id: String) { request("/api/me/passkeys/$id", "DELETE") }
+    fun passkeyLoginOptions(): String = request("/api/passkey/options", "POST", JSONObject()).toString()
+    /** Signs in with a passkey's reply; returns the session token. */
+    fun passkeyLogin(authenticationJson: String): String = request("/api/mobile/passkey/login", "POST", JSONObject().put("credential", JSONObject(authenticationJson))).getString("sessionToken")
+    /** Two-step sign-in: a new secret (and its otpauth:// link for an authenticator app). */
+    fun twoStepSetup(): Pair<String, String> = request("/api/me/2fa/setup", "POST", JSONObject()).let { it.getString("secret") to it.getString("uri") }
+    /** Switches it on with a first code; returns the backup codes. */
+    fun twoStepEnable(code: String): List<String> = request("/api/me/2fa/enable", "POST", JSONObject().put("code", code)).getJSONArray("backupCodes").let { a -> (0 until a.length()).map { a.getString(it) } }
+    fun twoStepDisable(password: String) { request("/api/me/2fa/disable", "POST", JSONObject().put("password", password)) }
+    fun twoStepNewBackupCodes(password: String): List<String> = request("/api/me/2fa/backup-codes", "POST", JSONObject().put("password", password)).getJSONArray("backupCodes").let { a -> (0 until a.length()).map { a.getString(it) } }
+    /** Emails a link to choose a new password (the same answer whether or not the address has an account). */
+    fun forgotPassword(email: String) { request("/api/mobile/password/forgot", "POST", JSONObject().put("email", email.trim())) }
+    fun setPushPrefs(prefs: Map<String, Boolean>): Me = parseMe(request("/api/me", "PATCH", JSONObject().put("pushPrefs", JSONObject(prefs))).getJSONObject("user"))
+
     /** I've seen that someone added me: stop showing the notice. */
     fun ackAdded(challengeId: Int) { request("/api/challenges/$challengeId/ack", "POST", JSONObject()) }
 
@@ -513,8 +566,9 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         request("/api/admin/users", "POST", JSONObject().put("name", name).put("email", email).put("role", role).put("password", password))
     }
 
-    fun leaderboard(challengeId: Int): Leaderboard {
-        val r = request("/api/challenges/$challengeId/leaderboard")
+    /** period: "all", "month" or "week". */
+    fun leaderboard(challengeId: Int, period: String = "all"): Leaderboard {
+        val r = request("/api/challenges/$challengeId/leaderboard" + if (period == "all") "" else "?period=$period")
         fun list(a: JSONArray, people: Boolean) = (0 until a.length()).map { i ->
             val x = a.getJSONObject(i)
             Standing(x.getString("name"), x.optDouble("minutes", 0.0), x.optDouble("distance", 0.0),
@@ -544,12 +598,14 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
             ProfileActivity(x.getString("activity_type"), if (x.isNull("minutes")) null else x.getDouble("minutes"),
                 if (x.isNull("distance")) null else x.getDouble("distance"), if (x.optString("distance_unit") == "km") "km" else "mi",
                 x.optString("metric") == "distance", LocalDate.parse(x.getString("activity_date")), str(x, "start_time"), str(x, "comment"), x.getString("challenge_name"),
-                if (x.isNull("steps") || !x.has("steps")) null else x.getInt("steps"), x.optString("metric") == "steps")
+                if (x.isNull("steps") || !x.has("steps")) null else x.getInt("steps"), x.optString("metric") == "steps",
+                x.optInt("id"), x.optInt("challenge_id"), x.optInt("kudos"), x.optInt("kudos_mine") == 1 || x.optBoolean("kudos_mine"))
         } } }
         fun people(k: String) = r.optJSONArray(k)?.let { a -> (0 until a.length()).map { i -> a.getJSONObject(i).let { x -> Person(x.getInt("id"), x.getString("name"), str(x, "avatar_url")) } } }
         return Profile(r.getInt("id"), r.getString("name"), str(r, "avatar_url"), str(r, "bio"), r.optString("member_since"),
             r.optString("sharing", "summary"), r.optBoolean("self"), challenges, activities,
-            r.optInt("followers_count"), r.optInt("following_count"), r.optBoolean("is_following"), r.optBoolean("follows_you"), people("followers"), people("following"))
+            r.optInt("followers_count"), r.optInt("following_count"), r.optBoolean("is_following"), r.optBoolean("follows_you"), people("followers"), people("following"),
+            parseStats(r.optJSONObject("stats")))
     }
 
     /** Edit one activity entry; the server checks it still fits its challenge (dates, measure). */
@@ -701,7 +757,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         return Ticket(t.getInt("id"), t.getString("type"), t.getString("title"), t.optString("description"), t.getString("status"), str("resolution"),
             str("image_url"), str("client_info"), t.optString("created_at"), t.optString("updated_at"), rep?.optString("name").orEmpty(),
             rep?.let { if (it.isNull("email")) null else it.optString("email").takeIf { e -> e.isNotBlank() } },
-            t.optInt("comment_count"), t.optBoolean("unread"), t.optBoolean("mine"))
+            t.optInt("comment_count"), t.optBoolean("unread"), t.optBoolean("mine"), rep?.optInt("id") ?: 0)
     }
     /** My tickets, or (admins) everyone's with counts; status may be "open" for new/in progress/planned. */
     fun tickets(all: Boolean = false, status: String? = null, type: String? = null): TicketList {
@@ -716,7 +772,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         val c = r.getJSONArray("comments")
         return parseTicket(r) to (0 until c.length()).map { i -> c.getJSONObject(i).let {
             TicketComment(it.getInt("id"), it.getString("body"), it.optBoolean("internal"), it.optString("created_at"),
-                it.optJSONObject("author")?.optString("name").orEmpty(), it.optBoolean("from_support"))
+                it.optJSONObject("author")?.optString("name").orEmpty(), it.optBoolean("from_support"), it.optJSONObject("author")?.optInt("id") ?: 0)
         } }
     }
     fun createTicket(type: String, title: String, description: String, imageUrl: String?, clientInfo: String): Int =
@@ -735,7 +791,9 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         if (u.isNull("bio")) null else u.optString("bio").takeIf { it.isNotBlank() },
         u.optString("profile_sharing").ifBlank { "summary" }, u.optString("role").ifBlank { "member" }, u.optInt("has_password", 1) == 1,
         emailVerified = u.optInt("email_verified", 1) == 1, pendingEmail = if (u.isNull("pending_email")) null else u.optString("pending_email").takeIf { it.isNotBlank() },
-        adminNeedsTwoFactor = u.optBoolean("admin_needs_two_factor"), notifyPush = u.optInt("notify_push", 1) == 1)
+        adminNeedsTwoFactor = u.optBoolean("admin_needs_two_factor"), notifyPush = u.optInt("notify_push", 1) == 1,
+        twoFactor = u.optInt("two_factor") == 1 || u.optBoolean("two_factor"),
+        pushPrefs = u.optJSONObject("push_prefs")?.let { o -> o.keys().asSequence().associateWith { o.optBoolean(it, true) } } ?: emptyMap())
 
     private fun request(path: String, method: String = "GET", body: JSONObject? = null): JSONObject {
         // Signed-in reads are kept, so without a connection the app shows what it last saw instead of nothing.
@@ -776,10 +834,23 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
 object ApiCache {
     private var dir: java.io.File? = null
     val offline = kotlinx.coroutines.flow.MutableStateFlow(false)
-    fun init(context: android.content.Context) { if (dir == null) dir = java.io.File(context.cacheDir, "api").apply { mkdirs() } }
+    fun init(context: android.content.Context) {
+        if (dir != null) return
+        dir = java.io.File(context.cacheDir, "api").apply { mkdirs() }
+        val stamp = java.io.File(dir, "version")
+        if (runCatching { stamp.readText() }.getOrNull() != BuildConfig.VERSION_NAME) { dir?.listFiles()?.forEach { it.delete() }; runCatching { stamp.writeText(BuildConfig.VERSION_NAME) } }
+    }
     private fun key(token: String?, path: String) = java.security.MessageDigest.getInstance("SHA-256")
         .digest("${token.orEmpty()}|$path".toByteArray()).joinToString("") { "%02x".format(it) }
-    fun put(token: String?, path: String, text: String) { dir?.let { runCatching { java.io.File(it, key(token, path)).writeText(text) } } }
+    fun put(token: String?, path: String, text: String) { dir?.let { runCatching { java.io.File(it, key(token, path)).writeText(text); prune(it) } } }
+    /** At most 200 answers, none older than 30 days; a new version of the app starts afresh. */
+    private fun prune(d: java.io.File) {
+        val files = d.listFiles() ?: return
+        val old = System.currentTimeMillis() - 30L * 864e5.toLong()
+        val kept = files.filter { it.name != "version" }
+        kept.filter { it.lastModified() < old }.forEach { it.delete() }
+        kept.filter { it.exists() }.sortedByDescending { it.lastModified() }.drop(200).forEach { it.delete() }
+    }
     fun get(token: String?, path: String): String? = dir?.let { runCatching { java.io.File(it, key(token, path)).takeIf { f -> f.exists() }?.readText() }.getOrNull() }
     fun clear() { dir?.listFiles()?.forEach { it.delete() }; offline.value = false }
 }

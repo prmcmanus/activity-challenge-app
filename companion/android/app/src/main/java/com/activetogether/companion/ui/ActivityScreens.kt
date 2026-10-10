@@ -3,6 +3,7 @@ package com.activetogether.companion.ui
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -143,12 +144,29 @@ fun ActivityDetailScreen(vm: AppViewModel, activityId: Int, back: () -> Unit, ed
                 siblings.forEach { e ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(e.challengeName, style = MaterialTheme.typography.titleMedium)
+                            Text(e.challengeName, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable { vm.openChallenge(e.challengeId) })
                             Text(listOfNotNull(e.teamName, fmtEntry(e)).joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         TextButton(onClick = { confirm = e }) { Icon(Icons.Default.Delete, null); Text("Remove") }
                     }
                 }
+            }
+        }
+        // Other challenges it could count in: running on its date, and not already holding it.
+        val others = vm.challenges.filter { c -> c.role != "admin" && c.contains(a.date) && siblings.none { it.challengeId == c.id } && c.accepts(a.type) }
+        if (others.isNotEmpty()) item {
+            var adding by remember { mutableStateOf(false) }
+            SectionCard("Count it in another challenge") {
+                others.forEach { c ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(c.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        TextButton(enabled = !adding, onClick = {
+                            adding = true
+                            scope.launch { if (vm.copyActivity(a.id, c.id, c.target?.teamId)) vm.message = "It counts in ${c.name} now as well"; adding = false }
+                        }) { Icon(Icons.Default.Add, null); Text("Add") }
+                    }
+                }
+                if (others.any { !it.individual && it.myTeams.isEmpty() }) EmptyNote("For a team challenge, join a team in it first.")
             }
         }
         a.comment?.takeIf { it.isNotBlank() }?.let { item { SectionCard("Comment") { Text("“$it”") } } }

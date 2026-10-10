@@ -1,5 +1,6 @@
 package com.activetogether.companion.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -164,7 +165,8 @@ fun ChallengeMembersScreen(vm: AppViewModel, challengeId: Int) {
                     Avatar(m.avatarUrl, m.name)
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(m.name + if (m.id == meId) " (you)" else "", style = MaterialTheme.typography.titleMedium)
+                        Text(m.name + if (m.id == meId) " (you)" else "", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable { vm.openProfile(m.id) })
                         Text(listOfNotNull(m.email, if (m.role == "owner") "owner" else "member", m.teams ?: if (individual) null else "no team",
                             "${m.entries} ${if (m.entries == 1) "entry" else "entries"}", if (m.deactivated) "deactivated" else null).joinToString(" · "),
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -277,7 +279,7 @@ fun TeamManageScreen(vm: AppViewModel, challengeId: Int, teamId: Int, gone: () -
                 d.members.forEachIndexed { i, m ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(m.name, style = MaterialTheme.typography.titleMedium)
+                            Text(m.name, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable { vm.openProfile(m.id) })
                             Text(listOfNotNull(m.email, if (m.role == "team_admin") "team admin" else "member").joinToString(" · "),
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }

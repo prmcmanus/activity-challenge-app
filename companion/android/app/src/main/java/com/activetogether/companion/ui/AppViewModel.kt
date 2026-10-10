@@ -154,7 +154,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val c = async { call { it.challenges() } }
             val cfg = async { runCatching { withContext(Dispatchers.IO) { api().config() } }.getOrNull() }
             m.await()?.let { me = it }
-            c.await()?.let { challenges = it }
+            c.await()?.let { challenges = it; takeDash() }
             cfg.await()?.let { applyConfig(it) }
         }
         loadingChallenges = false
@@ -181,6 +181,45 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             prefs.pushToken = token
             viewModelScope.launch { runCatching { withContext(Dispatchers.IO) { api().registerPush(token) } } }
         }
+    }
+
+    /** Sign in with a passkey on this phone (Credential Manager). Returns an error to show, or null (signed in, or cancelled). */
+    suspend fun passkeySignIn(context: android.content.Context): String? {
+        val opts = try { withContext(Dispatchers.IO) { ActiveTogetherApi(null).passkeyLoginOptions() } } catch (e: Exception) { return e.message ?: "Couldn't reach Active Together" }
+        val res = try {
+            androidx.credentials.CredentialManager.create(context).getCredential(context, androidx.credentials.GetCredentialRequest(listOf(androidx.credentials.GetPublicKeyCredentialOption(opts))))
+        } catch (e: androidx.credentials.exceptions.GetCredentialCancellationException) { return null
+        } catch (e: androidx.credentials.exceptions.NoCredentialException) { return "There's no Active Together passkey on this phone yet. Sign in another way, then add one under Me, Edit."
+        } catch (e: Exception) { return "Passkeys aren't available on this phone just now: ${e.message}" }
+        val json = (res.credential as? androidx.credentials.PublicKeyCredential)?.authenticationResponseJson ?: return "No passkey came back"
+        val token = try { withContext(Dispatchers.IO) { ActiveTogetherApi(null).passkeyLogin(json) } } catch (e: ApiException) { return e.message } catch (e: Exception) { return "Couldn't reach Active Together" }
+        signedInWith(token); return null
+    }
+    /** Make a passkey on this phone for my account. Returns an error, or null when saved (or cancelled: false). */
+    suspend fun addPasskey(context: android.content.Context): String? {
+        val opts = call { it.passkeyCreateOptions() } ?: return message.also { message = null }
+        val res = try {
+            androidx.credentials.CredentialManager.create(context).createCredential(context, androidx.credentials.CreatePublicKeyCredentialRequest(opts))
+        } catch (e: androidx.credentials.exceptions.CreateCredentialCancellationException) { return ""
+        } catch (e: Exception) { return "Couldn't make a passkey: ${e.message}" }
+        val json = (res as? androidx.credentials.CreatePublicKeyCredentialResponse)?.registrationResponseJson ?: return "No passkey came back"
+        return if (call { it.savePasskey(json, "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()) } != null) null else message.also { message = null }
+    }
+
+    /** Open a challenge or someone's profile from wherever their name is shown. */
+    fun openChallenge(id: Int) { pendingRoute = "/challenges/$id" }
+    fun openProfile(id: Int) { pendingRoute = "/users/$id" }
+    /** Streaks and bests, and the getting-started checklist, from the last dashboard. */
+    var stats by mutableStateOf<com.activetogether.companion.UserStats?>(null); private set
+    var setup by mutableStateOf<com.activetogether.companion.SetupState?>(null); private set
+    fun takeDash() { stats = com.activetogether.companion.Dash.stats; setup = com.activetogether.companion.Dash.setup }
+    /** Each challenge's leaderboard period: "all", "month" or "week". */
+    var periods by mutableStateOf<Map<Int, String>>(emptyMap()); private set
+    fun setPeriod(challengeId: Int, period: String) { periods = periods + (challengeId to period); loadLeaderboard(challengeId) }
+    /** Count an entry in another challenge too. */
+    suspend fun copyActivity(activityId: Int, challengeId: Int, teamId: Int?): Boolean {
+        call { it.copyActivity(activityId, challengeId, teamId) } ?: return false
+        afterChange(); return true
     }
 
     /** A tapped notification's address, opened once the app is showing. */
@@ -312,7 +351,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadLeaderboard(challengeId: Int) = viewModelScope.launch {
-        call { it.leaderboard(challengeId) }?.let { leaderboards.value = leaderboards.value + (challengeId to it) }
+        call { it.leaderboard(challengeId, periods[challengeId] ?: "all") }?.let { leaderboards.value = leaderboards.value + (challengeId to it) }
     }
 
     fun deleteActivity(a: MyActivity, done: () -> Unit) = viewModelScope.launch {
@@ -345,7 +384,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val m = async { call { it.me() } }
         val c = async { call { it.challenges() } }
         m.await()?.let { me = it }
-        c.await()?.let { challenges = it }
+        c.await()?.let { challenges = it; takeDash() }
         launch { refreshActivities() }
         launch { refreshHelpBadge() }
         launch { checkForUpdate() }
@@ -443,7 +482,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun afterTeamChange(challengeId: Int) {
         call { it.challenges() }?.let { challenges = it }
         loadDetail(challengeId)
-        call { it.leaderboard(challengeId) }?.let { leaderboards.value = leaderboards.value + (challengeId to it) }
+        call { it.leaderboard(challengeId, periods[challengeId] ?: "all") }?.let { leaderboards.value = leaderboards.value + (challengeId to it) }
     }
 
     suspend fun refreshHelpBadge() {
@@ -454,7 +493,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun refreshChallenge(challengeId: Int) {
         call { it.challenges() }?.let { challenges = it }
         loadDetail(challengeId)
-        call { it.leaderboard(challengeId) }?.let { leaderboards.value = leaderboards.value + (challengeId to it) }
+        call { it.leaderboard(challengeId, periods[challengeId] ?: "all") }?.let { leaderboards.value = leaderboards.value + (challengeId to it) }
     }
 
     suspend fun refreshActivities() {

@@ -157,11 +157,38 @@ fun LoginScreen(vm: AppViewModel) {
                         else Text("Sign in", fontWeight = FontWeight.Bold)
                     }
                     val forgotContext = androidx.compose.ui.platform.LocalContext.current
-                    androidx.compose.material3.TextButton(onClick = { openInBrowser(forgotContext, "$SERVER_URL/forgot") }) { Text("Forgot password?") }
+                    val keyScope = androidx.compose.runtime.rememberCoroutineScope()
+                    if (ticket == null) androidx.compose.material3.OutlinedButton(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
+                        busy = true; error = null
+                        keyScope.launch { error = vm.passkeySignIn(forgotContext); busy = false }
+                    }) { Text("🔑 Sign in with a passkey") }
+                    var forgot by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+                    androidx.compose.material3.TextButton(onClick = { forgot = true }) { Text("Forgot password?") }
+                    if (forgot) ForgotPasswordDialog(vm, email) { forgot = false }
                     androidx.compose.material3.TextButton(onClick = { creating = true; error = null }) { Text("New here? Create an account") }
                     androidx.compose.material3.TextButton(onClick = { com.activetogether.companion.PolicyActivity.open(forgotContext) }) { Text("Privacy policy") }
                 }
             }
         }
     }
+}
+
+/** A link to choose a new password, emailed (it opens the website, which finishes the reset). */
+@Composable
+private fun ForgotPasswordDialog(vm: AppViewModel, start: String, close: () -> Unit) {
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var email by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(start) }
+    var sent by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var err by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+    androidx.compose.material3.AlertDialog(onDismissRequest = close,
+        title = { Text(if (sent) "Check your email" else "Forgot your password?") },
+        text = { androidx.compose.foundation.layout.Column {
+            if (sent) Text("If an account uses that address, a link to choose a new password is on its way. It works for an hour. Nothing after a few minutes? Check your spam folder.")
+            else { Text("Enter your email and we'll send you a link to choose a new password."); OutlinedTextField(email, { email = it }, label = { Text("Email") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
+            err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        } },
+        confirmButton = { if (sent) androidx.compose.material3.TextButton(onClick = close) { Text("Done") } else androidx.compose.material3.TextButton(enabled = email.contains('@'), onClick = {
+            scope.launch { try { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.activetogether.companion.ActiveTogetherApi(null).forgotPassword(email) }; sent = true } catch (e: Exception) { err = e.message } }
+        }) { Text("Send me a link") } },
+        dismissButton = { if (!sent) androidx.compose.material3.TextButton(onClick = close) { Text("Cancel") } })
 }

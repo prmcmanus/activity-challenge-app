@@ -84,6 +84,11 @@ class Prefs(context: Context) {
         get() = p.getInt("tileMaxZoom", 19)
         set(v) = p.edit().putInt("tileMaxZoom", v).apply()
 
+    /** The getting-started list was hidden. */
+    var setupHidden: Boolean
+        get() = p.getBoolean("setupHidden", false)
+        set(v) = p.edit().putBoolean("setupHidden", v).apply()
+
     fun signOut() = p.edit().remove("token").remove("tokenEnc").remove("pendingLogs").apply()
 }
 

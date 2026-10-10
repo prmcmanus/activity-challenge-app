@@ -55,6 +55,8 @@ struct Day: Comparable, Hashable, CustomStringConvertible {
 /// Who can see what on my profile: "private" (name, photo), "summary" (+ totals, rank), "full" (+ recent activity).
 struct Me: Equatable {
     var id: Int, name: String, email: String, avatarURL: String?, bio: String?, sharing: String, role: String
+    /// False for an account made with Google or Apple that hasn't set a password.
+    var hasPassword = true
     var isAdmin: Bool { role == "global_admin" }
 }
 
@@ -204,6 +206,8 @@ func inviteCode(from url: URL) -> String? {
 /// A failed request, keeping the HTTP status so an expired session (401) can send the user back to sign in.
 struct APIError: LocalizedError {
     let status: Int, message: String
+    /// The server wants an invite code (signing up on an invite-only site).
+    var inviteRequired = false
     var errorDescription: String? { message }
 }
 
@@ -227,6 +231,16 @@ final class API: @unchecked Sendable {
         if let inviteCode { b["invite_code"] = inviteCode }
         return try await request("/api/mobile/register", "POST", b).string("sessionToken")
     }
+    /// Sign in with Google or Apple's ID token: a session token, or (two-step sign-in) a ticket for `loginCode`.
+    func socialLogin(provider: String, credential: String, name: String?, inviteCode: String?) async throws -> (token: String?, ticket: String?) {
+        var b: [String: Any] = ["credential": credential]
+        if let name { b["name"] = name }
+        if let inviteCode { b["invite_code"] = inviteCode }
+        let r = try await request("/api/mobile/auth/\(provider)", "POST", b)
+        return r.bool("twoFactor") ? (nil, r.string("ticket")) : (r.string("sessionToken"), nil)
+    }
+    /// The Google client ID for this app (nil when signing in with Google isn't set up).
+    func googleIosClientId() async throws -> String? { try await request("/api/config").obj("google")?.str("iosClientId") }
     /// Whether a new account needs an invite code.
     func inviteOnly() async throws -> Bool { try await request("/api/config").bool("inviteOnly") }
     /// The second step: the code from the authenticator app (or a backup code), with the ticket from `login`.
@@ -241,7 +255,7 @@ final class API: @unchecked Sendable {
     }
     private func parseMe(_ u: J) -> Me {
         Me(id: u.int("id"), name: u.string("name"), email: u.string("email"), avatarURL: u.str("avatar_url") ?? u.str("avatarUrl"),
-           bio: u.str("bio"), sharing: u.str("profile_sharing") ?? "summary", role: u.str("role") ?? "member")
+           bio: u.str("bio"), sharing: u.str("profile_sharing") ?? "summary", role: u.str("role") ?? "member", hasPassword: u.int("has_password", 1) == 1)
     }
 
     // Challenges
@@ -499,7 +513,8 @@ final class API: @unchecked Sendable {
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         guard (200...299).contains(status) else {
-            throw APIError(status: status, message: (json["error"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Request failed with HTTP \(status)")
+            throw APIError(status: status, message: (json["error"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Request failed with HTTP \(status)",
+                           inviteRequired: (json["inviteRequired"] as? Bool) ?? false)
         }
         return J(json)
     }

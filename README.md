@@ -266,6 +266,17 @@ verified in Resend; replies go to `MAIL_REPLY_TO`, default support@activetogethe
 nothing is emailed, and a global admin makes reset links instead (Admin → Edit user). Each person can
 turn the notes off in My account. A password reset emails one account at most twice an hour.
 
+## Sign in with Google and Apple
+
+The website (Google and Apple), the Android app (Google) and the iPhone app (Google, and Apple in the App Store
+build, which Apple requires alongside Google) sign in with the provider and send its ID token to
+`POST /api/auth/google|apple` (`/api/mobile/auth/...` for the apps). The server checks the token against the
+provider's published keys and our client IDs. A known Google/Apple account signs in; otherwise an account using
+the same, provider-verified email is linked (and its other sessions are ended); otherwise a new account is made,
+with no password (the invite code is asked for on an invite-only site). Two-step sign-in still applies. Settings:
+`GOOGLE_WEB_CLIENT_ID` (website and Android), `GOOGLE_IOS_CLIENT_ID`, `APPLE_SERVICES_ID` (website); the iPhone
+app's bundle ID is accepted for Apple. Nothing shows until they're set; the apps read them from `/api/config`.
+
 ## Two-step sign-in
 
 Anyone can turn on authenticator-app codes (TOTP, RFC 6238) in My account; global admins are prompted

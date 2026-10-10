@@ -14,8 +14,8 @@ android {
         applicationId = "com.activetogether.companion"
         minSdk = 28
         targetSdk = 36
-        versionCode = 21
-        versionName = "1.14.0"
+        versionCode = 22
+        versionName = "1.15.0"
         buildConfigField("String", "SERVER_URL", "\"https://activetogether.team\"")
         manifestPlaceholders["cleartext"] = "false"
         // Whether the app offers its own updates from the website. Off in the Play Store build.
@@ -107,4 +107,8 @@ dependencies {
     implementation("org.osmdroid:osmdroid-android:6.1.20")
     // Avatars and team logos.
     implementation("io.coil-kt:coil-compose:2.7.0")
+    // Sign in with Google: Credential Manager and Google's ID token option.
+    implementation("androidx.credentials:credentials:1.5.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
 }

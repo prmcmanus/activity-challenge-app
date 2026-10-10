@@ -38,3 +38,6 @@ footer a{color:var(--muted);font-size:13px;text-decoration:underline}
 .twostep{margin-top:24px;padding-top:16px;border-top:1px solid var(--line)}.ts-steps{padding-left:20px;line-height:1.5}.qr{width:180px;margin:10px 0;background:#fff;padding:6px;border-radius:8px}.qr svg{display:block;width:100%;height:auto}.ts-secret{font-size:13px;word-break:break-all}.backup-codes{background:var(--surface-2);padding:10px 14px;border-radius:8px;font-size:15px;line-height:1.7;columns:2}
 .audit-row{align-items:start}
 .in-app header,.in-app footer{display:none}.in-app main{margin-top:12px}
+.social{display:flex;flex-direction:column;gap:10px;margin:14px 0 4px}.google-btn{min-height:44px;display:flex;justify-content:center}.apple-btn{display:flex;align-items:center;justify-content:center;gap:8px;background:#000;color:#fff;border-radius:999px;padding:11px 16px;font-size:15px;font-weight:600;width:100%;max-width:400px;margin:0 auto}.apple-btn svg{width:16px;height:19px}
+:root[data-theme="dark"] .apple-btn{background:#fff;color:#000}@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .apple-btn{background:#fff;color:#000}}
+.or-line{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;margin-top:4px}.or-line:before,.or-line:after{content:"";flex:1;border-top:1px solid var(--line)}

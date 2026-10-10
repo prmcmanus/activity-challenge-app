@@ -66,6 +66,7 @@ private struct WebPage: UIViewRepresentable {
 /// in already when an invite link brought them here). Signed in straight afterwards.
 struct CreateAccountForm: View {
     @Environment(AppModel.self) private var model
+    var onSocial: ((String, String, String?) -> Void)? = nil
     var backToSignIn: () -> Void
     @State private var name = ""
     @State private var email = ""
@@ -78,6 +79,7 @@ struct CreateAccountForm: View {
     var body: some View {
         VStack(spacing: 12) {
             Text("Create your account").font(.title3.bold()).frame(maxWidth: .infinity, alignment: .leading)
+            if let onSocial { SocialButtons(onToken: onSocial) }
             TextField("Name", text: $name).textContentType(.name).textInputAutocapitalization(.words)
             TextField("Email", text: $email).textContentType(.username).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
             SecureField("Password (at least 8 characters)", text: $password).textContentType(.newPassword)

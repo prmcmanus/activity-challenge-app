@@ -152,7 +152,7 @@ else if(pendingInviteToken)history.replaceState({},'',location.pathname);
 // server-side check becomes a no-op too.
 // The bot check on signing in, signing up and asking for a password reset: Cloudflare Turnstile (usually
 // invisible) or Google reCAPTCHA, whichever the server is set up with, or none.
-let captcha=null,captchaWidget=null,captchaNeedsTick=false,siteInviteOnly=false;
+let captcha=null,captchaWidget=null,captchaNeedsTick=false,siteInviteOnly=false,siteConfig={};
 function renderCaptchaIfReady(){
   const el=document.getElementById('captcha-box');
   if(!el||!captcha)return;
@@ -176,7 +176,8 @@ async function captchaToken(){
 }
 function resetCaptcha(){if(!captcha||captchaWidget===null)return;try{captcha.provider==='turnstile'?turnstile.reset(captchaWidget):grecaptcha.reset(captchaWidget)}catch(e){}}
 async function initCaptcha(){
-  try{const cfg=await api('/api/config');captcha=cfg.captcha||null;siteInviteOnly=!!cfg.inviteOnly}catch(e){captcha=null}
+  try{const cfg=await api('/api/config');siteConfig=cfg;captcha=cfg.captcha||null;siteInviteOnly=!!cfg.inviteOnly}catch(e){captcha=null}
+  renderSocial();
   // The sign-up form depends on whether the site is invite only, which is only known now.
   if(!me&&authTab==='register'&&!$('#authSection').classList.contains('hidden'))renderAuth();
   if(!captcha)return;
@@ -242,6 +243,44 @@ async function showPasswordPage(token){
     }catch(x){$('#authMsg').textContent=x.message}
   });
 }
+// --- Continue with Google / Apple: their buttons above the sign-in and sign-up forms, when set up -------------
+let googleReady=null,appleReady=null,socialPending=null;
+const loadScript=src=>new Promise((ok,fail)=>{const js=document.createElement('script');js.src=src;js.async=true;js.onload=ok;js.onerror=()=>fail(Error('Could not load the sign-in button'));document.head.appendChild(js)});
+function renderSocial(){
+  const box=$('#socialBox');if(!box||me)return;
+  const g=siteConfig.google,a=siteConfig.apple&&siteConfig.apple.servicesId;
+  box.classList.toggle('hidden',!g&&!a);
+  if(!g&&!a)return;
+  box.innerHTML=`${g?'<div id="googleBtn" class="google-btn"></div>':''}${a?'<button type="button" class="apple-btn" id="appleBtn"><svg viewBox="0 0 17 20" aria-hidden="true"><path fill="currentColor" d="M14.1 10.6c0-2.4 2-3.6 2.1-3.7-1.2-1.7-3-1.9-3.6-2-1.5-.2-3 .9-3.8.9-.8 0-2-.9-3.3-.9-1.7 0-3.3 1-4.1 2.5-1.8 3.1-.5 7.6 1.3 10.1.8 1.2 1.8 2.6 3.1 2.5 1.3-.1 1.7-.8 3.3-.8s2 .8 3.3.8c1.4 0 2.2-1.2 3.1-2.5 1-1.4 1.4-2.8 1.4-2.9 0 0-2.7-1-2.8-4zM11.6 3.2c.7-.8 1.2-2 1-3.2-1 .1-2.2.7-2.9 1.5-.6.7-1.2 1.9-1 3.1 1.1.1 2.2-.6 2.9-1.4z"/></svg>Continue with Apple</button>':''}<div class="or-line"><span>or with your email</span></div>`;
+  if(g)(googleReady||=loadScript('https://accounts.google.com/gsi/client').then(()=>google.accounts.id.initialize({client_id:g.clientId,callback:r=>socialSignIn('google',r.credential),ux_mode:'popup',use_fedcm_for_prompt:true})))
+    .then(()=>{const el=$('#googleBtn');if(el)google.accounts.id.renderButton(el,{theme:'outline',size:'large',shape:'pill',text:authTab==='register'?'signup_with':'continue_with',width:Math.min(el.clientWidth||320,400)})})
+    .catch(e=>{$('#googleBtn').textContent=e.message});
+  if(a)$('#appleBtn').onclick=async()=>{
+    try{
+      await (appleReady||=loadScript('https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js').then(()=>AppleID.auth.init({clientId:a,scope:'name email',redirectURI:location.origin+'/',usePopup:true})));
+      const r=await AppleID.auth.signIn(),n=r.user&&r.user.name;
+      socialSignIn('apple',r.authorization.id_token,n?[n.firstName,n.lastName].filter(Boolean).join(' '):undefined);
+    }catch(e){if(e&&e.error!=='popup_closed_by_user'&&e.error!=='user_cancelled_authorize')$('#authMsg').textContent=e.message||'Signing in with Apple didn\'t work. Please try again.'}
+  };
+}
+// The provider vouched for them: sign in (or create the account; or ask for the invite code, or the two-step code).
+async function socialSignIn(provider,credential,name,inviteCode){
+  socialPending={provider,credential,name};
+  try{
+    const r=await api(`/api/auth/${provider}`,{method:'POST',body:JSON.stringify({credential,name,invite_code:inviteCode||inviteCodeFromPath()||undefined,invite_token:pendingInviteToken||undefined})});
+    socialPending=null;
+    if(r.twoFactor)return showCodeStep(r.ticket,'/api/login/2fa');
+    await load();
+  }catch(x){
+    if(x.data&&x.data.inviteRequired){
+      $('#authPanel').innerHTML=`<h1>Your invite code</h1><p>${esc(x.message)}</p><form id="socialInviteForm"><label>Invite code<input id="siCode" required autocomplete="off" style="text-transform:uppercase"></label><button>Create my account</button></form><p id="authMsg" class="error"></p><p><a href="/" data-signin>Back</a></p>`;
+      $('[data-signin]').onclick=e=>{e.preventDefault();authTab='login';renderAuth()};
+      $('#socialInviteForm').onsubmit=guarded(async()=>{const p=socialPending;await socialSignIn(p.provider,p.credential,p.name,$('#siCode').value.trim())});
+      return;
+    }
+    const m=$('#authMsg');if(m)m.textContent=x.message;
+  }
+}
 // Two-step sign-in: after the password, the code from the authenticator app (or a backup code).
 function showCodeStep(ticket,url){
   $('#authPanel').innerHTML=`<h1>Two-step sign-in</h1><p>Enter the 6-digit code from your authenticator app, or one of your backup codes.</p><form id="codeForm"><label>Code<input id="tfCode" required autocomplete="one-time-code" inputmode="numeric" maxlength="12" spellcheck="false"></label><button>Sign in</button></form><p id="authMsg" class="error"></p><p><a href="/" data-signin>Start again</a></p>`;
@@ -255,7 +294,7 @@ function showCodeStep(ticket,url){
 function renderAuth(){
   $all('[data-authtab]').forEach(b=>b.classList.toggle('active',b.dataset.authtab===authTab));
   if(authTab==='login'){
-    $('#authPanel').innerHTML=`<h1>Welcome back</h1><p>Sign in to log activity and support your team.</p><form id="loginForm"><label>Email<input id="email" type="email" required autocomplete="username" autocapitalize="off" spellcheck="false"></label><label>Password<input id="password" type="password" required autocomplete="current-password"></label><div id="captcha-box"></div><button>Sign in</button></form><p id="authMsg" class="error"></p><p><a href="/forgot" id="forgotLink">Forgot your password?</a></p>`;
+    $('#authPanel').innerHTML=`<h1>Welcome back</h1><p>Sign in to log activity and support your team.</p><div id="socialBox" class="social hidden"></div><form id="loginForm"><label>Email<input id="email" type="email" required autocomplete="username" autocapitalize="off" spellcheck="false"></label><label>Password<input id="password" type="password" required autocomplete="current-password"></label><div id="captcha-box"></div><button>Sign in</button></form><p id="authMsg" class="error"></p><p><a href="/forgot" id="forgotLink">Forgot your password?</a></p>`;
     $('#forgotLink').onclick=e=>{e.preventDefault();setUrl('/forgot');showPasswordPage(null)};
     $('#loginForm').onsubmit=guarded(async()=>{try{const r=await api('/api/login',{method:'POST',body:JSON.stringify({email:$('#email').value,password:$('#password').value,captchaToken:await captchaToken()})});if(r.twoFactor)return showCodeStep(r.ticket,'/api/login/2fa');await load()}catch(x){$('#authMsg').textContent=x.message;if(!x.keepCaptcha)resetCaptcha()}});
   }else{
@@ -264,11 +303,12 @@ function renderAuth(){
     const linkCode=inviteCodeFromPath(),invited=!!(linkCode||pendingInviteToken);
     const inviteBit=!siteInviteOnly?'':invited?'<p class="muted">You have an invite, so you can create an account.</p>'
       :'<label>Invite code<input id="rinvite" required autocomplete="off" placeholder="From the invite someone sent you" style="text-transform:uppercase"></label><p class="muted">Active Together is invite only: you need the invite link or code someone sent you.</p>';
-    $('#authPanel').innerHTML=`<h1>Create your account</h1><p>Then create a challenge or join one with an invite code.</p><form id="registerForm"><label>Name<input id="rname" required autocomplete="name"></label><label>Email<input id="remail" type="email" required autocomplete="email" autocapitalize="off" spellcheck="false"></label><label>Password<input id="rpassword" type="password" required minlength="8" autocomplete="new-password"></label>${inviteBit}<div id="captcha-box"></div><button>Create account</button></form><p class="muted">By creating an account you agree to our <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</p><p id="authMsg" class="error"></p>`;
+    $('#authPanel').innerHTML=`<h1>Create your account</h1><p>Then create a challenge or join one with an invite code.</p><div id="socialBox" class="social hidden"></div><form id="registerForm"><label>Name<input id="rname" required autocomplete="name"></label><label>Email<input id="remail" type="email" required autocomplete="email" autocapitalize="off" spellcheck="false"></label><label>Password<input id="rpassword" type="password" required minlength="8" autocomplete="new-password"></label>${inviteBit}<div id="captcha-box"></div><button>Create account</button></form><p class="muted">By creating an account you agree to our <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</p><p id="authMsg" class="error"></p>`;
     $('#registerForm').onsubmit=guarded(async()=>{try{await api('/api/register',{method:'POST',body:JSON.stringify({name:$('#rname').value,email:$('#remail').value,password:$('#rpassword').value,
       invite_code:linkCode||($('#rinvite')?$('#rinvite').value.trim():undefined),invite_token:pendingInviteToken||undefined,captchaToken:await captchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;if(!x.keepCaptcha)resetCaptcha()}});
   }
   renderCaptchaIfReady();
+  renderSocial();
 }
 $all('[data-authtab]').forEach(b=>b.onclick=()=>{authTab=b.dataset.authtab;if(/^\/(forgot|reset\/)/.test(location.pathname))setUrl('/');renderAuth()});
 
@@ -1175,18 +1215,26 @@ function openMyAccount(){
       <p class="muted">Only people in a challenge with you can see your profile, and only for challenges you share. Leaderboard totals are always visible to them; GPS routes never are.</p>
       <label class="check-row"><input type="checkbox" id="acctNotify"${me.notify_email?' checked':''}> <span>Email me when support replies to my tickets, or someone adds me to a challenge</span></label>
       ${me.role==='global_admin'?`<label class="check-row"><input type="checkbox" id="acctNotifyAdmin"${me.notify_admin?' checked':''}> <span>Email me about new support tickets and replies (global admins)</span></label>`:''}
-      <label>New password (leave blank to keep current)<input id="acctNewPassword" type="password" minlength="8" autocomplete="new-password"></label>
-      <label>Current password (required to change email or password)<input id="acctCurrentPassword" type="password" autocomplete="current-password"></label>
+      ${me.has_password?`<label>New password (leave blank to keep current)<input id="acctNewPassword" type="password" minlength="8" autocomplete="new-password"></label>
+      <label>Current password (required to change email or password)<input id="acctCurrentPassword" type="password" autocomplete="current-password"></label>`
+      :`<label>Set a password (optional: you sign in with Google or Apple)<input id="acctNewPassword" type="password" minlength="8" autocomplete="new-password"></label><input id="acctCurrentPassword" type="hidden">`}
+      <div id="acctLinked"></div>
       <button>Save changes</button>
     </form>
     <p id="acctMsg" class="error"></p>
     <div class="twostep"><h2>Two-step sign-in</h2><div id="tsBody"></div></div>
     <div class="danger-zone"><h2>Delete my account</h2>
       <p class="muted">Deletes your account, everything you've logged, your routes, follows and support tickets, straight away. A challenge you own alone passes to its longest-standing member, or is deleted if nobody else is in it. This can't be undone.</p>
-      <form id="deleteAccountForm"><label>Your password<input id="deletePassword" type="password" required autocomplete="current-password"></label><button class="danger">Delete my account</button></form>
+      <form id="deleteAccountForm">${me.has_password?'<label>Your password<input id="deletePassword" type="password" required autocomplete="current-password"></label>':'<label>Type DELETE to confirm<input id="deletePassword" required autocomplete="off"></label>'}<button class="danger">Delete my account</button></form>
       <p id="deleteMsg" class="error"></p></div>`;
   $('#modal').showModal();
   renderTwoStep();
+  // Google / Apple sign-ins linked to this account, each removable while there's another way in.
+  api('/api/me/identities').then(r=>{
+    const box=$('#acctLinked');if(!box||!r.identities.length)return;
+    box.innerHTML=`<p class="muted">Signs in with: ${r.identities.map(i=>`<b>${i.provider==='google'?'Google':'Apple'}</b>${i.email?` (${esc(i.email)})`:''} <button type="button" class="linkish" data-unlink="${i.provider}">Remove</button>`).join(' · ')}</p>`;
+    box.querySelectorAll('[data-unlink]').forEach(b=>b.onclick=async()=>{try{await api(`/api/me/identities/${b.dataset.unlink}`,{method:'DELETE'});openMyAccount()}catch(e){$('#acctMsg').textContent=e.message}});
+  }).catch(()=>{});
   $('#deleteAccountForm').onsubmit=guarded(async e=>{
     e.preventDefault();
     if(!await uiConfirm('Delete your Active Together account and everything in it? This cannot be undone.',{ok:'Delete my account',danger:true}))return;

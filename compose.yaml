@@ -28,6 +28,10 @@ services:
       # Bot check: Cloudflare Turnstile once both keys are set (otherwise reCAPTCHA, if its keys are set).
       TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-}
       TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-}
+      # Sign in with Google (web client ID; iOS client ID for the iPhone app) and Apple (Services ID for the website).
+      GOOGLE_WEB_CLIENT_ID: ${GOOGLE_WEB_CLIENT_ID:-}
+      GOOGLE_IOS_CLIENT_ID: ${GOOGLE_IOS_CLIENT_ID:-}
+      APPLE_SERVICES_ID: ${APPLE_SERVICES_ID:-}
       # Emergency only: turns off two-step sign-in for this email at start-up. Remove it again afterwards.
       CLEAR_TWO_FACTOR_FOR: ${CLEAR_TWO_FACTOR_FOR:-}
       AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-20}

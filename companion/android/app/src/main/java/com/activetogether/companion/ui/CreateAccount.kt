@@ -41,7 +41,7 @@ import kotlinx.coroutines.withContext
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun CreateAccountCard(vm: AppViewModel, backToSignIn: () -> Unit) {
+fun CreateAccountCard(vm: AppViewModel, signInWithGoogle: (() -> Unit)? = null, backToSignIn: () -> Unit) {
     val context = LocalContext.current
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
@@ -54,6 +54,7 @@ fun CreateAccountCard(vm: AppViewModel, backToSignIn: () -> Unit) {
     Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, elevation = CardDefaults.cardElevation(6.dp)) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Create your account", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            signInWithGoogle?.let { GoogleButton(enabled = !busy, onClick = it) }
             OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true,
                 modifier = Modifier.fillMaxWidth().autofill(listOf(AutofillType.PersonFullName)) { name = it },
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next))
@@ -87,4 +88,15 @@ fun CreateAccountCard(vm: AppViewModel, backToSignIn: () -> Unit) {
             TextButton(onClick = backToSignIn) { Text("I have an account: sign in") }
         }
     }
+}
+
+/** "Continue with Google", as Google's branding asks: white, outlined, the G logo, then a line before the email form. */
+@Composable
+fun GoogleButton(enabled: Boolean, onClick: () -> Unit) {
+    androidx.compose.material3.OutlinedButton(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
+        androidx.compose.foundation.Image(androidx.compose.ui.res.painterResource(com.activetogether.companion.R.drawable.google_g), contentDescription = null, modifier = Modifier.size(18.dp))
+        androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
+        Text("Continue with Google", fontWeight = FontWeight.Medium)
+    }
+    Text("or with your email", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
 }

@@ -402,9 +402,11 @@ fun EditProfileScreen(vm: AppViewModel, done: () -> Unit) {
             title = { Text("Delete your account?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Everything in it is deleted for good. Enter your password to confirm.")
-                    OutlinedTextField(password, { password = it }, label = { Text("Password") }, singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+                    val noPassword = vm.me?.hasPassword == false
+                    Text(if (noPassword) "Everything in it is deleted for good. You sign in with Google, so type DELETE to confirm." else "Everything in it is deleted for good. Enter your password to confirm.")
+                    OutlinedTextField(password, { password = it }, label = { Text(if (noPassword) "Type DELETE" else "Password") }, singleLine = true,
+                        visualTransformation = if (noPassword) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = if (noPassword) KeyboardType.Text else KeyboardType.Password))
                     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
             },

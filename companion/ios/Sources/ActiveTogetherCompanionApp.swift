@@ -120,6 +120,9 @@ struct LoginView: View {
     // Creating an account rather than signing in (from the link below, or an invite card); the privacy policy sheet.
     @State private var creating = false
     @State private var showPolicy = false
+    // Google / Apple: a sign-in waiting for an invite code (signing up on an invite-only site).
+    @State private var waiting: (provider: String, token: String, name: String?)?
+    @State private var socialInvite = ""
 
     var body: some View {
         ScrollView {
@@ -131,8 +134,16 @@ struct LoginView: View {
                     .multilineTextAlignment(.center).foregroundStyle(.white.opacity(0.9))
                 if let code = model.pendingInvite { InviteSignInCard(code: code, creating: creating) { creating = true } }
                 VStack(spacing: 12) {
-                    if creating {
-                        CreateAccountForm { creating = false }
+                    if let w = waiting {
+                        Text("Your invite code").font(.title3.bold()).frame(maxWidth: .infinity, alignment: .leading)
+                        if let error { Text(error).font(.subheadline) }
+                        TextField("Invite code", text: $socialInvite).textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        Button { social(w.provider, w.token, w.name, invite: socialInvite.trimmingCharacters(in: .whitespaces).uppercased()) } label: {
+                            Group { if busy { ProgressView().tint(.white) } else { Text("Create my account").bold() } }.frame(maxWidth: .infinity)
+                        }.buttonStyle(.borderedProminent).controlSize(.large).disabled(busy || socialInvite.trimmingCharacters(in: .whitespaces).isEmpty)
+                        Button("Back") { waiting = nil; error = nil }.font(.footnote)
+                    } else if creating {
+                        CreateAccountForm(onSocial: { social($0, $1, $2, invite: model.pendingInvite) }) { creating = false }
                     } else if let ticket {
                         // Two-step sign-in: the code from the authenticator app, or a backup code.
                         Text("Enter the 6-digit code from your authenticator app, or one of your backup codes.").font(.subheadline)
@@ -146,6 +157,7 @@ struct LoginView: View {
                         .buttonStyle(.borderedProminent).controlSize(.large)
                         .disabled(busy || code.trimmingCharacters(in: .whitespaces).isEmpty)
                     } else {
+                        SocialButtons { social($0, $1, $2, invite: model.pendingInvite) }
                         TextField("Email", text: $email).textContentType(.username).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
                         SecureField("Password", text: $password).textContentType(.password)
                         if let error { Text(error).foregroundStyle(.red).font(.subheadline) }
@@ -161,7 +173,7 @@ struct LoginView: View {
                         .buttonStyle(.borderedProminent).controlSize(.large)
                         .disabled(busy || email.isEmpty || password.isEmpty)
                     }
-                    if !creating {
+                    if !creating && waiting == nil {
                         Link("Forgot password?", destination: URL(string: "\(serverURL)/forgot")!).font(.footnote.bold())
                         Button("New here? Create an account") { creating = true; error = nil }.font(.footnote.bold())
                         Button("Privacy policy") { showPolicy = true }.font(.footnote)
@@ -175,5 +187,15 @@ struct LoginView: View {
         .background(LinearGradient(colors: [.brandRedDeep, .brandRed, Color(.systemGroupedBackground)], startPoint: .top, endPoint: .bottom).ignoresSafeArea())
         .onAppear { if let m = model.message { error = m; model.message = nil } }
         .sheet(isPresented: $showPolicy) { PolicyView() }
+    }
+
+    /// Hand Google's or Apple's token to the server: signed in, or the two-step code, or the invite code first.
+    private func social(_ provider: String, _ token: String, _ name: String?, invite: String?) {
+        busy = true; error = nil
+        Task {
+            let r = await model.socialSignIn(provider: provider, credential: token, name: name, inviteCode: invite)
+            busy = false; error = r.error
+            if r.inviteNeeded { waiting = (provider, token, name) } else { waiting = nil; if let next = r.ticket { ticket = next } }
+        }
     }
 }

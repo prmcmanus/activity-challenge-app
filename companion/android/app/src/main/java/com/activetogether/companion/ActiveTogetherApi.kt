@@ -12,7 +12,7 @@ const val SERVER_URL = BuildConfig.SERVER_URL
 
 /** Who can see what on my profile: "private" (name, photo), "summary" (+ totals, rank), "full" (+ recent activity). */
 data class Me(val id: Int, val name: String, val email: String, val avatarUrl: String?, val bio: String? = null, val sharing: String = "summary",
-              val role: String = "member") {
+              val role: String = "member", val hasPassword: Boolean = true) {
     val isAdmin: Boolean get() = role == "global_admin"
 }
 
@@ -193,7 +193,8 @@ data class ImportResult(val added: Int, val skipped: Int, val updated: Int = 0)
 data class StepDay(val target: Target, val date: LocalDate, val steps: Long)
 
 /** A failed request, keeping the HTTP status so an expired session (401) can send the user back to sign in. */
-class ApiException(val status: Int, message: String) : IOException(message)
+/** A failed request: its status, the server's message, and its whole reply (say, inviteRequired). */
+class ApiException(val status: Int, message: String, val body: JSONObject? = null) : IOException(message)
 
 /** The first step of signing in: a session [token], or a [ticket] when the account needs a code too. */
 data class LoginStep(val token: String?, val ticket: String?)
@@ -211,6 +212,15 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
     fun register(name: String, email: String, password: String, inviteCode: String?): String =
         request("/api/mobile/register", "POST", JSONObject().put("name", name).put("email", email).put("password", password)
             .apply { if (inviteCode != null) put("invite_code", inviteCode) }).getString("sessionToken")
+
+    /** Sign in with Google or Apple's ID token: a session token, or (two-step sign-in) a ticket for [loginCode]. */
+    fun socialLogin(provider: String, credential: String, inviteCode: String?): LoginStep {
+        val r = request("/api/mobile/auth/$provider", "POST", JSONObject().put("credential", credential).apply { if (inviteCode != null) put("invite_code", inviteCode) })
+        return if (r.optBoolean("twoFactor")) LoginStep(null, r.getString("ticket")) else LoginStep(r.getString("sessionToken"), null)
+    }
+
+    /** The Google client ID the server accepts (null when signing in with Google isn't set up). */
+    fun googleClientId(): String? = request("/api/config").optJSONObject("google")?.optString("clientId")?.takeIf { it.isNotBlank() }
 
     /** Whether a new account needs an invite code. */
     fun inviteOnly(): Boolean = request("/api/config").optBoolean("inviteOnly")
@@ -578,7 +588,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
     private fun parseMe(u: JSONObject) = Me(u.getInt("id"), u.getString("name"), u.getString("email"),
         u.optString("avatar_url").ifBlank { u.optString("avatarUrl") }.takeIf { it.isNotBlank() && it != "null" },
         if (u.isNull("bio")) null else u.optString("bio").takeIf { it.isNotBlank() },
-        u.optString("profile_sharing").ifBlank { "summary" }, u.optString("role").ifBlank { "member" })
+        u.optString("profile_sharing").ifBlank { "summary" }, u.optString("role").ifBlank { "member" }, u.optInt("has_password", 1) == 1)
 
     private fun request(path: String, method: String = "GET", body: JSONObject? = null): JSONObject {
         val connection = URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection
@@ -596,8 +606,8 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
         val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
         if (status !in 200..299) {
-            val message = runCatching { JSONObject(text).optString("error") }.getOrDefault("")
-            throw ApiException(status, message.ifBlank { "Request failed with HTTP $status" })
+            val reply = runCatching { JSONObject(text) }.getOrNull()
+            throw ApiException(status, reply?.optString("error").orEmpty().ifBlank { "Request failed with HTTP $status" }, reply)
         }
         return JSONObject(text.ifBlank { "{}" })
     }

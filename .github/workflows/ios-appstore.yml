@@ -48,6 +48,7 @@ jobs:
           xcodebuild -project ActiveTogether.xcodeproj -scheme ActiveTogether -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -archivePath build/ActiveTogether.xcarchive \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic AT_DISTRIBUTION=appstore CURRENT_PROJECT_VERSION="$BUILD" \
+            CODE_SIGN_ENTITLEMENTS=ActiveTogetherCompanion-AppStore.entitlements \
             -allowProvisioningUpdates \
             -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 \
             -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \

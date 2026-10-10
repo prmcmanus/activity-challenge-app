@@ -42,6 +42,12 @@ ensureColumn('users','totp_pending','TEXT');
 ensureColumn('users','totp_last_step','INTEGER');
 db.exec(`CREATE TABLE IF NOT EXISTS totp_backup_codes(user_id INTEGER NOT NULL,code_hash TEXT NOT NULL,used_at TEXT,
   PRIMARY KEY(user_id,code_hash),FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`);
+// Signing in with Google or Apple: each account those link to. An account made this way has no password until
+// its owner sets one (password_hash '!', which no password matches).
+db.exec(`CREATE TABLE IF NOT EXISTS identities(provider TEXT NOT NULL,sub TEXT NOT NULL,user_id INTEGER NOT NULL,email TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(provider,sub),FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS identities_user ON identities(user_id);`);
+const NO_PASSWORD='!',hasPassword=h=>String(h||'').includes(':');
 // Emails: about my tickets and being added to a challenge (everyone), and about new support tickets (admins).
 ensureColumn('users','notify_email','INTEGER NOT NULL DEFAULT 1');
 // Added by someone else (an owner or a global admin) rather than joining: who, and whether they've said keep.
@@ -343,6 +349,39 @@ const RECAPTCHA_SITE_KEY=process.env.RECAPTCHA_SITE_KEY||'', RECAPTCHA_SECRET_KE
 const RESEND_API_KEY=process.env.RESEND_API_KEY||'',MAIL_FROM=process.env.MAIL_FROM||'Active Together <no-reply@activetogether.team>';
 const RESEND_API_URL=process.env.RESEND_API_URL||'https://api.resend.com/emails';
 const emailEnabled=()=>!!RESEND_API_KEY;
+// --- Sign in with Google / Apple ------------------------------------------------------------------------
+// The browser or app signs in with the provider and hands us its ID token (a JWT); we check its signature
+// against the provider's published keys, that it was issued for one of our apps, and that it's current.
+// Google: GOOGLE_WEB_CLIENT_ID (the website, and the Android app, which asks for tokens for it) and
+// GOOGLE_IOS_CLIENT_ID. Apple: the iPhone app's bundle ID, and APPLE_SERVICES_ID for the website.
+const GOOGLE_WEB_CLIENT_ID=process.env.GOOGLE_WEB_CLIENT_ID||'',GOOGLE_IOS_CLIENT_ID=process.env.GOOGLE_IOS_CLIENT_ID||'';
+const APPLE_SERVICES_ID=process.env.APPLE_SERVICES_ID||'',APPLE_BUNDLE_ID=process.env.APPLE_BUNDLE_ID||'team.activetogether.companion';
+const SOCIAL={
+  google:{label:'Google',jwks:process.env.GOOGLE_JWKS_URL||'https://www.googleapis.com/oauth2/v3/certs',issuers:['accounts.google.com','https://accounts.google.com'],
+    audiences:()=>[GOOGLE_WEB_CLIENT_ID,GOOGLE_IOS_CLIENT_ID].filter(Boolean)},
+  apple:{label:'Apple',jwks:process.env.APPLE_JWKS_URL||'https://appleid.apple.com/auth/keys',issuers:['https://appleid.apple.com'],
+    audiences:()=>[APPLE_BUNDLE_ID,APPLE_SERVICES_ID].filter(Boolean)},
+};
+const jwksCache=new Map();
+async function providerKeys(url,fresh=false){
+  const hit=jwksCache.get(url);if(hit&&!fresh&&hit.until>Date.now())return hit.keys;
+  const r=await fetch(url,{signal:AbortSignal.timeout(10000)});if(!r.ok)throw Error('keys unavailable');
+  const keys=(await r.json()).keys||[],age=Number(((r.headers.get('cache-control')||'').match(/max-age=(\d+)/)||[])[1]||3600);
+  jwksCache.set(url,{keys,until:Date.now()+Math.min(age,86400)*1000});return keys;
+}
+async function verifyIdToken(provider,token){
+  const cfg=SOCIAL[provider],parts=String(token||'').split('.');
+  if(parts.length!==3)throw Error('not a token');
+  const header=JSON.parse(Buffer.from(parts[0],'base64url')),claims=JSON.parse(Buffer.from(parts[1],'base64url'));
+  if(header.alg!=='RS256')throw Error('unexpected algorithm');
+  let key=(await providerKeys(cfg.jwks)).find(k=>k.kid===header.kid);
+  if(!key)key=(await providerKeys(cfg.jwks,true)).find(k=>k.kid===header.kid); // the provider rotated its keys
+  if(!key)throw Error('unknown key');
+  if(!crypto.verify('RSA-SHA256',Buffer.from(`${parts[0]}.${parts[1]}`),crypto.createPublicKey({key,format:'jwk'}),Buffer.from(parts[2],'base64url')))throw Error('bad signature');
+  const auds=[].concat(claims.aud),now=Date.now()/1000;
+  if(!cfg.issuers.includes(claims.iss)||!auds.some(a=>cfg.audiences().includes(a))||!(claims.exp>now-60)||!claims.sub)throw Error('not for us');
+  return claims;
+}
 // Replies go to the support mailbox rather than the no-reply sender.
 const MAIL_REPLY_TO=process.env.MAIL_REPLY_TO||'support@activetogether.team';
 async function sendMail({to,subject,text}){
@@ -532,7 +571,7 @@ const SESSION_DAYS={web:30,app:90};
 function auth(req){
   const t=sessionToken(req);if(!t)return null;
   const th=crypto.createHash('sha256').update(t).digest('hex');
-  const u=db.prepare(`SELECT u.id,u.email,u.name,u.role,u.avatar_url,u.bio,u.profile_sharing,(u.totp_secret IS NOT NULL) two_factor,u.notify_email,u.notify_admin,s.expires_at,s.kind FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>datetime('now') AND u.deactivated_at IS NULL`).get(th);
+  const u=db.prepare(`SELECT u.id,u.email,u.name,u.role,u.avatar_url,u.bio,u.profile_sharing,(u.totp_secret IS NOT NULL) two_factor,(instr(u.password_hash,':')>0) has_password,u.notify_email,u.notify_admin,s.expires_at,s.kind FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>datetime('now') AND u.deactivated_at IS NULL`).get(th);
   if(!u)return null;
   const fromCookie=!/^Bearer /i.test(req.headers.authorization||''),kind=u.kind||(fromCookie?'web':'app'),days=SESSION_DAYS[kind]||30;
   // Extended at most once a day; a web session's cookie is renewed with it (see api()).
@@ -1059,7 +1098,8 @@ async function api(req,res,url){
  // For the container's health check: the app answers and the database reads.
  if(m==='GET'&&url.pathname==='/api/health'){db.prepare('SELECT 1').get();return send(res,200,{ok:true})}
  if(u&&u.renewCookie)res.setHeader('Set-Cookie',setSessionCookie(u.renewCookie)['Set-Cookie']);
- if(m==='GET'&&url.pathname==='/api/config'){const cap=captchaConfig();return send(res,200,{captcha:cap,recaptchaSiteKey:cap&&cap.provider==='recaptcha'?cap.siteKey:null,shortcutUrl:SHORTCUT_URL||null,inviteOnly:inviteOnly(),passwordResetEmail:emailEnabled()})}
+ if(m==='GET'&&url.pathname==='/api/config'){const cap=captchaConfig();return send(res,200,{captcha:cap,recaptchaSiteKey:cap&&cap.provider==='recaptcha'?cap.siteKey:null,shortcutUrl:SHORTCUT_URL||null,inviteOnly:inviteOnly(),passwordResetEmail:emailEnabled(),
+   google:GOOGLE_WEB_CLIENT_ID?{clientId:GOOGLE_WEB_CLIENT_ID,iosClientId:GOOGLE_IOS_CLIENT_ID||null}:null,apple:{servicesId:APPLE_SERVICES_ID||null}})}
  // Forgotten password: always the same answer, so it never says whether an email has an account. The email
  // goes out in the background so the reply takes as long either way.
  if(m==='POST'&&url.pathname==='/api/password/forgot'){
@@ -1122,6 +1162,51 @@ async function api(req,res,url){
    if(result.twoFactor)return send(res,200,{twoFactor:true,ticket:result.ticket});
    return send(res,200,{ok:true,user:result.user},setSessionCookie(result.sessionToken));
  }
+ // Signing in with Google or Apple (website: cookie; apps: token). A known Google/Apple account signs straight
+ // in. Otherwise, when the provider vouches for the email and an account already uses it, the two are linked -
+ // and every other session on that account ends, in case someone else had registered that email with a
+ // password of their own. Otherwise a new account is made (with the invite code, if the site is invite only).
+ // Two-step sign-in still applies.
+ if(m==='POST'&&url.pathname.match(/^\/api\/(mobile\/)?auth\/(google|apple)$/)){
+   const app=url.pathname.startsWith('/api/mobile/'),provider=url.pathname.split('/').pop(),label=SOCIAL[provider].label;
+   if(!SOCIAL[provider].audiences().length||(provider==='google'&&!GOOGLE_WEB_CLIENT_ID))return send(res,404,{error:`Signing in with ${label} isn't set up here`});
+   if(hitRateLimit('social:'+ip,AUTH_RATE_LIMIT_MAX*5,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many sign-in attempts. Please wait a few minutes and try again.'});
+   const b=await body(req);
+   let claims;
+   try{claims=await verifyIdToken(provider,b.credential)}catch(e){return send(res,401,{error:`Signing in with ${label} didn't work. Please try again.`})}
+   const verified=claims.email_verified===true||claims.email_verified==='true',email=verified&&claims.email?String(claims.email).toLowerCase().trim():null;
+   let user=db.prepare('SELECT u.* FROM identities i JOIN users u ON u.id=i.user_id WHERE i.provider=? AND i.sub=?').get(provider,String(claims.sub)),linked=false,created=false;
+   if(!user&&email){
+     user=db.prepare('SELECT * FROM users WHERE email=?').get(email);
+     if(user){db.prepare('INSERT OR IGNORE INTO identities(provider,sub,user_id,email) VALUES(?,?,?,?)').run(provider,String(claims.sub),user.id,email);linked=true}
+   }
+   if(!user){
+     if(!email)return send(res,400,{error:`${label} didn't share an email address, which an account needs. Try again and allow it, or create an account with your email.`});
+     if(inviteOnly()&&!validInvite(b.invite_code,b.invite_token))return send(res,403,{error:b.invite_code?"That invite code wasn't recognised. Check it, or ask for a new invite link.":'Active Together is invite only. Enter the invite code someone sent you to create your account.',inviteRequired:true});
+     if(hitRateLimit('register:'+ip,REGISTER_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many new accounts from this network. Please try again later.'});
+     const name=String(b.name||claims.name||[claims.given_name,claims.family_name].filter(Boolean).join(' ')||email.split('@')[0]).trim().slice(0,80);
+     const r=db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'member')").run(email,name,NO_PASSWORD);
+     db.prepare('INSERT INTO identities(provider,sub,user_id,email) VALUES(?,?,?,?)').run(provider,String(claims.sub),Number(r.lastInsertRowid),email);
+     user=db.prepare('SELECT * FROM users WHERE id=?').get(Number(r.lastInsertRowid));created=true;
+   }
+   if(user.deactivated_at)return send(res,403,{error:DEACTIVATED_MSG});
+   if(linked){db.prepare('DELETE FROM sessions WHERE user_id=?').run(user.id);audit(user.id,`${label} sign-in linked`,{user:user.id,detail:'other sessions signed out'})}
+   if(user.totp_secret)return send(res,200,{twoFactor:true,ticket:makeLoginTicket(user.id,app?'app':'web')});
+   const t=startSession(user.id,app?'app':'web'),out={ok:true,created,linked,user:{id:user.id,email:user.email,name:user.name,role:user.role,avatarUrl:user.avatar_url}};
+   return app?send(res,created?201:200,{...out,sessionToken:t}):send(res,created?201:200,out,setSessionCookie(t));
+ }
+ // My Google / Apple sign-ins: listed in My account; one can be removed while there's still a way in (a
+ // password, or another).
+ if(url.pathname.match(/^\/api\/me\/identities(\/(google|apple))?$/)&&(m==='GET'||m==='DELETE')){
+   if(!need(res,u))return;
+   const list=()=>db.prepare('SELECT provider,email,created_at FROM identities WHERE user_id=? ORDER BY provider').all(u.id);
+   if(m==='GET')return send(res,200,{identities:list(),has_password:!!u.has_password});
+   const provider=url.pathname.split('/').pop(),mine=list();
+   if(!mine.some(i=>i.provider===provider))return send(res,404,{error:'Not linked'});
+   if(!u.has_password&&mine.length<2)return send(res,400,{error:'Set a password first, so you can still sign in'});
+   db.prepare('DELETE FROM identities WHERE user_id=? AND provider=?').run(u.id,provider);
+   return send(res,200,{ok:true,identities:list()});
+ }
  // The second step of signing in: the code from the authenticator app (or a backup code), with the ticket the
  // password step gave. A few tries per account, then a wait.
  if(m==='POST'&&(url.pathname==='/api/login/2fa'||url.pathname==='/api/mobile/login/2fa')){
@@ -1158,7 +1243,9 @@ async function api(req,res,url){
    const changingSensitive=email!==undefined||!!b.newPassword;
    if(changingSensitive){
      const current=db.prepare('SELECT password_hash FROM users WHERE id=?').get(u.id);
-     if(!b.currentPassword||!(await verify(b.currentPassword,current.password_hash)))return send(res,400,{error:'Current password is required and must be correct to change your email or password'});
+     // Signed up with Google or Apple: there's no password to give, so one can be set; the email waits for it.
+     if(!hasPassword(current.password_hash)){if(email!==undefined)return send(res,400,{error:'Set a password first, then you can change your email'})}
+     else if(!b.currentPassword||!(await verify(b.currentPassword,current.password_hash)))return send(res,400,{error:'Current password is required and must be correct to change your email or password'});
    }
    let passwordHash;
    if(b.newPassword){if(String(b.newPassword).length<8)return send(res,400,{error:'New password must be at least 8 characters'});passwordHash=await hash(b.newPassword)}
@@ -1176,7 +1263,7 @@ async function api(req,res,url){
      if(!updateUserFields(u.id,{name,email,passwordHash,avatarUrl})&&!profileChanged)return send(res,400,{error:'Nothing to update'});
    }catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
    if(passwordHash){const t=sessionToken(req);db.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash!=?').run(u.id,crypto.createHash('sha256').update(t).digest('hex'))}
-   return send(res,200,{ok:true,user:db.prepare('SELECT id,email,name,role,avatar_url,bio,profile_sharing,(totp_secret IS NOT NULL) two_factor,notify_email,notify_admin FROM users WHERE id=?').get(u.id)});
+   return send(res,200,{ok:true,user:db.prepare("SELECT id,email,name,role,avatar_url,bio,profile_sharing,(totp_secret IS NOT NULL) two_factor,(instr(password_hash,':')>0) has_password,notify_email,notify_admin FROM users WHERE id=?").get(u.id)});
  }
  // Two-step sign-in for my account: set up (a new secret to scan), switch on with a first code (which returns
  // the backup codes), new backup codes, or switch off (password needed for both of those).
@@ -1198,6 +1285,7 @@ async function api(req,res,url){
      audit(u,'two-step sign-in on',{user:u.id});
      return send(res,200,{ok:true,backupCodes:newBackupCodes(u.id)});
    }
+   if(!hasPassword(x.password_hash))return send(res,400,{error:'Set a password in My account first'});
    if(!b.password||!(await verify(String(b.password),x.password_hash)))return send(res,400,{error:'Enter your current password'});
    if(!x.totp_secret)return send(res,400,{error:'Two-step sign-in is off'});
    if(step==='backup-codes')return send(res,200,{ok:true,backupCodes:newBackupCodes(u.id)});
@@ -1792,7 +1880,8 @@ async function api(req,res,url){
  if((m==='DELETE'&&url.pathname==='/api/me')||(m==='POST'&&url.pathname==='/api/me/delete')){
    if(!need(res,u))return;
    const b=await body(req),row=db.prepare('SELECT password_hash FROM users WHERE id=?').get(u.id);
-   if(!b.password||!(await verify(String(b.password),row.password_hash)))return send(res,400,{error:'Enter your current password to delete your account'});
+   if(hasPassword(row.password_hash)?!b.password||!(await verify(String(b.password),row.password_hash)):String(b.password||b.confirm||'').trim().toUpperCase()!=='DELETE')
+     return send(res,400,{error:hasPassword(row.password_hash)?'Enter your current password to delete your account':'You sign in with Google or Apple, so type DELETE to confirm'});
    if(u.email===seedEmail)return send(res,400,{error:"This is the site's built-in admin account from the server settings - it can't be deleted."});
    const heir=db.prepare("SELECT id FROM users WHERE role='global_admin' AND deactivated_at IS NULL AND id!=? ORDER BY id LIMIT 1").get(u.id);
    if(!heir)return send(res,400,{error:"You're the only global admin - make someone else an admin first"});
@@ -2005,9 +2094,9 @@ const UPLOAD_MIME={png:'image/png',jpg:'image/jpeg',gif:'image/gif',webp:'image/
 // Sent with every response. Scripts only from this site (plus the bot check: Cloudflare Turnstile, or Google's
 // reCAPTCHA); no framing by other sites; images only from this site and the OpenStreetMap tiles.
 const SECURITY_HEADERS={
-  'Content-Security-Policy':["default-src 'self'","script-src 'self' https://challenges.cloudflare.com https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/",
-    "style-src 'self' 'unsafe-inline'","img-src 'self' data: blob: https://tile.openstreetmap.org","connect-src 'self'","font-src 'self' data:",
-    "frame-src https://challenges.cloudflare.com https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/","object-src 'none'","base-uri 'self'","form-action 'self'","frame-ancestors 'none'"].join('; '),
+  'Content-Security-Policy':["default-src 'self'","script-src 'self' https://challenges.cloudflare.com https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/ https://accounts.google.com/gsi/client https://appleid.cdn-apple.com",
+    "style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style","img-src 'self' data: blob: https://tile.openstreetmap.org","connect-src 'self' https://accounts.google.com/gsi/","font-src 'self' data:",
+    "frame-src https://challenges.cloudflare.com https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/ https://accounts.google.com/gsi/ https://appleid.apple.com","object-src 'none'","base-uri 'self'","form-action 'self'","frame-ancestors 'none'"].join('; '),
   'X-Frame-Options':'DENY','X-Content-Type-Options':'nosniff','Referrer-Policy':'strict-origin-when-cross-origin',
   'Permissions-Policy':'camera=(), microphone=(), geolocation=(), payment=()',
   ...(ORIGIN.startsWith('https:')?{'Strict-Transport-Security':'max-age=31536000'}:{}),

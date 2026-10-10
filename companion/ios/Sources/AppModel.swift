@@ -254,6 +254,16 @@ enum BackgroundSync {
             return nil
         } catch { return error.localizedDescription }
     }
+    /// Sign in with Google or Apple: an error, the two-step ticket, or that an invite code is needed first.
+    func socialSignIn(provider: String, credential: String, name: String?, inviteCode: String?) async -> (error: String?, ticket: String?, inviteNeeded: Bool) {
+        do {
+            let step = try await API(token: nil).socialLogin(provider: provider, credential: credential, name: name, inviteCode: inviteCode)
+            if let ticket = step.ticket { return (nil, ticket, false) }
+            signedInWith(step.token ?? "")
+            return (nil, nil, false)
+        } catch let e as APIError { return (e.message, nil, e.inviteRequired) }
+        catch { return (error.localizedDescription, nil, false) }
+    }
     /// The second step of two-step sign-in.
     func signInCode(ticket: String, code: String) async -> String? {
         do {

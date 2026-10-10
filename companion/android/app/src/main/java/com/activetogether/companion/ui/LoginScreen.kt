@@ -47,6 +47,7 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalAutofill
 import androidx.compose.ui.platform.LocalAutofillTree
+import kotlinx.coroutines.launch
 import com.activetogether.companion.R
 import com.activetogether.companion.SERVER_URL
 
@@ -66,11 +67,32 @@ fun LoginScreen(vm: AppViewModel) {
     var email by remember { mutableStateOf(vm.prefs.email) }
     var password by remember { mutableStateOf("") }
     var ticket by remember { mutableStateOf<String?>(null) }
-    // Creating an account, rather than signing in (from the button below, or an invite card).
-    var creating by remember { mutableStateOf(false) }
-    var code by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf(vm.message) }
+    // Creating an account, rather than signing in (from the button below, or an invite card).
+    var creating by remember { mutableStateOf(false) }
+    // Sign in with Google: shown once the server says it's set up; a credential waits here while we ask for an invite code.
+    val activity = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var googleClient by remember { mutableStateOf<String?>(null) }
+    var waitingCredential by remember { mutableStateOf<String?>(null) }
+    var socialInvite by remember { mutableStateOf("") }
+    androidx.compose.runtime.LaunchedEffect(Unit) { googleClient = runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.activetogether.companion.ActiveTogetherApi().googleClientId() } }.getOrNull() }
+    fun googleWith(credential: String, invite: String?) = vm.socialSignIn("google", credential, invite) { e, next, inviteNeeded ->
+        busy = false; error = e
+        if (inviteNeeded) waitingCredential = credential else { waitingCredential = null; if (next != null) ticket = next }
+    }
+    val signInWithGoogle: (() -> Unit)? = googleClient?.let { id -> {
+        busy = true; error = null
+        scope.launch {
+            val token = runCatching { googleIdToken(activity, id) }
+            token.onSuccess { googleWith(it, vm.pendingInvite) }.onFailure { e ->
+                busy = false
+                if (e !is androidx.credentials.exceptions.GetCredentialCancellationException) error = e.message ?: "Signing in with Google didn't work"
+            }
+        }
+    } }
+    var code by remember { mutableStateOf("") }
 
     Box(
         Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(BrandRedDeep, BrandRed, MaterialTheme.colorScheme.background), endY = 1600f))
@@ -87,10 +109,24 @@ fun LoginScreen(vm: AppViewModel) {
                 else "Sign in with your Active Together account to see your challenges, log activity and sync your workouts.",
                 color = Color.White.copy(alpha = 0.9f), textAlign = TextAlign.Center)
             vm.pendingInvite?.let { InviteSignInCard(it, creating) { creating = true } }
-            if (creating) { CreateAccountCard(vm) { creating = false }; return@Column }
+            if (waitingCredential != null) {
+                // Signing up with Google on an invite-only site: the invite code, then the same Google sign-in again.
+                Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, elevation = CardDefaults.cardElevation(6.dp)) {
+                    Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("Your invite code", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        error?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+                        OutlinedTextField(socialInvite, { socialInvite = it.uppercase() }, label = { Text("Invite code") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        Button(onClick = { busy = true; googleWith(waitingCredential!!, socialInvite.trim()) }, enabled = !busy && socialInvite.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Create my account", fontWeight = FontWeight.Bold) }
+                        androidx.compose.material3.TextButton(onClick = { waitingCredential = null; error = null }) { Text("Back") }
+                    }
+                }
+                return@Column
+            }
+            if (creating) { CreateAccountCard(vm, signInWithGoogle) { creating = false }; return@Column }
             Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, elevation = CardDefaults.cardElevation(6.dp)) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (ticket == null) {
+                        signInWithGoogle?.let { GoogleButton(enabled = !busy, onClick = it) }
                         // Autofill hints, so a password manager (or Google's) fills these in.
                         OutlinedTextField(email, { email = it }, label = { Text("Email") }, singleLine = true,
                             modifier = Modifier.fillMaxWidth().autofill(listOf(AutofillType.EmailAddress, AutofillType.Username)) { email = it },

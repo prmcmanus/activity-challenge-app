@@ -2868,3 +2868,55 @@ test('the apps create accounts without the bot check, get a token, and still nee
     await jsonFetch(`${origin}/api/admin/settings`, admin, 'PATCH', { inviteOnly: false });
   }
 });
+
+test('sign in with Google: new accounts, linking an existing email (signing others out), invite only, the apps, and no password', async () => {
+  const http = require('node:http'), crypto = require('node:crypto');
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'test-key', alg: 'RS256', use: 'sig' };
+  const keys = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ keys: [jwk] })); });
+  await new Promise(r => keys.listen(0, '127.0.0.1', r));
+  const srv = await spawnServer({ GOOGLE_WEB_CLIENT_ID: 'web-client.apps.googleusercontent.com', GOOGLE_JWKS_URL: `http://127.0.0.1:${keys.address().port}/certs` });
+  const b64 = o => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const idToken = (claims, key = privateKey) => { const h = b64({ alg: 'RS256', kid: 'test-key', typ: 'JWT' }), p = b64({ iss: 'https://accounts.google.com', aud: 'web-client.apps.googleusercontent.com', exp: Math.floor(Date.now() / 1000) + 600, iat: Math.floor(Date.now() / 1000), email_verified: true, ...claims });
+    return `${h}.${p}.${crypto.sign('RSA-SHA256', Buffer.from(`${h}.${p}`), key).toString('base64url')}`; };
+  const google = (credential, extra = {}, path = '/api/auth/google') => fetch(`${srv.origin}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credential, ...extra }) })
+    .then(async r => ({ status: r.status, body: await r.json(), cookie: (r.headers.get('set-cookie') || '').split(';')[0] }));
+  const me = cookie => fetch(`${srv.origin}/api/me`, { headers: { cookie } }).then(r => r.json());
+  try {
+    assert.equal((await fetch(`${srv.origin}/api/config`).then(r => r.json())).google.clientId, 'web-client.apps.googleusercontent.com');
+    // A new account, with no password.
+    const first = await google(idToken({ sub: 'g-1', email: 'Gina@Example.com', name: 'Gina Google' }));
+    assert.deepEqual([first.status, first.body.created, first.body.user.name, first.body.user.email], [201, true, 'Gina Google', 'gina@example.com']);
+    assert.equal((await me(first.cookie)).user.has_password, 0);
+    const again = await google(idToken({ sub: 'g-1', email: 'gina@example.com' }));
+    assert.deepEqual([again.status, again.body.created, again.body.user.id], [200, false, first.body.user.id]);
+    // The app gets a token.
+    const app = await google(idToken({ sub: 'g-1', email: 'gina@example.com' }), {}, '/api/mobile/auth/google');
+    assert.match(app.body.sessionToken, /^[a-f0-9]+$/);
+    // Wrong client, forged signature, expired: refused.
+    assert.equal((await google(idToken({ sub: 'g-1', email: 'gina@example.com', aud: 'someone-else' }))).status, 401);
+    const other = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey;
+    assert.equal((await google(idToken({ sub: 'g-1', email: 'gina@example.com' }, other))).status, 401);
+    assert.equal((await google(idToken({ sub: 'g-1', email: 'gina@example.com', exp: 1000 }))).status, 401);
+    // An existing password account with that email is linked, and its other sessions end.
+    const reg = await fetch(`${srv.origin}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Pat Password', email: 'pat@example.com', password: 'SuperSecret123!' }) });
+    const patCookie = reg.headers.get('set-cookie').split(';')[0];
+    const linked = await google(idToken({ sub: 'g-2', email: 'pat@example.com' }));
+    assert.deepEqual([linked.status, linked.body.linked, linked.body.user.name], [200, true, 'Pat Password']);
+    assert.equal((await me(patCookie)).user, null, 'the earlier session was signed out');
+    assert.equal((await me(linked.cookie)).user.has_password, 1);
+    // An unverified email never links.
+    const unverified = await google(idToken({ sub: 'g-3', email: 'pat@example.com', email_verified: false }));
+    assert.equal(unverified.status, 400);
+    // No password: set one without a current one; delete by typing DELETE.
+    assert.equal((await fetch(`${srv.origin}/api/me`, { method: 'PATCH', headers: { cookie: first.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'new@example.com' }) })).status, 400);
+    const ids = await fetch(`${srv.origin}/api/me/identities`, { headers: { cookie: first.cookie } }).then(r => r.json());
+    assert.deepEqual(ids.identities.map(i => i.provider), ['google']);
+    assert.equal((await fetch(`${srv.origin}/api/me/identities/google`, { method: 'DELETE', headers: { cookie: first.cookie } })).status, 400, 'not the only way in');
+    const del = await fetch(`${srv.origin}/api/me/delete`, { method: 'POST', headers: { cookie: first.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ password: 'delete' }) });
+    assert.equal(del.status, 200);
+  } finally {
+    await srv.stop();
+    keys.close();
+  }
+});

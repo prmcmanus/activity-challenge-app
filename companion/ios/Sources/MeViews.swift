@@ -263,10 +263,11 @@ struct EditProfileView: View {
         }
         .navigationTitle("Edit profile").navigationBarTitleDisplayMode(.inline)
         .alert("Delete your account?", isPresented: $deleting) {
-            SecureField("Password", text: $deletePassword)
+            if model.me?.hasPassword == false { TextField("Type DELETE", text: $deletePassword).textInputAutocapitalization(.characters) }
+            else { SecureField("Password", text: $deletePassword) }
             Button("Delete account", role: .destructive) { let pw = deletePassword; Task { _ = await model.deleteAccount(password: pw) } }
             Button("Cancel", role: .cancel) {}
-        } message: { Text("Everything in it is deleted for good. Enter your password to confirm.") }
+        } message: { Text(model.me?.hasPassword == false ? "Everything in it is deleted for good. You sign in with Google or Apple, so type DELETE to confirm." : "Everything in it is deleted for good. Enter your password to confirm.") }
         .onAppear {
             guard !loaded, let me = model.me else { return }
             loaded = true; name = me.name; bio = me.bio ?? ""; sharing = me.sharing; email = me.email

@@ -155,6 +155,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Sign in with Google (or Apple): [done] gets an error, the two-step ticket, and whether an invite code is needed. */
+    fun socialSignIn(provider: String, credential: String, inviteCode: String?, done: (error: String?, ticket: String?, inviteNeeded: Boolean) -> Unit) = viewModelScope.launch {
+        try {
+            val step = withContext(Dispatchers.IO) { ActiveTogetherApi().socialLogin(provider, credential, inviteCode) }
+            if (step.ticket != null) { done(null, step.ticket, false); return@launch }
+            signedInWith(step.token!!)
+            done(null, null, false)
+        } catch (e: ApiException) {
+            done(e.message, null, e.body?.optBoolean("inviteRequired") == true)
+        } catch (e: Exception) {
+            done(e.message ?: "Sign in failed", null, false)
+        }
+    }
+
     /** The second step of two-step sign-in. */
     fun signInCode(ticket: String, code: String, done: (String?) -> Unit) = viewModelScope.launch {
         try {

@@ -1395,7 +1395,8 @@ $('#modalClose').onclick=()=>$('#modal').close();
 const goHome=e=>{if(!me)return;e.preventDefault();if($('#modal').open)$('#modal').close();showHome()};
 $('#brandHome').onclick=goHome;
 $('#homeBtn').onclick=goHome;
-$('#logout').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload()};
+// Back to the home page, so whoever signs in next doesn't land on the last person's challenge.
+$('#logout').onclick=async()=>{await api('/api/logout',{method:'POST'});location.replace('/')};
 $('#backHome').onclick=()=>challengeBack==='admin'?showAdmin():showHome();
 // Forms in a dialog (logging activity, join with a code, new team, a support ticket) live in a hidden holder and are
 // moved into the dialog when their button is pressed, and back when it closes - so their handlers stay put.
@@ -1605,7 +1606,10 @@ async function route(){
     const current=firstRoute&&dash.challenges.filter(c=>c.role!=='admin'&&c.end_date>=localToday());
     if(current&&current.length===1)return await openChallenge(current[0].id);
     showHome();
-  }catch(e){showHome();uiAlert(e.message)}
+  }catch(e){
+    // A challenge link this account isn't in (say an old address, or one shared by mistake): just go home.
+    if(e.status===403&&/^\/challenges\/\d+/.test(p)){setUrl('/',true);return showHome()}
+    showHome();uiAlert(e.message)}
   finally{routing=false;firstRoute=false}
 }
 let firstRoute=true;

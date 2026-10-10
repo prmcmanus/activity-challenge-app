@@ -1305,7 +1305,7 @@ function openMyAccount(){
         <option value="full"${me.profile_sharing==='full'?' selected':''}>Full - plus my recent activity in shared challenges</option>
       </select></label>
       <p class="muted">Only people in a challenge with you can see your profile, and only for challenges you share. Leaderboard totals are always visible to them; GPS routes never are.</p>
-      <label class="check-row"><input type="checkbox" id="acctNotify"${me.notify_email?' checked':''}> <span>Email me when support replies to my tickets, or someone adds me to a challenge</span></label>
+      <label class="check-row"><input type="checkbox" id="acctNotify"${me.notify_email?' checked':''}> <span>Email me when support replies to my tickets, or someone adds me to a challenge (if you get phone notifications, these come there instead)</span></label>
       <label class="check-row"><input type="checkbox" id="acctNotifyPush"${me.notify_push?' checked':''}> <span>Phone notifications in the Active Together app (replies, being added, challenges starting and ending, a weekly summary)</span></label>
       ${me.role==='global_admin'||me.admin_needs_two_factor?`<label class="check-row"><input type="checkbox" id="acctNotifyAdmin"${me.notify_admin?' checked':''}> <span>Email me about new support tickets and replies (global admins)</span></label>`:''}
       ${me.has_password?`<label>New password (leave blank to keep current)<input id="acctNewPassword" type="password" minlength="8" autocomplete="new-password"></label>

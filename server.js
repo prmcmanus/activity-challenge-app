@@ -531,6 +531,13 @@ function sendApns(token,msg){
     req.end(JSON.stringify({aps:{alert:{title:msg.title,body:msg.body},sound:'default'},url:msg.url||'/'}));
   });
 }
+// Whether someone gets phone notifications (allowed, and a phone the server can reach): news then goes there
+// instead of by email. Security notices, confirming links and password resets are always emailed.
+function pushReachable(uid){
+  if(!pushEnabled.android&&!pushEnabled.ios)return false;
+  const ok=[pushEnabled.android&&'android',pushEnabled.ios&&'ios'].filter(Boolean);
+  return !!db.prepare(`SELECT 1 FROM push_devices d JOIN users us ON us.id=d.user_id WHERE d.user_id=? AND us.notify_push=1 AND d.platform IN (${ok.map(()=>'?').join(',')}) LIMIT 1`).get(uid,...ok);
+}
 // To everyone in userIds who allows phone notifications, on each of their phones. Tokens a service says are gone are
 // forgotten. Never throws; returns how many were sent.
 async function pushTo(userIds,msg){
@@ -827,13 +834,14 @@ function addMember(cid,uid,{role='member',teamId=null,by}){
     const ch=db.prepare('SELECT name FROM challenges WHERE id=?').get(cid);
     pushTo([uid],{title:`${by.name} added you to ${ch.name}`,body:"Open it to start logging - or leave it if you didn't expect this.",url:`/challenges/${cid}`});
     const who=db.prepare('SELECT email,notify_email,deactivated_at,email_verified_at FROM users WHERE id=?').get(uid),c=db.prepare('SELECT name,start_date,end_date FROM challenges WHERE id=?').get(cid);
-    if(who&&who.notify_email&&who.email_verified_at&&!who.deactivated_at)sendMail({to:who.email,subject:`You've been added to ${c.name} on Active Together`,
+    if(who&&who.notify_email&&who.email_verified_at&&!who.deactivated_at&&!pushReachable(uid))sendMail({to:who.email,subject:`You've been added to ${c.name} on Active Together`,
       text:`Hello,\n\n${by.name} added you to the challenge "${c.name}" on Active Together (${c.start_date} to ${c.end_date}).\n\nOpen it here: ${ORIGIN}/challenges/${cid}\n\nDidn't expect this? Open the challenge and choose Leave challenge: anything you've logged in it goes with you.\n\nYou can turn these emails off in My account.\n\nActive Together\n${ORIGIN}`});
   }
   return !existing;
 }
 // Ticket news by email: a reply or status change to the reporter, a new ticket or reporter reply to the global
-// admins (each as they allow, at most one email per ticket per person every 10 minutes).
+// admins (each as they allow, at most one email per ticket per person every 10 minutes) - by phone notification
+// instead, for anyone who gets those.
 function ticketMail(ticketId,toReporter,what){
   const t=db.prepare('SELECT t.id,t.title,t.user_id,u.email,u.notify_email,u.email_verified_at FROM tickets t JOIN users u ON u.id=t.user_id WHERE t.id=?').get(ticketId);
   if(!t)return;
@@ -842,6 +850,7 @@ function ticketMail(ticketId,toReporter,what){
   if(!emailEnabled())return;
   const people=toReporter?(t.notify_email&&t.email_verified_at?[{id:t.user_id,email:t.email}]:[]):db.prepare("SELECT id,email FROM users WHERE role='global_admin' AND deactivated_at IS NULL AND notify_admin=1 AND email_verified_at IS NOT NULL AND id!=?").all(t.user_id);
   for(const p of people){
+    if(pushReachable(p.id))continue;
     if(hitRateLimit(`mail:ticket:${t.id}:${p.id}`,1,10*60_000))continue;
     sendMail({to:p.email,subject:`${toReporter?'Your support ticket':'Support ticket'} #${t.id}: ${what}`,
       text:`Hello,\n\n${toReporter?`There's news on your ticket "${t.title}": ${what}.`:`Ticket #${t.id} "${t.title}": ${what}.`}\n\nOpen it here: ${ORIGIN}/help/tickets/${t.id}\n\nYou can turn these emails off in My account.\n\nActive Together\n${ORIGIN}`});

@@ -3121,11 +3121,15 @@ test('phone notifications: tokens per session, sent through Firebase and Apple, 
   const apns = http2.createServer();
   apns.on('stream', (stream, headers) => { let b = ''; stream.on('data', c => b += c); stream.on('end', () => { apnsSent.push({ path: headers[':path'], topic: headers['apns-topic'], auth: headers.authorization, body: JSON.parse(b) }); stream.respond({ ':status': 200 }); stream.end(); }); });
   await new Promise(r => apns.listen(0, '127.0.0.1', r));
+  const mail = [];
+  const mailer = http.createServer((req, res) => { let b = ''; req.on('data', c => b += c); req.on('end', () => { mail.push(JSON.parse(b)); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"id":"x"}'); }); });
+  await new Promise(r => mailer.listen(0, '127.0.0.1', r));
   const sa = { project_id: 'demo-proj', client_email: 'push@demo-proj.iam.gserviceaccount.com', private_key: crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }) };
   const p8 = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ type: 'pkcs8', format: 'pem' });
   const srv = await spawnServer({ FCM_SERVICE_ACCOUNT: JSON.stringify(sa), FCM_ANDROID_APP_ID: '1:123:android:abc', FCM_API_KEY: 'AIza-test', FCM_SENDER_ID: '123',
     FCM_TOKEN_URL: `http://127.0.0.1:${fcm.address().port}/token`, FCM_SEND_BASE: `http://127.0.0.1:${fcm.address().port}`,
-    APNS_KEY: Buffer.from(p8).toString('base64'), APNS_KEY_ID: 'KEY123', APNS_TEAM_ID: 'TEAM123', APNS_HOST: `http://127.0.0.1:${apns.address().port}` });
+    APNS_KEY: Buffer.from(p8).toString('base64'), APNS_KEY_ID: 'KEY123', APNS_TEAM_ID: 'TEAM123', APNS_HOST: `http://127.0.0.1:${apns.address().port}`,
+    RESEND_API_KEY: 're_test', RESEND_API_URL: `http://127.0.0.1:${mailer.address().port}/emails` });
   const settle = () => new Promise(r => setTimeout(r, 500));
   const j = async (path, auth, method = 'GET', payload) => { const r = await fetch(`${srv.origin}${path}`, { method, headers: { ...(auth ? (auth.startsWith('session=') ? { cookie: auth } : { Authorization: `Bearer ${auth}` }) : {}), ...(payload ? { 'Content-Type': 'application/json' } : {}) }, body: payload ? JSON.stringify(payload) : undefined }); return { status: r.status, body: await r.json().catch(() => ({})) }; };
   const appUser = async (name, email) => { await j('/api/register', undefined, 'POST', { name, email, password: 'SuperSecret123!' }); return (await j('/api/mobile/login', undefined, 'POST', { email, password: 'SuperSecret123!' })).body.sessionToken; };
@@ -3133,6 +3137,9 @@ test('phone notifications: tokens per session, sent through Firebase and Apple, 
     const cfg = (await j('/api/config')).body;
     assert.deepEqual([cfg.push.android.projectId, cfg.push.android.senderId, cfg.push.ios], ['demo-proj', '123', true]);
     const owner = await appUser('Paula Push', 'paula@example.com'), member = await appUser('Max Member', 'max@example.com');
+    await settle();
+    const link = mail.find(m => m.to[0] === 'max@example.com' && /Confirm your email/.test(m.subject)).text.match(/\/verify\/([A-Za-z0-9_-]+)/)[1];
+    assert.equal((await j('/api/email/verify', undefined, 'POST', { token: link })).status, 200);
     for (const [platform, token] of [['android', 'tok-a'], ['ios', 'tok-i'], ['android', 'gone-token']])
       assert.equal((await j('/api/me/push', member, 'POST', { platform, token })).status, 200);
     const c = await j('/api/challenges', owner, 'POST', { name: 'Push Up', start_date: '2026-01-01', end_date: '2026-12-31', participation: 'individual' });
@@ -3141,6 +3148,8 @@ test('phone notifications: tokens per session, sent through Firebase and Apple, 
     const a = fcmSent.find(m => m.token === 'tok-a');
     assert.ok(a && /Paula Push added you to Push Up/.test(a.notification.title) && a.data.url === `/challenges/${c.body.id}`);
     assert.equal(a.auth, 'Bearer at-1');
+    // Someone who gets phone notifications isn't emailed the same news.
+    assert.ok(!mail.some(m => m.to[0] === 'max@example.com' && /added to Push Up/.test(m.subject)));
     assert.equal(a.path, '/v1/projects/demo-proj/messages:send');
     const i = apnsSent.find(m => m.path === '/3/device/tok-i');
     assert.ok(i && i.topic === 'team.activetogether.companion' && /^bearer [\w-]+\.[\w-]+\.[\w-]+$/.test(i.auth) && i.body.url === `/challenges/${c.body.id}`);
@@ -3155,10 +3164,11 @@ test('phone notifications: tokens per session, sent through Firebase and Apple, 
     await j(`/api/challenges/${c2.body.id}/members`, owner, 'POST', { email: 'max@example.com' });
     await settle();
     assert.equal(fcmSent.length, before);
+    assert.ok(mail.some(m => m.to[0] === 'max@example.com' && /added to Quiet/.test(m.subject)), 'with phone notifications off, it comes by email');
     await j('/api/me', member, 'PATCH', { notifyPush: true });
     await j('/api/logout', member, 'POST');
     assert.deepEqual(tokens(), []);
-  } finally { await srv.stop(); fcm.close(); apns.close(); }
+  } finally { await srv.stop(); fcm.close(); apns.close(); mailer.close(); }
 });
 
 test('the leaderboard says where I stand; the config names the stores and map tiles', async () => {

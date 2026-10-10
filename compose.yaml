@@ -55,6 +55,8 @@ services:
       GEOCODER_KEY: ${GEOCODER_KEY:-}
       GEOCODER_GAP_MS: ${GEOCODER_GAP_MS:-}
       # Store listings: PLAY_STORE_LIVE=1 once anyone can install from Google Play; APP_STORE_URL once the App Store listing is live.
+      # Google Play's app signing key (SHA-256), for app links and passkeys in the Play version of the app.
+      ANDROID_CERT_FINGERPRINTS: ${ANDROID_CERT_FINGERPRINTS:-}
       PLAY_STORE_LIVE: ${PLAY_STORE_LIVE:-}
       APP_STORE_URL: ${APP_STORE_URL:-}
       AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-20}

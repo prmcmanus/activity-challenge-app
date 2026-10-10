@@ -60,8 +60,9 @@ struct RootView: View {
                     guard let url = model.pendingRoute else { return }
                     model.pendingRoute = nil
                     let parts = url.split(separator: "/").map(String.init)
-                    if parts.count == 2, parts[0] == "challenges", let id = Int(parts[1]) { router.tab = .challenges; router.paths[.challenges] = [.challenge(id)] }
+                    if parts.count == 2, parts[0] == "challenges", let id = Int(parts[1]) { if router.tab == .challenges { router.push(.challenge(id)) } else { router.tab = .challenges; router.paths[.challenges] = [.challenge(id)] } }
                     else if parts.count == 3, parts[0] == "help", parts[1] == "tickets", let id = Int(parts[2]) { router.tab = .me; router.paths[.me] = [.ticket(id)] }
+                    else if parts.count == 2, parts[0] == "users", let id = Int(parts[1]) { router.push(.user(id)) }
                 }
                 // Without a connection the app shows what it last loaded, and says so.
                 .safeAreaInset(edge: .top) {
@@ -140,6 +141,7 @@ struct LoginView: View {
     // Creating an account rather than signing in (from the link below, or an invite card); the privacy policy sheet.
     @State private var creating = false
     @State private var showPolicy = false
+    @State private var forgot = false
     // Google / Apple: a sign-in waiting for an invite code (signing up on an invite-only site).
     @State private var waiting: (provider: String, token: String, name: String?)?
     @State private var socialInvite = ""
@@ -194,7 +196,11 @@ struct LoginView: View {
                         .disabled(busy || email.isEmpty || password.isEmpty)
                     }
                     if !creating && waiting == nil {
-                        Link("Forgot password?", destination: URL(string: "\(serverURL)/forgot")!).font(.footnote.bold())
+                        if ticket == nil {
+                            Button { busy = true; error = nil; Task { error = await model.passkeySignIn(); busy = false } } label: { Label("Sign in with a passkey", systemImage: "person.badge.key").frame(maxWidth: .infinity) }
+                                .buttonStyle(.bordered).disabled(busy)
+                        }
+                        Button("Forgot password?") { forgot = true }.font(.footnote.bold())
                         Button("New here? Create an account") { creating = true; error = nil }.font(.footnote.bold())
                         Button("Privacy policy") { showPolicy = true }.font(.footnote)
                     }
@@ -207,6 +213,7 @@ struct LoginView: View {
         .background(LinearGradient(colors: [.brandRedDeep, .brandRed, Color(.systemGroupedBackground)], startPoint: .top, endPoint: .bottom).ignoresSafeArea())
         .onAppear { if let m = model.message { error = m; model.message = nil } }
         .sheet(isPresented: $showPolicy) { PolicyView() }
+        .sheet(isPresented: $forgot) { ForgotPasswordView(start: email) }
     }
 
     /// Hand Google's or Apple's token to the server: signed in, or the two-step code, or the invite code first.
@@ -216,6 +223,31 @@ struct LoginView: View {
             let r = await model.socialSignIn(provider: provider, credential: token, name: name, inviteCode: invite)
             busy = false; error = r.error
             if r.inviteNeeded { waiting = (provider, token, name) } else { waiting = nil; if let next = r.ticket { ticket = next } }
+        }
+    }
+}
+
+/// A link to choose a new password, emailed (it opens the website, which finishes the reset).
+struct ForgotPasswordView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State var start: String
+    @State private var sent = false
+    @State private var error: String?
+    var body: some View {
+        NavigationStack {
+            Form {
+                if sent { Text("If an account uses that address, a link to choose a new password is on its way. It works for an hour. Nothing after a few minutes? Check your spam folder.") }
+                else {
+                    Text("Enter your email and we'll send you a link to choose a new password.")
+                    TextField("Email", text: $start).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
+                }
+                if let error { Text(error).foregroundStyle(.red) }
+            }
+            .navigationTitle(sent ? "Check your email" : "Forgot your password?").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button(sent ? "Done" : "Cancel") { dismiss() } }
+                if !sent { ToolbarItem(placement: .confirmationAction) { Button("Send") { Task { do { try await API(token: nil).forgotPassword(start); sent = true } catch { self.error = (error as? APIError)?.message ?? error.localizedDescription } } }.disabled(!start.contains("@")) } }
+            }
         }
     }
 }

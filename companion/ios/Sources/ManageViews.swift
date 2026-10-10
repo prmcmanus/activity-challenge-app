@@ -144,7 +144,7 @@ struct ChallengeMembersView: View {
                     HStack {
                         Avatar(url: m.avatarURL, name: m.name)
                         VStack(alignment: .leading) {
-                            Text(m.name + (m.id == meId ? " (you)" : "")).font(.headline)
+                            Button(m.name + (m.id == meId ? " (you)" : "")) { model.openProfile(m.id) }.font(.headline).buttonStyle(.plain).foregroundStyle(Color.brandRed)
                             Text([m.email, m.role == "owner" ? "owner" : "member", m.teams ?? (individual ? nil : "no team"),
                                   "\(m.entries) \(m.entries == 1 ? "entry" : "entries")", m.deactivated ? "deactivated" : nil].compactMap { $0 }.joined(separator: " · "))
                                 .font(.caption).foregroundStyle(.secondary)
@@ -262,7 +262,7 @@ struct TeamManageView: View {
                 ForEach(list) { m in
                     HStack {
                         VStack(alignment: .leading) {
-                            Text(m.name).font(.headline)
+                            Button(m.name) { model.openProfile(m.id) }.font(.headline).buttonStyle(.plain).foregroundStyle(Color.brandRed)
                             Text([m.email, m.role == "team_admin" ? "team admin" : "member"].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()

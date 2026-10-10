@@ -94,12 +94,27 @@ struct ActivityDetailView: View {
                 ForEach(siblings) { e in
                     HStack {
                         VStack(alignment: .leading) {
-                            Text(e.challengeName).font(.headline)
+                            Button(e.challengeName) { model.openChallenge(e.challengeId) }.font(.headline).buttonStyle(.plain).foregroundStyle(Color.brandRed)
                             Text([e.teamName, fmtEntry(e)].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button("Remove", systemImage: "trash", role: .destructive) { confirm = e }.labelStyle(.titleAndIcon).font(.subheadline)
                     }
+                }
+            }
+            // Other challenges it could count in: running on its date, and not already holding it.
+            let others = model.challenges.filter { c in c.role != "admin" && c.contains(a.date) && !siblings.contains { $0.challengeId == c.id } && c.accepts(a.type) }
+            if !others.isEmpty {
+                SectionCard("Count it in another challenge") {
+                    ForEach(others) { c in
+                        HStack {
+                            Text(c.name).font(.headline)
+                            Spacer()
+                            Button("Add", systemImage: "plus") { Task { if await model.copyActivity(a.id, to: c) { model.message = "It counts in \(c.name) now as well" } } }
+                                .disabled(!c.individual && c.myTeams.isEmpty)
+                        }
+                    }
+                    if others.contains(where: { !$0.individual && $0.myTeams.isEmpty }) { EmptyNote("For a team challenge, join a team in it first.") }
                 }
             }
             if let c = a.comment, !c.isEmpty { SectionCard("Comment") { Text("“\(c)”") } }

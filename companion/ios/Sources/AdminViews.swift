@@ -56,7 +56,7 @@ struct AdminView: View {
             HStack {
                 Avatar(url: u.avatarURL, name: u.name)
                 VStack(alignment: .leading) {
-                    Text(u.name + (u.id == model.me?.id ? " (you)" : "")).font(.headline).foregroundStyle(.primary)
+                    Button(u.name + (u.id == model.me?.id ? " (you)" : "")) { model.openProfile(u.id) }.font(.headline).buttonStyle(.plain).foregroundStyle(Color.brandRed)
                     Text(u.email).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()

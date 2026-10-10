@@ -61,6 +61,7 @@ struct Me: Equatable {
     var emailVerified = true, pendingEmail: String? = nil
     /// A global admin whose powers wait for two-step sign-in to be turned on (on the website).
     var adminNeedsTwoFactor = false, notifyPush = true
+    var twoFactor = false, pushPrefs: [String: Bool] = [:]
     var isAdmin: Bool { role == "global_admin" }
 }
 /// A signed-in browser or app, for the signed-in devices list.
@@ -173,7 +174,29 @@ struct MyActivity: Identifiable, Hashable {
 }
 
 struct ProfileChallenge: Hashable { let id: Int, name: String, startDate: Day, endDate: Day, measure: Measure, distanceUnit: String, team: String?, minutes: Double, distance: Double, steps: Double, rank: Int, of: Int }
-struct ProfileActivity: Hashable { let type: String, minutes: Double?, distance: Double?, steps: Int?, distanceUnit: String, measure: Measure, date: Day, startTime: String?, comment: String?, challengeName: String }
+struct ProfileActivity: Hashable {
+    let type: String, minutes: Double?, distance: Double?, steps: Int?, distanceUnit: String, measure: Measure, date: Day, startTime: String?, comment: String?, challengeName: String
+    var id = 0, challengeId = 0, kudos = 0, kudosMine = false
+}
+/// Streaks and personal bests across every challenge.
+struct UserStats: Hashable { let streak: Int, longestStreak: Int, bestMinutes: Double, bestKm: Double, bestMi: Double, bestSteps: Int
+    init?(_ j: J?) { guard let j else { return nil }; streak = j.int("streak"); longestStreak = j.int("longestStreak"); bestMinutes = j.double("bestMinutes"); bestKm = j.double("bestDistanceKm"); bestMi = j.double("bestDistanceMi"); bestSteps = j.int("bestSteps") }
+    /// "🔥 5-day streak · best run 9 days · longest 75 min · furthest 13 mi · most steps 18,240"
+    var line: String {
+        [streak > 0 ? "🔥 \(streak)-day streak" : nil, longestStreak > 1 ? "best run \(longestStreak) days" : nil, bestMinutes > 0 ? "longest \(fmtNum(bestMinutes)) min" : nil,
+         bestMi > 0 ? "furthest \(fmtNum(bestMi)) mi" : nil, bestSteps > 0 ? "most steps \(fmtSteps(bestSteps))" : nil].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+/// Getting started: what's done.
+struct SetupState: Hashable { let challenge: Bool, syncing: Bool, push: Bool, email: Bool }
+/// A challenge's recent entry, as its feed shows it, with its 👏.
+struct FeedEntry: Identifiable, Hashable {
+    let id: Int, userId: Int, name: String, avatarURL: String?, type: String, minutes: Double?, distance: Double?, steps: Int?, date: Day, comment: String?, teamName: String?
+    var kudos: Int, kudosMine: Bool
+}
+struct Passkey: Identifiable, Hashable { let id: String, name: String, createdAt: String, lastUsedAt: String? }
+/// The dashboard's extras from its last load.
+enum Dash { static var stats: UserStats?; static var setup: SetupState? }
 /// Someone in a followers or following list.
 struct Person: Identifiable, Hashable { let id: Int, name: String, avatarURL: String? }
 /// Someone's profile as a challenge-mate sees it. challenges/activities are nil when their sharing level hides them.
@@ -181,14 +204,16 @@ struct Person: Identifiable, Hashable { let id: Int, name: String, avatarURL: St
 struct Profile {
     let id: Int, name: String, avatarURL: String?, bio: String?, memberSince: String, sharing: String, isSelf: Bool, challenges: [ProfileChallenge]?, activities: [ProfileActivity]?
     let followersCount: Int, followingCount: Int, isFollowing: Bool, followsYou: Bool, followers: [Person]?, following: [Person]?
+    var stats: UserStats? = nil
 }
 
 /// Help & support. type: bug | feature | question; status: new | in_progress | planned | done | declined.
 struct Ticket: Identifiable, Hashable {
     let id: Int, type: String, title: String, description: String, status: String, resolution: String?, imageURL: String?, clientInfo: String?
     let createdAt: String, updatedAt: String, reporterName: String, reporterEmail: String?, commentCount: Int, unread: Bool, mine: Bool
+    var reporterId = 0
 }
-struct TicketComment: Identifiable, Hashable { let id: Int, body: String, internalNote: Bool, createdAt: String, authorName: String, fromSupport: Bool }
+struct TicketComment: Identifiable, Hashable { let id: Int, body: String, internalNote: Bool, createdAt: String, authorName: String, fromSupport: Bool; var authorId = 0 }
 struct TicketList { let tickets: [Ticket]; let counts: [String: Int]; let openByType: [String: Int] }
 
 struct InvitePreview {
@@ -295,12 +320,16 @@ final class API: @unchecked Sendable {
     private func parseMe(_ u: J) -> Me {
         Me(id: u.int("id"), name: u.string("name"), email: u.string("email"), avatarURL: u.str("avatar_url") ?? u.str("avatarUrl"),
            bio: u.str("bio"), sharing: u.str("profile_sharing") ?? "summary", role: u.str("role") ?? "member", hasPassword: u.int("has_password", 1) == 1,
-           emailVerified: u.int("email_verified", 1) == 1, pendingEmail: u.str("pending_email"), adminNeedsTwoFactor: u.bool("admin_needs_two_factor"), notifyPush: u.int("notify_push", 1) == 1)
+           emailVerified: u.int("email_verified", 1) == 1, pendingEmail: u.str("pending_email"), adminNeedsTwoFactor: u.bool("admin_needs_two_factor"), notifyPush: u.int("notify_push", 1) == 1,
+           twoFactor: u.int("two_factor") == 1 || u.bool("two_factor"), pushPrefs: (u.o["push_prefs"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.boolValue })
     }
 
     // Challenges
     func challenges() async throws -> [Challenge] {
-        try await request("/api/dashboard").arr("challenges").map { c in
+        let d = try await request("/api/dashboard")
+        Dash.stats = UserStats(d.obj("stats"))
+        Dash.setup = d.obj("setup").map { SetupState(challenge: $0.bool("challenge"), syncing: $0.bool("syncing"), push: $0.bool("push"), email: $0.bool("email")) }
+        return d.arr("challenges").map { c in
             Challenge(id: c.int("id"), name: c.string("name"), descriptionHTML: c.string("description"), startDate: c.day("start_date"), endDate: c.day("end_date"),
                       measure: Measure(c.str("metric")), distanceUnit: unit(c), individual: c.str("participation") == "individual", role: c.str("role") ?? "member",
                       myTeams: c.arr("teams").map { MyTeam(id: $0.int("id"), name: $0.string("name")) },
@@ -424,8 +453,9 @@ final class API: @unchecked Sendable {
                              individual: c.str("participation") == "individual", members: c.int("members"), teamName: t?.str("name"),
                              member: r.has("member") ? r.bool("member") : nil, inTeam: r.has("inTeam") ? r.bool("inTeam") : nil)
     }
-    func leaderboard(_ id: Int) async throws -> Leaderboard {
-        let r = try await request("/api/challenges/\(id)/leaderboard")
+    /// period: "all", "month" or "week".
+    func leaderboard(_ id: Int, period: String = "all") async throws -> Leaderboard {
+        let r = try await request("/api/challenges/\(id)/leaderboard" + (period == "all" ? "" : "?period=\(period)"))
         func rows(_ a: [J], people: Bool) -> [Standing] {
             a.map { x in Standing(name: x.string("name"), minutes: x.double("minutes"), distance: x.double("distance"), steps: x.double("steps"),
                                   imageURL: x.str("image_url") ?? x.str("avatar_url"), userId: people ? x.int("id") : nil,
@@ -463,6 +493,33 @@ final class API: @unchecked Sendable {
     func editSteps(_ id: Int, date: Day, steps: Int, comment: String) async throws {
         _ = try await request("/api/activities/\(id)", "PATCH", ["steps": steps, "activity_date": date.description, "comment": comment])
     }
+    // Feed, 👏, counting an entry in another challenge
+    func feed(_ challengeId: Int) async throws -> [FeedEntry] {
+        try await request("/api/challenges/\(challengeId)/feed").arr("activities").map { x in
+            FeedEntry(id: x.int("id"), userId: x.int("user_id"), name: x.string("name"), avatarURL: x.str("avatar_url"), type: x.string("activity_type"), minutes: x.doubleOrNil("minutes"),
+                      distance: x.doubleOrNil("distance"), steps: x.intOrNil("steps"), date: x.day("activity_date"), comment: x.str("comment"), teamName: x.str("team_name"),
+                      kudos: x.int("kudos"), kudosMine: x.int("kudos_mine") == 1 || x.bool("kudos_mine"))
+        }
+    }
+    func kudos(_ activityId: Int, on: Bool) async throws -> Int { try await request("/api/activities/\(activityId)/kudos", on ? "POST" : "DELETE").int("kudos") }
+    func copyActivity(_ activityId: Int, challengeId: Int, teamId: Int?) async throws {
+        var b: [String: Any] = ["challenge_id": challengeId]; if let teamId { b["team_id"] = teamId }
+        _ = try await request("/api/activities/\(activityId)/copy", "POST", b)
+    }
+    // Passkeys, two-step sign-in, forgotten password, which notifications
+    func passkeyCreateOptions() async throws -> J { try await request("/api/me/passkeys/options", "POST", [:]) }
+    func savePasskey(_ credential: [String: Any], name: String) async throws { _ = try await request("/api/me/passkeys", "POST", ["name": name, "credential": credential]) }
+    func passkeys() async throws -> [Passkey] { try await request("/api/me/passkeys").arr("passkeys").map { Passkey(id: $0.string("id"), name: $0.string("name", "Passkey"), createdAt: $0.string("created_at"), lastUsedAt: $0.str("last_used_at")) } }
+    func removePasskey(_ id: String) async throws { _ = try await request("/api/me/passkeys/\(id)", "DELETE") }
+    func passkeyLoginOptions() async throws -> J { try await request("/api/passkey/options", "POST", [:]) }
+    func passkeyLogin(_ credential: [String: Any]) async throws -> String { try await request("/api/mobile/passkey/login", "POST", ["credential": credential]).string("sessionToken") }
+    func twoStepSetup() async throws -> (secret: String, uri: String) { let r = try await request("/api/me/2fa/setup", "POST", [:]); return (r.string("secret"), r.string("uri")) }
+    func twoStepEnable(_ code: String) async throws -> [String] { (try await request("/api/me/2fa/enable", "POST", ["code": code]).o["backupCodes"] as? [String]) ?? [] }
+    func twoStepDisable(password: String) async throws { _ = try await request("/api/me/2fa/disable", "POST", ["password": password]) }
+    func twoStepNewBackupCodes(password: String) async throws -> [String] { (try await request("/api/me/2fa/backup-codes", "POST", ["password": password]).o["backupCodes"] as? [String]) ?? [] }
+    func forgotPassword(_ email: String) async throws { _ = try await request("/api/mobile/password/forgot", "POST", ["email": email.trimmingCharacters(in: .whitespaces)]) }
+    func setPushPrefs(_ prefs: [String: Bool]) async throws -> Me { parseMe(try await request("/api/me", "PATCH", ["pushPrefs": prefs]).obj("user") ?? J([:])) }
+
     // My account: confirming my email, signed-in devices, phone notifications, the site's settings
     /// Sends the confirming link again; returns the address it went to.
     func resendEmailCheck() async throws -> String { try await request("/api/me/email/resend", "POST", [:]).string("to") }
@@ -534,13 +591,14 @@ final class API: @unchecked Sendable {
         let activities: [ProfileActivity]? = r.has("activities") ? r.arr("activities").map { x in
             ProfileActivity(type: x.string("activity_type"), minutes: x.doubleOrNil("minutes"), distance: x.doubleOrNil("distance"), steps: x.intOrNil("steps"),
                             distanceUnit: unit(x), measure: Measure(x.str("metric")), date: x.day("activity_date"), startTime: x.str("start_time"),
-                            comment: x.str("comment"), challengeName: x.string("challenge_name"))
+                            comment: x.str("comment"), challengeName: x.string("challenge_name"),
+                            id: x.int("id"), challengeId: x.int("challenge_id"), kudos: x.int("kudos"), kudosMine: x.int("kudos_mine") == 1 || x.bool("kudos_mine"))
         } : nil
         func people(_ k: String) -> [Person]? { r.has(k) ? r.arr(k).map { Person(id: $0.int("id"), name: $0.string("name"), avatarURL: $0.str("avatar_url")) } : nil }
         return Profile(id: r.int("id"), name: r.string("name"), avatarURL: r.str("avatar_url"), bio: r.str("bio"), memberSince: r.string("member_since"),
                        sharing: r.str("sharing") ?? "summary", isSelf: r.bool("self"), challenges: challenges, activities: activities,
                        followersCount: r.int("followers_count"), followingCount: r.int("following_count"), isFollowing: r.bool("is_following"),
-                       followsYou: r.bool("follows_you"), followers: people("followers"), following: people("following"))
+                       followsYou: r.bool("follows_you"), followers: people("followers"), following: people("following"), stats: UserStats(r.obj("stats")))
     }
     func updateProfile(name: String? = nil, email: String? = nil, currentPassword: String? = nil, newPassword: String? = nil,
                        avatarURL: String? = nil, bio: String? = nil, sharing: String? = nil) async throws -> Me {
@@ -563,7 +621,7 @@ final class API: @unchecked Sendable {
         return Ticket(id: t.int("id"), type: t.string("type"), title: t.string("title"), description: t.string("description"), status: t.string("status"),
                       resolution: t.str("resolution"), imageURL: t.str("image_url"), clientInfo: t.str("client_info"), createdAt: t.string("created_at"),
                       updatedAt: t.string("updated_at"), reporterName: rep?.string("name") ?? "", reporterEmail: rep?.str("email"),
-                      commentCount: t.int("comment_count"), unread: t.bool("unread"), mine: t.bool("mine"))
+                      commentCount: t.int("comment_count"), unread: t.bool("unread"), mine: t.bool("mine"), reporterId: rep?.int("id") ?? 0)
     }
     func tickets(all: Bool = false, status: String? = nil, type: String? = nil) async throws -> TicketList {
         var q: [String] = []
@@ -578,7 +636,7 @@ final class API: @unchecked Sendable {
         let r = try await request("/api/tickets/\(id)")
         return (parseTicket(r), r.arr("comments").map { c in
             TicketComment(id: c.int("id"), body: c.string("body"), internalNote: c.bool("internal"), createdAt: c.string("created_at"),
-                          authorName: c.obj("author")?.string("name") ?? "", fromSupport: c.bool("from_support"))
+                          authorName: c.obj("author")?.string("name") ?? "", fromSupport: c.bool("from_support"), authorId: c.obj("author")?.int("id") ?? 0)
         })
     }
     func createTicket(type: String, title: String, description: String, imageURL: String?, clientInfo: String) async throws -> Int {

@@ -17,6 +17,54 @@ private func progressText(_ s: Standing) -> String {
 }
 
 private func myTotal(_ c: Challenge) -> String { fmtMeasure(c.measure, minutes: c.myMinutes, distance: c.myDistance, steps: c.mySteps, unit: c.distanceUnit) }
+/// 👏 on someone's entry: a toggle with the count.
+struct KudosButton: View {
+    @Environment(AppModel.self) private var model
+    let activityId: Int
+    @State var count: Int
+    @State var mine: Bool
+    init(activityId: Int, count: Int, mine: Bool) { self.activityId = activityId; _count = State(initialValue: count); _mine = State(initialValue: mine) }
+    var body: some View {
+        Button { Task { if let n = await model.call({ try await $0.kudos(activityId, on: !mine) }) { count = n; mine.toggle() } } } label: {
+            Text("👏" + (count > 0 ? " \(count)" : "")).font(.caption.bold()).padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Capsule().fill(mine ? Color.brandYellow.opacity(0.45) : Color(.tertiarySystemFill)))
+        }.buttonStyle(.plain).accessibilityLabel(mine ? "Take back your applause" : "Give applause")
+    }
+}
+
+/// Latest entries in a challenge: mine, and from people who share their full activity, with 👏.
+struct FeedCard: View {
+    @Environment(AppModel.self) private var model
+    let challenge: Challenge
+    let version: String
+    @State private var feed: [FeedEntry] = []
+    @State private var shown = 6
+    var body: some View {
+        Group {
+            if !feed.isEmpty {
+                SectionCard("Latest activity") {
+                    EmptyNote("Yours, and from people who share their full activity.")
+                    ForEach(feed.prefix(shown)) { e in
+                        HStack {
+                            Avatar(url: e.avatarURL, name: e.name)
+                            VStack(alignment: .leading) {
+                                Button(e.name) { model.openProfile(e.userId) }.font(.subheadline.weight(.semibold)).buttonStyle(.plain).foregroundStyle(Color.brandRed)
+                                Text([e.type, fmtDay(e.date), e.teamName, e.comment.map { "“\($0)”" }].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(fmtMeasure(challenge.measure, minutes: e.minutes ?? 0, distance: e.distance ?? 0, steps: Double(e.steps ?? 0), unit: challenge.distanceUnit)).bold()
+                            if e.userId == model.me?.id { if e.kudos > 0 { Text("👏 \(e.kudos)").font(.caption) } }
+                            else { KudosButton(activityId: e.id, count: e.kudos, mine: e.kudosMine) }
+                        }
+                    }
+                    if feed.count > shown { Button("Show more") { shown += 10 } }
+                }
+            }
+        }
+        .task(id: "\(challenge.id)-\(version)") { if let f = await model.call({ try await $0.feed(challenge.id) }) { feed = f } }
+    }
+}
+
 /// "3rd of 7 · 14 min behind Priya", my team's place, and my last 7 days - as on the website.
 private func standingText(_ c: Challenge, _ s: MyStanding) -> String {
     func amt(_ v: Double) -> String { fmtMeasure(c.measure, minutes: v, distance: v, steps: v, unit: c.distanceUnit) }
@@ -35,6 +83,7 @@ struct ChallengesView: View {
     @Environment(Router.self) private var router
     @State private var leaving: Challenge?
     @State private var sentTo: String?
+    @AppStorage("setupHidden") private var setupHidden = false
 
     var body: some View {
         Page(refresh: { await model.refreshTop() }) {
@@ -43,6 +92,16 @@ struct ChallengesView: View {
                 Text("\(active) active challenge\(active == 1 ? "" : "s")").foregroundStyle(.white.opacity(0.9))
             }
             if model.update != nil { UpdateBanner() }
+            // Getting started, until it's all done or hidden.
+            if let st = model.setup, !setupHidden {
+                let steps: [(Bool, String)] = [(st.challenge, "Join a challenge (with the code someone sent you) or start your own"), (st.syncing, "Sync from your phone: open the Sync tab"),
+                    (st.push, "Allow notifications, for news about your challenges")] + (model.config?.emailEnabled == true ? [(st.email, "Confirm your email address (we sent you a link)")] : [])
+                if steps.contains(where: { !$0.0 }) {
+                    SectionCard(title: "Getting started", action: { Button("Hide") { setupHidden = true } }, content: {
+                        ForEach(steps, id: \.1) { ok, text in Text((ok ? "✅ " : "⬜ ") + text).font(.subheadline).foregroundStyle(ok ? .secondary : .primary) }
+                    })
+                }
+            }
             // An email address to confirm (or a new one waiting to be), with the link sent again on request.
             if let m = model.me, model.config?.emailEnabled == true, !m.emailVerified || m.pendingEmail != nil {
                 SectionCard {
@@ -140,7 +199,7 @@ struct ChallengeDetailView: View {
                     Text([measureLabel(c.measure, unit: c.distanceUnit), c.individual ? "Individuals" : c.myTeams.map(\.name).joined(separator: ", "), "Role: \(c.role)"]
                         .filter { !$0.isEmpty }.joined(separator: " · ")).font(.subheadline).foregroundStyle(.white.opacity(0.9))
                     if let j = c.journey { Text("🗺 " + journeyLine(j)).font(.subheadline.weight(.semibold)).foregroundStyle(.white) }
-                    if let s = board?.me { Text(standingText(c, s)).font(.subheadline).foregroundStyle(.white).padding(.top, 2) }
+                    if let s = board?.me { Text(standingText(c, s) + ((model.stats?.streak ?? 0) > 0 ? "\n🔥 \(model.stats!.streak)-day streak" : "")).font(.subheadline).foregroundStyle(.white).padding(.top, 2) }
                 }
             })
             if c.journey != nil { JourneyCard(challenge: c) }
@@ -170,6 +229,11 @@ struct ChallengeDetailView: View {
                 if !c.individual { teams(c, d) }
             }
             SectionCard("Leaderboard") {
+                if c.journey == nil {
+                    Picker("Period", selection: Binding(get: { model.periods[c.id] ?? "all" }, set: { p in Task { await model.setPeriod(c.id, p) } })) {
+                        Text("All time").tag("all"); Text("This month").tag("month"); Text("This week").tag("week")
+                    }.pickerStyle(.segmented)
+                }
                 if !c.individual {
                     Picker("", selection: $tab) { Text("Teams").tag(0); Text("Individuals").tag(1) }.pickerStyle(.segmented)
                 }
@@ -192,6 +256,7 @@ struct ChallengeDetailView: View {
                     }
                 } else { ProgressView().frame(maxWidth: .infinity) }
             }
+            FeedCard(challenge: c, version: board.map { "\($0.users.count)-\($0.users.first?.minutes ?? 0)" } ?? "")
             if let d = detail, d.role != "admin" {
                 Button(role: .destructive) { leavingChallenge = true } label: {
                     Label("Leave challenge", systemImage: "rectangle.portrait.and.arrow.right").frame(maxWidth: .infinity)

@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import Observation
 import BackgroundTasks
 import Security
@@ -212,7 +213,7 @@ enum BackgroundSync {
     var api: API { API(token: Prefs.token) }
     var planner: SyncPlanner { SyncPlanner(api: api, health: health) }
 
-    init() { if signedIn { Task { await refreshAll() } } }
+    init() { APICache.checkVersion(); if signedIn { Task { await refreshAll() } } }
 
     /// Run a server call; an expired session signs out, anything else becomes a message.
     func call<T>(_ block: (API) async throws -> T) async -> T? {
@@ -242,7 +243,7 @@ enum BackgroundSync {
         let api = self.api
         let cfg = Task { try? await api.config() }
         if let m = await m { me = m }
-        if let c = await c { challenges = c }
+        if let c = await c { challenges = c; stats = Dash.stats; setup = Dash.setup }
         config = await cfg.value
         offline = APICache.offline
         loadingChallenges = false
@@ -360,7 +361,7 @@ enum BackgroundSync {
     }
     func refreshTopLevel() async {
         if let m = await call({ try await $0.me() }) { me = m }
-        if let c = await call({ try await $0.challenges() }) { challenges = c }
+        if let c = await call({ try await $0.challenges() }) { challenges = c; stats = Dash.stats; setup = Dash.setup }
         await refreshActivities()
         await refreshHelpBadge()
         await checkForUpdate()
@@ -389,7 +390,39 @@ enum BackgroundSync {
     }
 
     // Challenges
-    func loadLeaderboard(_ id: Int) async { if let b = await call({ try await $0.leaderboard(id) }) { leaderboards[id] = b } }
+    func loadLeaderboard(_ id: Int) async { let p = periods[id] ?? "all"; if let b = await call({ try await $0.leaderboard(id, period: p) }) { leaderboards[id] = b } }
+    func refreshMe() async { if let m = await call({ try await $0.me() }) { me = m } }
+    /// Each challenge's leaderboard period: "all", "month" or "week".
+    var periods: [Int: String] = [:]
+    func setPeriod(_ id: Int, _ p: String) async { periods[id] = p; await loadLeaderboard(id) }
+    /// Streaks and bests, and the getting-started checklist, from the last dashboard.
+    var stats: UserStats?
+    var setup: SetupState?
+    /// Open a challenge or someone's profile from wherever their name is shown.
+    func openChallenge(_ id: Int) { pendingRoute = "/challenges/\(id)" }
+    func openProfile(_ id: Int) { pendingRoute = "/users/\(id)" }
+    /// Count an entry in another challenge too.
+    func copyActivity(_ activityId: Int, to c: Challenge) async -> Bool {
+        guard await call({ try await $0.copyActivity(activityId, challengeId: c.id, teamId: c.target?.teamId) }) != nil else { return false }
+        await afterChange(); return true
+    }
+    /// Sign in with a passkey on this phone. An error to show, or nil (signed in, or cancelled).
+    func passkeySignIn() async -> String? {
+        do {
+            let o = try await API(token: nil).passkeyLoginOptions()
+            guard let cred = try await PasskeyFlow.assertion(challenge: o.string("challenge"), rpId: o.string("rpId")) else { return nil }
+            signedInWith(try await API(token: nil).passkeyLogin(cred)); return nil
+        } catch let e as APIError { return e.message } catch { return error.localizedDescription }
+    }
+    /// Make a passkey on this phone for my account. An error, or nil (saved, or cancelled).
+    func addPasskey() async -> String? {
+        do {
+            let o = try await api.passkeyCreateOptions(), user = o.obj("user")
+            guard let cred = try await PasskeyFlow.registration(challenge: o.string("challenge"), rpId: o.obj("rp")?.string("id") ?? "activetogether.team",
+                                                                 userId: user?.string("id") ?? "", name: user?.string("name") ?? "") else { return nil }
+            try await api.savePasskey(cred, name: UIDevice.current.name); message = "Passkey added"; return nil
+        } catch let e as APIError { return e.message } catch { return error.localizedDescription }
+    }
     func loadDetail(_ id: Int) async { if let d = await call({ try await $0.challengeDetail(id) }) { details[id] = d } }
     func refreshChallenge(_ id: Int) async {
         if let c = await call({ try await $0.challenges() }) { challenges = c }

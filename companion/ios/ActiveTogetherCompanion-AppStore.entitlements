@@ -4,6 +4,11 @@
      Apple ID, can't have). The workflow in .github/workflows/ios-appstore.yml picks this file. -->
 <plist version="1.0">
 <dict>
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>webcredentials:activetogether.team</string>
+		<string>applinks:activetogether.team</string>
+	</array>
 	<key>aps-environment</key>
 	<string>production</string>
 	<key>com.apple.developer.healthkit</key>

@@ -149,7 +149,8 @@ struct TicketView: View {
             if let d = data {
                 let t = d.0, comments = d.1
                 SectionCard {
-                    HStack { StatusPill(status: t.status); Text("\(ticketTypeLabel(t.type)) · #\(t.id) · \(t.mine ? "you" : t.reporterName + (t.reporterEmail.map { " (\($0))" } ?? ""))").font(.caption).foregroundStyle(.secondary) }
+                    HStack { StatusPill(status: t.status); Text("\(ticketTypeLabel(t.type)) · #\(t.id) · \(t.mine ? "you" : t.reporterName + (t.reporterEmail.map { " (\($0))" } ?? ""))").font(.caption).foregroundStyle(.secondary)
+                        .onTapGesture { if !t.mine && t.reporterId > 0 { model.openProfile(t.reporterId) } } }
                     Text(t.title).font(.title3.bold())
                     Text(t.description)
                     if let u = serverURLFor(t.imageURL) { AsyncImage(url: u) { $0.resizable().scaledToFit() } placeholder: { ProgressView() }.clipShape(RoundedRectangle(cornerRadius: 12)) }
@@ -175,7 +176,7 @@ struct TicketView: View {
                 ForEach(comments) { c in
                     VStack(alignment: .leading, spacing: 4) {
                         Text([c.authorName, c.fromSupport ? "Support" : nil, c.internalNote ? "internal note - only admins see this" : nil, fmtWhen(c.createdAt)].compactMap { $0 }.joined(separator: " · "))
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.secondary).onTapGesture { if c.authorId > 0 { model.openProfile(c.authorId) } }
                         Text(c.body)
                     }
                     .padding(12).frame(maxWidth: .infinity, alignment: .leading)

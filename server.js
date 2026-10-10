@@ -83,6 +83,11 @@ db.exec("UPDATE sessions SET created_at=datetime('now') WHERE created_at IS NULL
 ensureColumn('users','notify_push','INTEGER NOT NULL DEFAULT 1');
 // Which phone notifications: {replies, added, challenge, weekly, kudos, admin} each true unless switched off (null: all on).
 ensureColumn('users','push_prefs','TEXT');
+// Passkeys: sign in with the phone's or computer's own lock (Face ID, fingerprint, PIN). Each holds a public key
+// (as a JWK) for a credential the device keeps; sign_count catches a copied key.
+db.exec(`CREATE TABLE IF NOT EXISTS passkeys(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,public_key TEXT NOT NULL,alg INTEGER NOT NULL,sign_count INTEGER NOT NULL DEFAULT 0,
+  name TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,last_used_at TEXT,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS passkeys_user ON passkeys(user_id);`);
 // Kudos: a 👏 from a challenge-mate on one of my entries.
 db.exec(`CREATE TABLE IF NOT EXISTS kudos(activity_id INTEGER NOT NULL,user_id INTEGER NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(activity_id,user_id),FOREIGN KEY(activity_id) REFERENCES activities(id) ON DELETE CASCADE,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`);
@@ -473,6 +478,59 @@ function securityMail(uid,what,{to=null}={}){
   if(!x||!(to||x.email_verified_at))return;
   sendMail({to:to||x.email,subject:'Security notice from Active Together',text:`Hello,\n\n${what} - on the Active Together account for ${x.email}, at ${new Date().toISOString().slice(0,16).replace('T',' ')} UTC.\n\nIf that was you, there's nothing to do.\n\nIf it wasn't, reset your password now at ${ORIGIN}/forgot and tell us at support@activetogether.team.\n\nActive Together\n${ORIGIN}`});
 }
+// --- Passkeys (WebAuthn) -------------------------------------------------------------------------------------
+// The site's own name is the relying party; the website's origin and the apps' (Android names itself by its signing
+// key's hash: ANDROID_PASSKEY_ORIGINS, comma separated "android:apk-key-hash:..."; the iPhone app uses the website's).
+const RP_ID=new URL(ORIGIN).hostname;
+// The Android app's signing certificates (SHA-256, as Play Console shows them): the website download's key, and
+// Google Play's app signing key from ANDROID_CERT_FINGERPRINTS. They go in assetlinks.json (app links and passkeys),
+// and each is also a passkey origin, as Android names an app by its key.
+const ANDROID_FINGERPRINTS=[...new Set(['E5:0C:51:97:29:C6:6D:64:1C:98:CD:BB:F4:4D:6A:9E:32:00:7A:92:09:17:DD:E3:39:4D:27:09:E9:B8:CF:EC',
+  ...String(process.env.ANDROID_CERT_FINGERPRINTS||'').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/.test(x))])];
+const PASSKEY_ORIGINS=new Set([ORIGIN,...ANDROID_FINGERPRINTS.map(f=>'android:apk-key-hash:'+Buffer.from(f.replace(/:/g,''),'hex').toString('base64url'))]);
+const APPLE_APP_ID=`${process.env.APPLE_TEAM_ID||'YCF769KGAX'}.${APPLE_BUNDLE_ID}`;
+const WELL_KNOWN={
+  'assetlinks.json':JSON.stringify([{relation:['delegate_permission/common.handle_all_urls','delegate_permission/common.get_login_creds'],
+    target:{namespace:'android_app',package_name:'com.activetogether.companion',sha256_cert_fingerprints:ANDROID_FINGERPRINTS}}]),
+  'apple-app-site-association':JSON.stringify({webcredentials:{apps:[APPLE_APP_ID]},applinks:{details:[{appIDs:[APPLE_APP_ID],components:[{'/':'/join/*'}]}]}}),
+};
+// Just enough CBOR to read what authenticators send.
+function cbor(buf,pos=0){
+  const head=buf[pos++],type=head>>5,info=head&31;
+  let n=info;
+  if(info===24)n=buf[pos++];else if(info===25){n=buf.readUInt16BE(pos);pos+=2}else if(info===26){n=buf.readUInt32BE(pos);pos+=4}else if(info===27){n=Number(buf.readBigUInt64BE(pos));pos+=8}
+  if(type===0)return [n,pos];
+  if(type===1)return [-1-n,pos];
+  if(type===2)return [buf.subarray(pos,pos+n),pos+n];
+  if(type===3)return [buf.toString('utf8',pos,pos+n),pos+n];
+  if(type===4){const a=[];for(let i=0;i<n;i++){let v;[v,pos]=cbor(buf,pos);a.push(v)}return [a,pos]}
+  if(type===5){const m=new Map();for(let i=0;i<n;i++){let k,v;[k,pos]=cbor(buf,pos);[v,pos]=cbor(buf,pos);m.set(k,v)}return [m,pos]}
+  if(type===7)return [info===20?false:info===21?true:null,pos];
+  throw new Error('Unsupported CBOR');
+}
+const b64u=v=>Buffer.from(v).toString('base64url');
+// A COSE public key (ES256 or RS256) as a JWK node can verify with.
+function coseToJwk(m){
+  const kty=m.get(1),alg=m.get(3);
+  if(kty===2&&alg===-7)return {alg,jwk:{kty:'EC',crv:'P-256',x:b64u(m.get(-2)),y:b64u(m.get(-3))}};
+  if(kty===3&&alg===-257)return {alg,jwk:{kty:'RSA',n:b64u(m.get(-1)),e:b64u(m.get(-2))}};
+  throw new Error('That kind of passkey isn\'t supported');
+}
+const passkeyChallenges=new Map();
+function passkeyChallenge(key){const c=crypto.randomBytes(32).toString('base64url');passkeyChallenges.set(c,{key,until:Date.now()+5*60_000});return c}
+function takeChallenge(c,key){const x=passkeyChallenges.get(c);passkeyChallenges.delete(c);return !!x&&x.until>Date.now()&&x.key===key}
+setInterval(()=>{const now=Date.now();for(const [k,v] of passkeyChallenges)if(v.until<now)passkeyChallenges.delete(k)},10*60_000).unref();
+// The parts every passkey reply shares: what the browser or app says happened, for whom, from where.
+function checkClientData(json,type,key){
+  const cd=JSON.parse(Buffer.from(json,'base64url').toString('utf8'));
+  if(cd.type!==type||!takeChallenge(cd.challenge,key)||!PASSKEY_ORIGINS.has(cd.origin))throw new Error('That passkey reply was not for this site, or has expired. Please try again.');
+}
+function checkAuthData(ad){
+  if(!ad.subarray(0,32).equals(crypto.createHash('sha256').update(RP_ID).digest()))throw new Error('That passkey belongs to another site');
+  if(!(ad[32]&1))throw new Error('The passkey needs you to be present - please try again');
+  return {flags:ad[32],count:ad.readUInt32BE(33)};
+}
+
 // Replies go to the support mailbox rather than the no-reply sender.
 const MAIL_REPLY_TO=process.env.MAIL_REPLY_TO||'support@activetogether.team';
 async function sendMail({to,subject,text}){
@@ -1595,6 +1653,38 @@ async function api(req,res,url){
    db.prepare('INSERT INTO push_devices(token,user_id,platform,session_hash) VALUES(?,?,?,?) ON CONFLICT(token) DO UPDATE SET user_id=excluded.user_id,platform=excluded.platform,session_hash=excluded.session_hash').run(token,u.id,platform,u.sessionHash);
    return send(res,200,{ok:true,enabled:pushEnabled[platform]});
  }
+ // My passkeys: start adding one (the options for the browser or app), save it, list them, remove one.
+ if(m==='POST'&&url.pathname==='/api/me/passkeys/options'){
+   if(!need(res,u))return;
+   const mine=db.prepare('SELECT id FROM passkeys WHERE user_id=?').all(u.id);
+   return send(res,200,{challenge:passkeyChallenge('add:'+u.id),rp:{id:RP_ID,name:'Active Together'},user:{id:b64u(Buffer.from(String(u.id))),name:u.email,displayName:u.name},
+     pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],timeout:300000,attestation:'none',
+     authenticatorSelection:{residentKey:'required',requireResidentKey:true,userVerification:'preferred'},excludeCredentials:mine.map(x=>({type:'public-key',id:x.id}))});
+ }
+ if(m==='POST'&&url.pathname==='/api/me/passkeys'){
+   if(!need(res,u))return;
+   const b=await body(req),cred=b.credential||{};
+   try{
+     checkClientData(cred.response?.clientDataJSON,'webauthn.create','add:'+u.id);
+     const [att]=cbor(Buffer.from(String(cred.response?.attestationObject||''),'base64url')),ad=att.get('authData');
+     const {flags,count}=checkAuthData(ad);
+     if(!(flags&64))throw new Error('No passkey came back');
+     const idLen=ad.readUInt16BE(53),credId=b64u(ad.subarray(55,55+idLen)),[cose]=cbor(ad,55+idLen),{alg,jwk}=coseToJwk(cose);
+     const name=String(b.name||deviceLabel(req,/^Bearer /i.test(req.headers.authorization||'')?'app':'web')).slice(0,60);
+     db.prepare('INSERT INTO passkeys(id,user_id,public_key,alg,sign_count,name) VALUES(?,?,?,?,?,?)').run(credId,u.id,JSON.stringify(jwk),alg,count,name);
+     audit(u,'passkey added',{user:u.id,detail:name});
+     securityMail(u.id,`A passkey was added (${name})`);
+   }catch(e){return send(res,400,{error:isUniqueViolation(e)?'That passkey is already saved':e.message})}
+   return send(res,201,{ok:true});
+ }
+ if(url.pathname.match(/^\/api\/me\/passkeys(\/[A-Za-z0-9_-]+)?$/)&&(m==='GET'||m==='DELETE')){
+   if(!need(res,u))return;
+   if(m==='GET')return send(res,200,{passkeys:db.prepare('SELECT id,name,created_at,last_used_at FROM passkeys WHERE user_id=? ORDER BY created_at').all(u.id)});
+   const id=url.pathname.split('/')[4];
+   if(!id||!db.prepare('DELETE FROM passkeys WHERE id=? AND user_id=?').run(id,u.id).changes)return send(res,404,{error:'Not found'});
+   securityMail(u.id,'A passkey was removed');
+   return send(res,200,{ok:true});
+ }
  // My signed-in devices: each website or app session, with sign-out for any one, or for all but this one.
  if(url.pathname.match(/^\/api\/me\/sessions(\/[a-f0-9]{16}|\/others)?$/)&&(m==='GET'||m==='DELETE')){
    if(!need(res,u))return;
@@ -1622,6 +1712,32 @@ async function api(req,res,url){
    const joined=b.invite_code&&!codeGuessBlocked(ip,uid)?joinWithCode(uid,b.invite_code):null;
    if(b.invite_code&&!joined)noteBadCode(ip,uid);
    return app?send(res,200,{ok:true,sessionToken:t,user,joined}):send(res,200,{ok:true,user,joined},setSessionCookie(t));
+ }
+ // Signing in with a passkey: the options (any of this site's passkeys on the device), then its signed reply. A passkey
+ // is something you have, unlocked with something you are or know, so two-step sign-in isn't asked for as well.
+ if(m==='POST'&&url.pathname==='/api/passkey/options'){
+   if(hitRateLimit('passkey:'+ip,AUTH_RATE_LIMIT_MAX*5,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many sign-in attempts. Please wait a few minutes and try again.'});
+   return send(res,200,{challenge:passkeyChallenge('login'),rpId:RP_ID,timeout:300000,userVerification:'preferred',allowCredentials:[]});
+ }
+ if(m==='POST'&&(url.pathname==='/api/passkey/login'||url.pathname==='/api/mobile/passkey/login')){
+   const app=url.pathname.startsWith('/api/mobile/');
+   if(hitRateLimit('passkey:'+ip,AUTH_RATE_LIMIT_MAX*5,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many sign-in attempts. Please wait a few minutes and try again.'});
+   const b=await body(req),cred=b.credential||{},pk=db.prepare('SELECT * FROM passkeys WHERE id=?').get(String(cred.id||cred.rawId||''));
+   let user;
+   try{
+     if(!pk)throw new Error("That passkey isn't saved on any account here. Sign in another way, then add it in My account.");
+     checkClientData(cred.response?.clientDataJSON,'webauthn.get','login');
+     const ad=Buffer.from(String(cred.response?.authenticatorData||''),'base64url'),{count}=checkAuthData(ad);
+     const signed=Buffer.concat([ad,crypto.createHash('sha256').update(Buffer.from(String(cred.response.clientDataJSON),'base64url')).digest()]);
+     const key=crypto.createPublicKey({key:JSON.parse(pk.public_key),format:'jwk'});
+     if(!crypto.verify(pk.alg===-257?'RSA-SHA256':'sha256',signed,key,Buffer.from(String(cred.response?.signature||''),'base64url')))throw new Error("That passkey's signature didn't check out");
+     if(count&&pk.sign_count&&count<=pk.sign_count)throw new Error('That passkey may have been copied - remove it in My account and add it again');
+     db.prepare("UPDATE passkeys SET sign_count=?,last_used_at=datetime('now') WHERE id=?").run(count,pk.id);
+     user=db.prepare('SELECT * FROM users WHERE id=?').get(pk.user_id);
+   }catch(e){return send(res,401,{error:e.message})}
+   if(user.deactivated_at)return send(res,403,{error:DEACTIVATED_MSG});
+   const t=startSession(user.id,app?'app':'web',req),out={ok:true,user:{id:user.id,email:user.email,name:user.name,role:user.role,avatarUrl:user.avatar_url}};
+   return app?send(res,200,{...out,sessionToken:t}):send(res,200,out,setSessionCookie(t));
  }
  // Bearer-token login for the Android/iOS companion apps, which have no web page to render a
  // captcha widget in. Deliberately not recaptcha-gated; relies on the same per-IP rate limit
@@ -2622,11 +2738,11 @@ const TILE_ORIGIN=(()=>{try{const sub=TILE_URL.includes('{s}'),o=new URL(TILE_UR
 // reCAPTCHA); no framing by other sites; images only from this site and the OpenStreetMap tiles.
 const SECURITY_HEADERS={
   'Content-Security-Policy':["default-src 'self'","script-src 'self' https://challenges.cloudflare.com https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/ https://accounts.google.com/gsi/client https://appleid.cdn-apple.com",
-    "style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style",`img-src 'self' data: blob: ${TILE_ORIGIN}`,"connect-src 'self' https://accounts.google.com/gsi/","font-src 'self' data:",
+    "style-src 'self' https://accounts.google.com/gsi/style",`img-src 'self' data: blob: ${TILE_ORIGIN}`,"connect-src 'self' https://accounts.google.com/gsi/","font-src 'self' data:",
     "frame-src https://challenges.cloudflare.com https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/ https://accounts.google.com/gsi/ https://appleid.apple.com","object-src 'none'","base-uri 'self'","form-action 'self'","frame-ancestors 'none'"].join('; '),
   'X-Frame-Options':'DENY','X-Content-Type-Options':'nosniff','Referrer-Policy':'strict-origin-when-cross-origin',
   'Permissions-Policy':'camera=(), microphone=(), geolocation=(), payment=()',
-  ...(ORIGIN.startsWith('https:')?{'Strict-Transport-Security':'max-age=31536000'}:{}),
+  ...(ORIGIN.startsWith('https:')?{'Strict-Transport-Security':'max-age=31536000; includeSubDomains'}:{}),
 };
 const STATIC_TYPES={'.json':'application/json','.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'application/javascript; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon','.png':'image/png','.txt':'text/plain; charset=utf-8'};
 // Pages link the site's own script and stylesheet with ?v=<content hash>, so a deploy is picked up at once
@@ -2658,6 +2774,8 @@ function pageHtml(f,st){
   return h;
 }
 const server=http.createServer(async(req,res)=>{try{for(const [k,v] of Object.entries(SECURITY_HEADERS))res.setHeader(k,v);const url=new URL(req.url,ORIGIN);if(url.pathname.startsWith('/api/'))return await api(req,res,url);
+ const wk=url.pathname.match(/^\/\.well-known\/(assetlinks\.json|apple-app-site-association)$/);
+ if(wk){res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'public, max-age=3600'});return res.end(WELL_KNOWN[wk[1]])}
  if(url.pathname.startsWith('/uploads/')){
    const rel=path.normalize(url.pathname.slice('/uploads/'.length)).replace(/^\.\.(\/|\\|$)/,'');
    const f=path.join(UPLOADS_DIR,rel);

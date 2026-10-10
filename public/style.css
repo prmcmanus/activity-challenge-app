@@ -97,3 +97,7 @@ dialog#modal .close{position:sticky;top:0;z-index:3;background:var(--surface);bo
 .store-badge{display:block;width:auto}
 .store-badge.apple{height:44px}
 .store-badge.play{height:64px;margin:-10px -10px}
+/* Moved from inline styles, so the page's security policy can refuse inline styles. */
+.caps{text-transform:uppercase}.inset{padding:14px;margin:12px 0}.gap-top{margin-top:24px}.gap-top-s{margin-top:18px}.auto-w{width:auto;margin:0}.pre-wrap{white-space:pre-wrap}.right{text-align:right}.inline-row{display:flex;gap:8px;align-items:center}.red-text{color:var(--red-text)}.self-center{align-self:center}
+/* The help and policy pages. */
+.policy h2{margin-top:28px}.policy h3{margin:20px 0 6px;font-size:16px}.policy ul,.policy ol{padding-left:22px}.policy li{margin:7px 0;line-height:1.5}.policy p{line-height:1.6}.policy code{background:var(--surface-2);padding:1px 5px;border-radius:4px}.pick{width:100%;border-collapse:collapse;margin:8px 0}.pick th,.pick td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}.pick th{font-size:13px;color:var(--muted)}.tip{background:var(--tint-yellow);border:1px solid var(--tint-yellow-line);border-radius:10px;padding:12px 14px;margin:12px 0}

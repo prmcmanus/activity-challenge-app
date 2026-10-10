@@ -291,7 +291,7 @@ async function socialSignIn(provider,credential,name,inviteCode){
     await load();
   }catch(x){
     if(x.data&&x.data.inviteRequired){
-      $('#authPanel').innerHTML=`<h1>Your invite code</h1><p>${esc(x.message)}</p><form id="socialInviteForm"><label>Invite code<input id="siCode" required autocomplete="off" style="text-transform:uppercase"></label><button>Create my account</button></form><p id="authMsg" class="error" role="alert"></p><p><a href="/" data-signin>Back</a></p>`;
+      $('#authPanel').innerHTML=`<h1>Your invite code</h1><p>${esc(x.message)}</p><form id="socialInviteForm"><label>Invite code<input id="siCode" required autocomplete="off" class="caps"></label><button>Create my account</button></form><p id="authMsg" class="error" role="alert"></p><p><a href="/" data-signin>Back</a></p>`;
       $('[data-signin]').onclick=e=>{e.preventDefault();authTab='login';renderAuth()};
       $('#socialInviteForm').onsubmit=guarded(async()=>{const p=socialPending;await socialSignIn(p.provider,p.credential,p.name,$('#siCode').value.trim())});
       return;
@@ -320,7 +320,7 @@ function renderAuth(){
     // site without one, the form asks for the code.
     const linkCode=inviteCodeFromPath(),invited=!!(linkCode||pendingInviteToken);
     const inviteBit=!siteInviteOnly?'':invited?'<p class="muted">You have an invite, so you can create an account.</p>'
-      :'<label>Invite code<input id="rinvite" required autocomplete="off" placeholder="From the invite someone sent you" style="text-transform:uppercase"></label><p class="muted">Active Together is invite only: you need the invite link or code someone sent you.</p>';
+      :'<label>Invite code<input id="rinvite" required autocomplete="off" placeholder="From the invite someone sent you" class="caps"></label><p class="muted">Active Together is invite only: you need the invite link or code someone sent you.</p>';
     $('#authPanel').innerHTML=`<h1>Create your account</h1><p>Then create a challenge or join one with an invite code.</p><div id="socialBox" class="social hidden"></div><form id="registerForm"><label>Name<input id="rname" required autocomplete="name"></label><label>Email<input id="remail" type="email" required autocomplete="email" autocapitalize="off" spellcheck="false"></label><label>Password<input id="rpassword" type="password" required minlength="8" autocomplete="new-password"></label>${inviteBit}<div id="captcha-box"></div><button>Create account</button></form><p class="muted">By creating an account you agree to our <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</p><p id="authMsg" class="error" role="alert"></p>`;
     $('#registerForm').onsubmit=guarded(async()=>{try{await api('/api/register',{method:'POST',body:JSON.stringify({name:$('#rname').value,email:$('#remail').value,password:$('#rpassword').value,
       invite_code:linkCode||($('#rinvite')?$('#rinvite').value.trim():undefined),invite_token:pendingInviteToken||undefined,captchaToken:await captchaToken()})}).then(r=>{if(r.joined)setUrl(`/challenges/${r.joined.challengeId}`,true)});await load()}catch(x){$('#authMsg').textContent=x.message;if(!x.keepCaptcha)resetCaptcha()}});
@@ -574,7 +574,7 @@ async function openEditChallenge(c,after=refreshChallenge){
       <button>Save changes</button>
     </form>
     <p id="ecMsg" class="error" role="alert"></p>
-    <h2 style="margin-top:24px">Challenge owners</h2>
+    <h2 class="gap-top">Challenge owners</h2>
     <div id="ownersList">${membersData.members.filter(m=>m.challenge_role==='owner').map(m=>`<div class="listrow"><div><b>${esc(m.name)}</b><div class="muted">${esc(m.email)}</div></div></div>`).join('')||'<p class="muted">No owners.</p>'}</div>
     <form id="addOwnerForm"><label>Add an owner by email<input id="addOwnerEmail" type="email" required placeholder="name@example.com" autocomplete="off"></label><button>Add owner</button></form>
     <p class="muted">Anyone with an account; they're added to the challenge if they aren't in it, and told.</p>
@@ -754,12 +754,12 @@ async function openTeamManage(tid,tname){
       <img id="renameTeamImagePreview" class="imgpreview${team&&team.image_url?'':' hidden'}" src="${team&&team.image_url?esc(team.image_url):''}" alt="Preview">
       <button>Save changes</button>
     </form>
-    <h2 style="margin-top:24px">Members</h2>
+    <h2 class="gap-top">Members</h2>
     <div id="teamMembersList">${data.members.map(m=>`<div class="listrow"><div><b>${esc(m.name)}</b><div class="muted">${esc(m.email)} · ${esc(m.team_role)}</div></div><button class="ghost" data-removemember="${m.id}">Remove</button></div>`).join('')||'<p class="muted">No members.</p>'}</div>
     <form id="addMemberForm"><label>${curChallenge&&curChallenge.canManage?'Add someone by email':'Add someone already in this challenge (their email)'}<input id="addMemberEmail" type="email" required placeholder="name@example.com" autocomplete="off"></label><button>Add to team</button></form>
     <p class="muted">${curChallenge&&curChallenge.canManage?"Anyone with an account: they're added to the challenge too, and told.":"To bring someone new in, share the team's invite link."}</p>
     <p id="manageMsg" class="error" role="alert"></p>
-    <hr><div class="btnrow"><button type="button" id="newTeamCode" class="ghost">Make a new invite link</button><button id="deleteTeamBtn" class="ghost" style="color:var(--red-text)">Delete this team</button></div>`;
+    <hr><div class="btnrow"><button type="button" id="newTeamCode" class="ghost">Make a new invite link</button><button id="deleteTeamBtn" class="ghost red-text" >Delete this team</button></div>`;
   $('#newTeamCode').onclick=async()=>{if(await newInviteCode('teams',tid,`the team "${tname}"`))openTeamManage(tid,tname)};
   $('#modal').showModal();
   $('#renameTeamImage').addEventListener('change',()=>{
@@ -817,7 +817,7 @@ async function openProfile(id){
   const lists=p.followers?`<div class="follow-cols">${followList('Followers',p.followers,p.followers_count,p.self?'Nobody yet.':'No followers yet.')}${followList('Following',p.following,p.following_count,'Nobody yet.')}</div>`:'';
   let body='';
   if(p.challenges){
-    body+=`<div class="profile-section"><h3>${p.self?'My challenges':'Challenges you share'}</h3>${p.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.team?`${esc(c.team)} · `:''}${esc(fmtRange(c.start_date,c.end_date))}</div></div><div style="text-align:right"><b>${esc(fmtTotal(c,c.minutes,c.distance,c.steps))}</b>${c.rank?`<div class="muted">${ordinal(c.rank)} of ${c.of}</div>`:''}</div></div>`).join('')||'<p class="muted">No challenges yet.</p>'}</div>`;
+    body+=`<div class="profile-section"><h3>${p.self?'My challenges':'Challenges you share'}</h3>${p.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.team?`${esc(c.team)} · `:''}${esc(fmtRange(c.start_date,c.end_date))}</div></div><div class="right"><b>${esc(fmtTotal(c,c.minutes,c.distance,c.steps))}</b>${c.rank?`<div class="muted">${ordinal(c.rank)} of ${c.of}</div>`:''}</div></div>`).join('')||'<p class="muted">No challenges yet.</p>'}</div>`;
     if(p.activities)body+=`<div class="profile-section"><h3>Recent activity</h3>${p.activities.map(a=>`<div class="listrow"><div><b>${esc(a.activity_type)}</b><div class="muted">${esc(fmtDay(a.activity_date))}${a.start_time?` · ${esc(a.start_time)}`:''} · ${esc(a.challenge_name)}</div>${a.comment?`<div class="muted">“${esc(a.comment)}”</div>`:''}</div><b>${esc(fmtEntry(a,a))}</b></div>`).join('')||'<p class="muted">Nothing logged yet.</p>'}</div>`;
   }else body+=`<p class="muted">${p.self?'Your profile is private: people only see your name and photo.':`${first} keeps their profile private.`}</p>`;
   $('#modalBody').innerHTML=`<div class="profile-head">${avatarHtml(p.avatar_url,p.name,'avatar-lg')}<div><h2>${esc(p.name)}</h2>${p.bio?`<div>${esc(p.bio)}</div>`:''}<div class="muted">${since}</div></div></div>
@@ -1167,7 +1167,7 @@ async function openMembers(c,{admin=false,note=''}={}){
   const individual=c.participation==='individual';
   $('#modalBody').innerHTML=`<h2>Members of ${esc(c.name)}</h2>
     <p class="muted">${plural(d.members.length,'member','members')}${individual?' · individuals':` · ${plural(d.teams.length,'team','teams')}`}</p>
-    <form id="amAddForm" class="card" style="padding:14px;margin:12px 0">
+    <form id="amAddForm" class="card inset">
       <label>Add someone by email<input id="amUser" type="${admin?'text':'email'}" ${admin?'list="amUserList" placeholder="Start typing a name or email"':'placeholder="name@example.com"'} required autocomplete="off" spellcheck="false"></label>
       ${admin?'<datalist id="amUserList"></datalist>':''}
       <div class="two">${individual?'':`<label>Team<select id="amTeam"><option value="">No team yet</option>${d.teams.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></label>`}
@@ -1435,7 +1435,7 @@ async function renderHelp(){
       const q=new URLSearchParams({scope:'all'});if(dashFilter.status)q.set('status',dashFilter.status);if(dashFilter.type)q.set('type',dashFilter.type);
       const all=await api('/api/tickets?'+q);
       $('#ticketCounts').innerHTML=Object.entries(all.counts).map(([s,n])=>`<button type="button" data-dashstatus="${s}" class="${dashFilter.status===s?'on':''}">${esc(TICKET_STATUS_LABEL[s])} · ${n}</button>`).join('')+
-        `<span class="muted" style="align-self:center">Open: ${all.byType.bug} bug(s), ${all.byType.feature} idea(s), ${all.byType.question} question(s)</span>`;
+        `<span class="muted self-center" >Open: ${all.byType.bug} bug(s), ${all.byType.feature} idea(s), ${all.byType.question} question(s)</span>`;
       $('#dashTickets').innerHTML=all.tickets.map(t=>ticketRow(t,true)).join('')||'<p class="muted">No tickets match.</p>';
       $all('[data-dashstatus]').forEach(b=>b.onclick=()=>{dashFilter.status=b.dataset.dashstatus;$('#dashStatus').value=dashFilter.status;renderHelp()});
     }
@@ -1449,13 +1449,13 @@ async function openTicket(id){
   const convo=t.comments.map(c=>`<div class="bubble ${c.internal?'internal':c.from_support?'support':''}"><div class="who">${esc(c.author.name)}${c.from_support?' · Support':''}${c.internal?' · internal note (only admins see this)':''} · ${esc(fmtWhen(c.created_at))}</div>${esc(c.body).replace(/\n/g,'<br>')}</div>`).join('');
   $('#modalBody').innerHTML=`<h2>${esc(t.title)}</h2>
     <p>${statusPill(t.status)} <span class="muted">${esc(TICKET_TYPE_LABEL[t.type])} · #${t.id} · ${t.mine?'you':esc(t.reporter.name)+(t.reporter.email?` (${esc(t.reporter.email)})`:'')} · ${esc(fmtWhen(t.created_at))}</span></p>
-    <p style="white-space:pre-wrap">${esc(t.description)}</p>
+    <p class="pre-wrap">${esc(t.description)}</p>
     ${t.image_url?`<a href="${esc(t.image_url)}" target="_blank" rel="noopener"><img class="ticket-img" src="${esc(t.image_url)}" alt="Screenshot"></a>`:''}
     ${t.client_info?`<p class="muted">Device: ${esc(t.client_info)}</p>`:''}
     ${t.resolution?`<div class="outcome"><b>Outcome:</b> ${esc(t.resolution).replace(/\n/g,'<br>')}</div>`:''}
-    ${admin?`<form id="ticketAdminForm" class="card" style="padding:14px;margin:12px 0"><div class="two"><label>Status<select id="taStatus">${Object.entries(TICKET_STATUS_LABEL).map(([k,v])=>`<option value="${k}"${t.status===k?' selected':''}>${v}</option>`).join('')}</select></label><div></div></div><label>Outcome the reporter sees<textarea id="taResolution" rows="2" maxlength="2000">${esc(t.resolution||'')}</textarea></label><button>Update status</button></form>`:''}
-    <h2 style="margin-top:18px">Conversation</h2><div class="convo">${convo||'<p class="muted">No replies yet.</p>'}</div>
-    <form id="ticketReplyForm"><label>${admin&&!t.mine?'Reply to the reporter':'Add a reply'}<textarea id="trBody" rows="3" maxlength="5000" required></textarea></label>${admin?'<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="trInternal" style="width:auto;margin:0"> Internal note (not shown to the reporter)</label>':''}<button>Send reply</button></form>
+    ${admin?`<form id="ticketAdminForm" class="card inset"><div class="two"><label>Status<select id="taStatus">${Object.entries(TICKET_STATUS_LABEL).map(([k,v])=>`<option value="${k}"${t.status===k?' selected':''}>${v}</option>`).join('')}</select></label><div></div></div><label>Outcome the reporter sees<textarea id="taResolution" rows="2" maxlength="2000">${esc(t.resolution||'')}</textarea></label><button>Update status</button></form>`:''}
+    <h2 class="gap-top-s">Conversation</h2><div class="convo">${convo||'<p class="muted">No replies yet.</p>'}</div>
+    <form id="ticketReplyForm"><label>${admin&&!t.mine?'Reply to the reporter':'Add a reply'}<textarea id="trBody" rows="3" maxlength="5000" required></textarea></label>${admin?'<label class="inline-row"><input type="checkbox" id="trInternal" class="auto-w"> Internal note (not shown to the reporter)</label>':''}<button>Send reply</button></form>
     <p id="ticketModalMsg" class="error" role="alert"></p>`;
   $('#modal').showModal();
   $('#ticketReplyForm').onsubmit=guarded(async e=>{e.preventDefault();try{await api(`/api/tickets/${id}/comments`,{method:'POST',body:JSON.stringify({body:$('#trBody').value,internal:!!($('#trInternal')&&$('#trInternal').checked)})});await openTicket(id);renderHelp()}catch(x){$('#ticketModalMsg').textContent=x.message}});

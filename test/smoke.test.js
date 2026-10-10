@@ -3245,3 +3245,44 @@ test('notification kinds can be switched off one by one; a sign-in from a new de
     assert.ok(sent.some(m => /A new sign-in from Safari on Mac/.test(m.text)));
   } finally { await srv.stop(); mock.close(); }
 });
+
+test('passkeys: add one, sign in with it (no password), a replayed or foreign reply is refused, remove it', async () => {
+  const crypto = require('node:crypto');
+  const u = await register('Pia Passkey');
+  // A tiny CBOR writer, enough for an authenticator's replies.
+  const enc = v => {
+    const head = (t, n) => n < 24 ? Buffer.from([t << 5 | n]) : n < 256 ? Buffer.from([t << 5 | 24, n]) : Buffer.from([t << 5 | 25, n >> 8, n & 255]);
+    if (Buffer.isBuffer(v)) return Buffer.concat([head(2, v.length), v]);
+    if (typeof v === 'string') { const b = Buffer.from(v); return Buffer.concat([head(3, b.length), b]); }
+    if (typeof v === 'number') return v >= 0 ? head(0, v) : head(1, -1 - v);
+    if (v instanceof Map) return Buffer.concat([head(5, v.size), ...[...v].flatMap(([k, x]) => [enc(k), enc(x)])]);
+    throw new Error('enc');
+  };
+  const rpHash = crypto.createHash('sha256').update('127.0.0.1').digest();
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const jwk = publicKey.export({ format: 'jwk' }), credId = crypto.randomBytes(16);
+  const cose = new Map([[1, 2], [3, -7], [-1, 1], [-2, Buffer.from(jwk.x, 'base64url')], [-3, Buffer.from(jwk.y, 'base64url')]]);
+  const opts = (await jsonFetch(`${origin}/api/me/passkeys/options`, u.cookie, 'POST')).body;
+  assert.equal(opts.rp.id, '127.0.0.1');
+  const count = n => { const b = Buffer.alloc(4); b.writeUInt32BE(n); return b; };
+  const authReg = Buffer.concat([rpHash, Buffer.from([0x45]), count(0), Buffer.alloc(16), Buffer.from([0, credId.length]), credId, enc(cose)]);
+  const cd = (type, challenge, o = origin) => Buffer.from(JSON.stringify({ type, challenge, origin: o })).toString('base64url');
+  const att = enc(new Map([['fmt', 'none'], ['attStmt', new Map()], ['authData', authReg]])).toString('base64url');
+  const add = await jsonFetch(`${origin}/api/me/passkeys`, u.cookie, 'POST', { name: 'Test key', credential: { id: credId.toString('base64url'), response: { clientDataJSON: cd('webauthn.create', opts.challenge), attestationObject: att } } });
+  assert.equal(add.status, 201, JSON.stringify(add.body));
+  assert.equal((await jsonFetch(`${origin}/api/me/passkeys`, u.cookie)).body.passkeys[0].name, 'Test key');
+  const signIn = async (n, o = origin) => {
+    const ch = (await jsonFetch(`${origin}/api/passkey/options`, undefined, 'POST')).body.challenge;
+    const ad = Buffer.concat([rpHash, Buffer.from([0x05]), count(n)]), c = cd('webauthn.get', ch, o);
+    const sig = crypto.sign('sha256', Buffer.concat([ad, crypto.createHash('sha256').update(Buffer.from(c, 'base64url')).digest()]), privateKey);
+    return fetch(`${origin}/api/mobile/passkey/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credential: { id: credId.toString('base64url'), response: { clientDataJSON: c, authenticatorData: ad.toString('base64url'), signature: sig.toString('base64url') } } }) });
+  };
+  const ok = await signIn(1);
+  assert.equal(ok.status, 200);
+  assert.match((await ok.json()).sessionToken, /^[a-f0-9]+$/);
+  assert.equal((await signIn(1)).status, 401, 'a signature counter that went backwards is refused');
+  assert.equal((await signIn(5, 'https://evil.example')).status, 401, 'another site\'s reply is refused');
+  const id = (await jsonFetch(`${origin}/api/me/passkeys`, u.cookie)).body.passkeys[0].id;
+  assert.equal((await jsonFetch(`${origin}/api/me/passkeys/${id}`, u.cookie, 'DELETE')).status, 200);
+  assert.equal((await signIn(9)).status, 401);
+});

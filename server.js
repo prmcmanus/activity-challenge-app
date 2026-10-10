@@ -2734,11 +2734,12 @@ const TILE_URL=process.env.TILE_URL||'https://tile.openstreetmap.org/{z}/{x}/{y}
 const TILE_ATTRIBUTION=process.env.TILE_ATTRIBUTION||'&copy; OpenStreetMap contributors';
 const TILE_MAX_ZOOM=Number(process.env.TILE_MAX_ZOOM||19);
 const TILE_ORIGIN=(()=>{try{const sub=TILE_URL.includes('{s}'),o=new URL(TILE_URL.replace('{s}','a').replace(/\{[a-z]+\}/gi,'0')).origin;return sub?o.replace('://a.','://*.'):o}catch(e){return 'https://tile.openstreetmap.org'}})();
-// Sent with every response. Scripts only from this site (plus the bot check: Cloudflare Turnstile, or Google's
+// Sent with every response. (Styles allow 'unsafe-inline' only because Google's sign-in button and Cloudflare's bot check
+// add their own; this site's pages have no inline styles.) Scripts only from this site (plus the bot check: Cloudflare Turnstile, or Google's
 // reCAPTCHA); no framing by other sites; images only from this site and the OpenStreetMap tiles.
 const SECURITY_HEADERS={
   'Content-Security-Policy':["default-src 'self'","script-src 'self' https://challenges.cloudflare.com https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/ https://accounts.google.com/gsi/client https://appleid.cdn-apple.com",
-    "style-src 'self' https://accounts.google.com/gsi/style",`img-src 'self' data: blob: ${TILE_ORIGIN}`,"connect-src 'self' https://accounts.google.com/gsi/","font-src 'self' data:",
+    "style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style",`img-src 'self' data: blob: ${TILE_ORIGIN}`,"connect-src 'self' https://accounts.google.com/gsi/","font-src 'self' data:",
     "frame-src https://challenges.cloudflare.com https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/ https://accounts.google.com/gsi/ https://appleid.apple.com","object-src 'none'","base-uri 'self'","form-action 'self'","frame-ancestors 'none'"].join('; '),
   'X-Frame-Options':'DENY','X-Content-Type-Options':'nosniff','Referrer-Policy':'strict-origin-when-cross-origin',
   'Permissions-Policy':'camera=(), microphone=(), geolocation=(), payment=()',

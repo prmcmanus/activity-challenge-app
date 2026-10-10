@@ -2748,6 +2748,12 @@ test('email: password resets (two an hour, nameless), people added to a challeng
     await settle();
     const resets = sent.filter(m => m.to[0] === 'pat@example.com' && /Reset your/.test(m.subject));
     assert.equal(resets.length, 2, 'two reset emails an hour for one account');
+    // Each request is in the admin activity log, with where it came from.
+    const adminLogin = await fetch(`${srv.origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }) });
+    const log = (await j('/api/admin/audit?limit=50', adminLogin.headers.get('set-cookie').split(';')[0])).body.entries.filter(e => e.action === 'password reset asked for');
+    assert.equal(log.length, 4);
+    assert.match(log[0].detail, /on the website · .* · network /);
+    assert.ok(log.some(e => /no email \(two an hour already sent\)/.test(e.detail)));
     assert.ok(!resets[0].text.includes('Spam'), 'the email never includes the account name');
     assert.equal(resets[0].reply_to, 'support@activetogether.team');
     // Both links still work: asking again doesn't cancel the first.

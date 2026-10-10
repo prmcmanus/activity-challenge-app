@@ -1491,7 +1491,14 @@ async function api(req,res,url){
    const who=emailEnabled()&&db.prepare('SELECT id FROM users WHERE email=? AND deactivated_at IS NULL').get(email);
    // At most two emails an hour for any one account, however many networks the requests come from. The email
    // names nobody: the address is all it's sent to, and an account's name is whatever whoever made it typed.
-   if(who&&db.prepare("SELECT COUNT(*) n FROM password_resets WHERE user_id=? AND created_by IS NULL AND created_at>datetime('now','-1 hour')").get(who.id).n<2){
+   const allowed=who&&db.prepare("SELECT COUNT(*) n FROM password_resets WHERE user_id=? AND created_by IS NULL AND created_at>datetime('now','-1 hour')").get(who.id).n<2;
+   // In the admin activity log: where each request for an account came from, so a reset email nobody expected can be
+   // traced (a phone in the family, Google's app review robots, or a stranger).
+   if(who){
+     const app=url.pathname.startsWith('/api/mobile/'),device=deviceLabel(req,app?'app':'web');
+     audit(null,'password reset asked for',{user:who.id,detail:`${app?'from the app':'on the website'} · ${device} · network ${ip}${allowed?'':' · no email (two an hour already sent)'}`});
+   }
+   if(allowed){
      const link=makeResetLink(who.id,60);
      sendMail({to:email,subject:'Reset your Active Together password',text:`Hello,\n\nSomeone (hopefully you) asked to reset the password for the Active Together account that uses this email address. To choose a new password, open this link within the next hour:\n\n${link.url}\n\nIf you didn't ask for this, ignore this email: your password stays as it is.\n\nActive Together\n${ORIGIN}`});
    }

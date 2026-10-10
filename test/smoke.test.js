@@ -401,11 +401,11 @@ test('owners add anyone with an account to a team; a team admin only people alre
   const rosterAsBob = await (await fetch(`${origin}/api/teams/${teamId}/members`, { headers: { cookie: bob.cookie } })).json();
   assert.equal(rosterAsBob.canManage, false);
   assert.equal(rosterAsBob.members.length, 3);
-  assert.ok(rosterAsBob.members.every(m => m.email === undefined), 'teammates see names, not email addresses');
+  assert.ok(rosterAsBob.members.every(m => m.id === bob.user.id || m.email === undefined), 'teammates see names, not email addresses');
 
   const rosterAsAlice = await (await fetch(`${origin}/api/teams/${teamId}/members`, { headers: { cookie: alice.cookie } })).json();
   assert.equal(rosterAsAlice.canManage, true);
-  const daveMember = rosterAsAlice.members.find(m => m.email === dave.email);
+  const daveMember = rosterAsAlice.members.find(m => m.id === dave.user.id);
 
   // Bob cannot remove Dave.
   const forbiddenRemove = await fetch(`${origin}/api/teams/${teamId}/members/${daveMember.id}`, { method: 'DELETE', headers: { cookie: bob.cookie } });
@@ -1273,7 +1273,7 @@ test('challenge owners/global admins can add another owner to a challenge; a pla
   });
   assert.equal(addExisting.status, 201);
   const membersAfter = await (await fetch(`${origin}/api/challenges/${challengeId}/members`, { headers: { cookie: alice.cookie } })).json();
-  assert.equal(membersAfter.members.find(m => m.email === bob.email).challenge_role, 'owner');
+  assert.equal(membersAfter.members.find(m => m.id === bob.user.id).challenge_role, 'owner');
 
   // Bob, now an owner, can make anyone with an account an owner - adding them if they aren't in yet.
   const dave = await register('Dave BrandNewOwner');
@@ -1322,8 +1322,9 @@ test('leaderboard CSV export is restricted to the challenge owner/global admin a
 
   const usersCsv = await fetch(`${origin}/api/challenges/${challengeId}/leaderboard/export?type=users`, { headers: { cookie: alice.cookie } });
   const usersBody = await usersCsv.text();
-  assert.match(usersBody, /^Rank,Name,Email,Minutes\r\n/);
-  assert.match(usersBody, new RegExp(`Alice CsvOwner,${alice.email},25`));
+  // Owners get names and totals; only global admins get email addresses.
+  assert.match(usersBody, /^Rank,Name,Minutes\r\n/);
+  assert.match(usersBody, /Alice CsvOwner,25/);
 
   const missing = await fetch(`${origin}/api/challenges/999999/leaderboard/export?type=teams`, { headers: { cookie: alice.cookie } });
   assert.equal(missing.status, 404);
@@ -1455,7 +1456,7 @@ test('CSV export of a distance challenge leads with the distance column', async 
   const teamsCsv = await (await fetch(`${origin}/api/challenges/${challengeId}/leaderboard/export?type=teams`, { headers: { cookie: eve.cookie } })).text();
   assert.match(teamsCsv, /^Rank,Team,Kilometres,Minutes\r\n1,Milers,10,55/);
   const usersCsv = await (await fetch(`${origin}/api/challenges/${challengeId}/leaderboard/export?type=users`, { headers: { cookie: eve.cookie } })).text();
-  assert.match(usersCsv, new RegExp(`^Rank,Name,Email,Kilometres,Minutes\\r\\n1,Eve Export,${eve.email.replace(/\./g, '\\.')},10,55`));
+  assert.match(usersCsv, /^Rank,Name,Kilometres,Minutes\r\n1,Eve Export,10,55/);
 });
 
 test('an existing database from before distance challenges is migrated without losing activity', async () => {
@@ -2007,7 +2008,7 @@ test('step challenges: log a day of steps, rank by steps, and a re-synced day up
   assert.equal(lb2.users[0].name, 'Sal Steps');
 
   const csv = await (await fetch(`${origin}/api/challenges/${c.body.id}/leaderboard/export?type=users`, { headers: { cookie: sal.cookie } })).text();
-  assert.match(csv.split('\r\n')[0], /Rank,Name,Email,Steps/);
+  assert.match(csv.split('\r\n')[0], /Rank,Name,Steps/);
 });
 
 test('the iPhone app downloads for signed-in users once published, and reports its build for update notices', async () => {
@@ -3186,4 +3187,61 @@ test('the leaderboard says where I stand; the config names the stores and map ti
   assert.deepEqual([cfg.stores.playLive, cfg.stores.appStore, /testflight/.test(cfg.stores.testFlight)], [false, null, true]);
   assert.deepEqual(cfg.push, { android: null, ios: false });
   assert.match((await fetch(origin)).headers.get('content-security-policy'), /img-src 'self' data: blob: https:\/\/tile\.openstreetmap\.org/);
+});
+
+test('kudos, the challenge feed, streaks and bests, period leaderboards, copying an entry to another challenge', async () => {
+  const a = await register('Kai Kudos'), b = await register('Bea Busy');
+  await jsonFetch(`${origin}/api/me`, b.cookie, 'PATCH', { profileSharing: 'full' });
+  const c = await jsonFetch(`${origin}/api/challenges`, a.cookie, 'POST', { name: 'Kudos Club', start_date: '2026-01-01', end_date: '2027-12-31', participation: 'individual' });
+  const c2 = await jsonFetch(`${origin}/api/challenges`, b.cookie, 'POST', { name: 'Second One', start_date: '2026-01-01', end_date: '2027-12-31', participation: 'individual', metric: 'distance' });
+  await jsonFetch(`${origin}/api/join`, b.cookie, 'POST', { code: c.body.invite_code });
+  const day = n => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
+  for (const n of [0, 1, 2]) await jsonFetch(`${origin}/api/activities`, b.cookie, 'POST', { challenge_id: c.body.id, activity_type: 'Run', minutes: 30 + n, distance: 5, distance_unit: 'km', activity_date: day(n) });
+  await jsonFetch(`${origin}/api/activities`, b.cookie, 'POST', { challenge_id: c.body.id, activity_type: 'Walk', minutes: 20, activity_date: day(40) });
+  const feed = (await jsonFetch(`${origin}/api/challenges/${c.body.id}/feed`, a.cookie)).body.activities;
+  assert.equal(feed.length, 4, "Bea shares her full activity, so her entries are in the feed");
+  const k = await jsonFetch(`${origin}/api/activities/${feed[0].id}/kudos`, a.cookie, 'POST');
+  assert.deepEqual(k.body, { kudos: 1, mine: true });
+  assert.equal((await jsonFetch(`${origin}/api/activities/${feed[0].id}/kudos`, b.cookie, 'POST')).status, 400, 'not for your own entry');
+  const prof = (await jsonFetch(`${origin}/api/users/${b.user.id}/profile`, a.cookie)).body;
+  assert.equal(prof.stats.streak, 3);
+  assert.equal(prof.stats.bestMinutes, 32);
+  assert.equal(prof.activities.find(x => x.id === feed[0].id).kudos, 1);
+  // This week only counts the last few days; all time counts everything.
+  const all = (await jsonFetch(`${origin}/api/challenges/${c.body.id}/leaderboard`, a.cookie)).body.users.find(x => x.id === b.user.id).minutes;
+  const month = (await jsonFetch(`${origin}/api/challenges/${c.body.id}/leaderboard?period=month`, a.cookie)).body;
+  assert.equal(all, 113);
+  assert.equal(month.period, 'month');
+  assert.ok(month.users.find(x => x.id === b.user.id).minutes < 113);
+  // Count a run in the distance challenge too, once.
+  const mine = (await jsonFetch(`${origin}/api/me/activities?limit=10`, b.cookie)).body.activities.find(x => x.activity_date === day(1));
+  assert.equal((await jsonFetch(`${origin}/api/activities/${mine.id}/copy`, b.cookie, 'POST', { challenge_id: c2.body.id })).status, 201);
+  assert.equal((await jsonFetch(`${origin}/api/activities/${mine.id}/copy`, b.cookie, 'POST', { challenge_id: c2.body.id })).status, 400);
+  assert.equal((await jsonFetch(`${origin}/api/activities/${mine.id}/copy`, a.cookie, 'POST', { challenge_id: c.body.id })).status, 404, "only your own entries");
+  const dash = (await jsonFetch(`${origin}/api/dashboard`, b.cookie)).body;
+  assert.equal(dash.stats.streak, 3);
+  assert.deepEqual([dash.setup.challenge, dash.setup.push], [true, false]);
+});
+
+test('notification kinds can be switched off one by one; a sign-in from a new device is pointed out', async () => {
+  const http = require('node:http');
+  const sent = [];
+  const mock = http.createServer((req, res) => { let b = ''; req.on('data', c => b += c); req.on('end', () => { sent.push(JSON.parse(b)); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"id":"x"}'); }); });
+  await new Promise(r => mock.listen(0, '127.0.0.1', r));
+  const srv = await spawnServer({ RESEND_API_KEY: 're_test', RESEND_API_URL: `http://127.0.0.1:${mock.address().port}/emails` });
+  const settle = () => new Promise(r => setTimeout(r, 300));
+  const j = async (path, cookie, method = 'GET', payload, ua) => { const r = await fetch(`${srv.origin}${path}`, { method, headers: { ...(cookie ? { cookie } : {}), ...(ua ? { 'User-Agent': ua } : {}), ...(payload ? { 'Content-Type': 'application/json' } : {}) }, body: payload ? JSON.stringify(payload) : undefined }); return { status: r.status, body: await r.json().catch(() => ({})), cookie: (r.headers.get('set-cookie') || '').split(';')[0] }; };
+  try {
+    const reg = await j('/api/register', undefined, 'POST', { name: 'Nia New', email: 'nia@example.com', password: 'SuperSecret123!' }, 'Mozilla/5.0 (Windows NT 10.0) Firefox/150.0');
+    await settle();
+    await j('/api/email/verify', undefined, 'POST', { token: sent.find(m => /Confirm/.test(m.subject)).text.match(/\/verify\/([A-Za-z0-9_-]+)/)[1] });
+    const p = await j('/api/me', reg.cookie, 'PATCH', { pushPrefs: { weekly: false } });
+    assert.deepEqual(p.body.user.push_prefs, { replies: true, added: true, challenge: true, weekly: false, kudos: true, admin: true });
+    await j('/api/login', undefined, 'POST', { email: 'nia@example.com', password: 'SuperSecret123!' }, 'Mozilla/5.0 (Windows NT 10.0) Firefox/150.0');
+    await settle();
+    assert.ok(!sent.some(m => /new sign-in/i.test(m.text)), 'the same browser again is not news');
+    await j('/api/login', undefined, 'POST', { email: 'nia@example.com', password: 'SuperSecret123!' }, 'Mozilla/5.0 (Macintosh; Mac OS X 15_0) Safari/605.1');
+    await settle();
+    assert.ok(sent.some(m => /A new sign-in from Safari on Mac/.test(m.text)));
+  } finally { await srv.stop(); mock.close(); }
 });

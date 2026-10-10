@@ -81,6 +81,14 @@ db.exec("UPDATE sessions SET created_at=datetime('now') WHERE created_at IS NULL
 // Phone notifications: each app install's push token, tied to the session that registered it, so signing that
 // session out (or it expiring) stops them.
 ensureColumn('users','notify_push','INTEGER NOT NULL DEFAULT 1');
+// Which phone notifications: {replies, added, challenge, weekly, kudos, admin} each true unless switched off (null: all on).
+ensureColumn('users','push_prefs','TEXT');
+// Kudos: a 👏 from a challenge-mate on one of my entries.
+db.exec(`CREATE TABLE IF NOT EXISTS kudos(activity_id INTEGER NOT NULL,user_id INTEGER NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(activity_id,user_id),FOREIGN KEY(activity_id) REFERENCES activities(id) ON DELETE CASCADE,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`);
+// Devices an account has signed in from (by label), so a sign-in from a new one can be pointed out.
+db.exec(`CREATE TABLE IF NOT EXISTS known_devices(user_id INTEGER NOT NULL,device TEXT NOT NULL,first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(user_id,device),FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`);
 db.exec(`CREATE TABLE IF NOT EXISTS push_devices(token TEXT PRIMARY KEY,user_id INTEGER NOT NULL,platform TEXT NOT NULL,session_hash TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(session_hash) REFERENCES sessions(token_hash) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS push_devices_user ON push_devices(user_id);`);
@@ -217,7 +225,8 @@ ensureColumn('activities','steps','INTEGER');
 db.exec(`CREATE INDEX IF NOT EXISTS activities_challenge ON activities(challenge_id);
 CREATE INDEX IF NOT EXISTS activities_team ON activities(team_id);
 CREATE INDEX IF NOT EXISTS activities_user_date ON activities(user_id,activity_date);
-CREATE INDEX IF NOT EXISTS activities_route ON activities(route_id);`);
+CREATE INDEX IF NOT EXISTS activities_route ON activities(route_id);
+CREATE INDEX IF NOT EXISTS activities_challenge_user ON activities(challenge_id,user_id);`);
 // Each challenge's standings version: moved on by the database itself whenever anything its leaderboards and
 // journey map show changes (entries, teams, members, the challenge, a member's name or photo), so cached
 // standings are reused until then, challenge by challenge, however the change was made.
@@ -393,7 +402,9 @@ const peekRate=key=>{const b=rateBuckets.get(key);return b&&b.resetAt>Date.now()
 // Invite codes that don't work: a few an hour per account, and a few more per network (an office mistyping), so
 // nobody can find a challenge by trying codes. Right codes never count.
 const CODE_FAIL_MAX=Number(process.env.CODE_FAIL_MAX||10),CODE_FAIL_NET_MAX=Number(process.env.CODE_FAIL_NET_MAX||30),CODE_FAIL_WINDOW_MS=60*60_000;
-const codeGuessBlocked=(ip,uid)=>peekRate('codefail:'+ip)>=CODE_FAIL_NET_MAX||(!!uid&&peekRate('codefailu:'+uid)>=CODE_FAIL_MAX);
+// Signed in, each account has its own limit, so the network's is five times higher: one office mistyping shouldn't
+// lock everyone in it out.
+const codeGuessBlocked=(ip,uid)=>uid?peekRate('codefailu:'+uid)>=CODE_FAIL_MAX||peekRate('codefail:'+ip)>=CODE_FAIL_NET_MAX*5:peekRate('codefail:'+ip)>=CODE_FAIL_NET_MAX;
 const noteBadCode=(ip,uid)=>{hitRateLimit('codefail:'+ip,CODE_FAIL_NET_MAX,CODE_FAIL_WINDOW_MS);if(uid)hitRateLimit('codefailu:'+uid,CODE_FAIL_MAX,CODE_FAIL_WINDOW_MS)};
 const CODE_BLOCKED={error:"Too many invite codes that didn't work. Wait an hour and try again, or ask for the invite link.",codeBlocked:true};
 setInterval(()=>{const now=Date.now();for(const [k,b] of rateBuckets)if(b.resetAt<=now)rateBuckets.delete(k)},10*60_000).unref();
@@ -497,7 +508,7 @@ async function fcmAccessToken(){
 }
 async function sendFcm(token,msg){
   const r=await fetch(`${FCM.sendBase}/v1/projects/${FCM_SA.project_id}/messages:send`,{method:'POST',headers:{Authorization:`Bearer ${await fcmAccessToken()}`,'Content-Type':'application/json'},
-    body:JSON.stringify({message:{token,notification:{title:msg.title,body:msg.body},data:{url:msg.url||'/'},android:{priority:'high',notification:{channel_id:'updates'}}}}),signal:AbortSignal.timeout(15000)});
+    body:JSON.stringify({message:{token,notification:{title:msg.title,body:msg.body},data:{url:msg.url||'/'},android:{priority:'high',notification:{channel_id:'updates',visibility:'PRIVATE'}}}}),signal:AbortSignal.timeout(15000)});
   if(r.ok)return 'ok';
   const t=await r.text();
   if(r.status===404||/UNREGISTERED|registration token/i.test(t))return 'gone';
@@ -533,8 +544,9 @@ function sendApns(token,msg){
 }
 // Whether someone gets phone notifications (allowed, and a phone the server can reach): news then goes there
 // instead of by email. Security notices, confirming links and password resets are always emailed.
-function pushReachable(uid){
+function pushReachable(uid,kind){
   if(!pushEnabled.android&&!pushEnabled.ios)return false;
+  if(kind&&!wantsPush(db.prepare('SELECT push_prefs FROM users WHERE id=?').get(uid)?.push_prefs,kind))return false;
   const ok=[pushEnabled.android&&'android',pushEnabled.ios&&'ios'].filter(Boolean);
   return !!db.prepare(`SELECT 1 FROM push_devices d JOIN users us ON us.id=d.user_id WHERE d.user_id=? AND us.notify_push=1 AND d.platform IN (${ok.map(()=>'?').join(',')}) LIMIT 1`).get(uid,...ok);
 }
@@ -543,15 +555,21 @@ function pushReachable(uid){
 async function pushTo(userIds,msg){
   if(!pushEnabled.android&&!pushEnabled.ios)return 0;
   const ids=[...new Set(userIds)].filter(Boolean);if(!ids.length)return 0;
-  const devices=db.prepare(`SELECT d.token,d.platform FROM push_devices d JOIN users us ON us.id=d.user_id WHERE d.user_id IN (${ids.map(()=>'?').join(',')}) AND us.notify_push=1 AND us.deactivated_at IS NULL`).all(...ids);
+  const devices=db.prepare(`SELECT d.token,d.platform,us.push_prefs FROM push_devices d JOIN users us ON us.id=d.user_id WHERE d.user_id IN (${ids.map(()=>'?').join(',')}) AND us.notify_push=1 AND us.deactivated_at IS NULL`).all(...ids)
+    .filter(d=>pushEnabled[d.platform]&&wantsPush(d.push_prefs,msg.kind));
   let sent=0;
-  for(const d of devices){
-    if(!pushEnabled[d.platform])continue;
+  // Ten at a time: a big challenge's notices go out quickly without opening hundreds of connections at once.
+  for(let i=0;i<devices.length;i+=10)await Promise.all(devices.slice(i,i+10).map(async d=>{
     try{const r=d.platform==='android'?await sendFcm(d.token,msg):await sendApns(d.token,msg);if(r==='gone')db.prepare('DELETE FROM push_devices WHERE token=?').run(d.token);else sent++}
     catch(e){console.error('Push not sent:',e.message)}
-  }
+  }));
   return sent;
 }
+// The kinds of phone notification people can turn off one by one; security notices always go.
+const PUSH_KINDS=['replies','added','challenge','weekly','kudos','admin'];
+// Every kind, on or off (stored: only the ones switched off).
+function pushPrefs(stored){let p={};try{p=JSON.parse(stored||'{}')||{}}catch(e){}return Object.fromEntries(PUSH_KINDS.map(k=>[k,p[k]!==false]))}
+function wantsPush(prefs,kind){if(!kind||!PUSH_KINDS.includes(kind))return true;try{return (JSON.parse(prefs||'{}')||{})[kind]!==false}catch(e){return true}}
 // The shared Apple Shortcut (an iCloud link made on an iPhone); the website offers it once set.
 // Where to get the apps: the Play listing (PLAY_STORE_LIVE=1 once anyone can install from it, rather than testers), the
 // App Store listing once it's live (APP_STORE_URL), and TestFlight until then.
@@ -705,25 +723,40 @@ async function dailyPushes(force=false){
   setSetting('push_daily',today);
   const members=cid=>db.prepare('SELECT user_id FROM challenge_members WHERE challenge_id=?').all(cid).map(r=>r.user_id);
   for(const c of db.prepare("SELECT id,name FROM challenges WHERE start_date=date('now','+1 day')").all())
-    await pushTo(members(c.id),{title:`${c.name} starts tomorrow`,body:'Get ready - everything you log from tomorrow counts.',url:`/challenges/${c.id}`});
+    await pushTo(members(c.id),{kind:'challenge',title:`${c.name} starts tomorrow`,body:'Get ready - everything you log from tomorrow counts.',url:`/challenges/${c.id}`});
   for(const c of db.prepare("SELECT id,name FROM challenges WHERE end_date=date('now','+2 days')").all())
-    await pushTo(members(c.id),{title:`Two days left in ${c.name}`,body:"Time for a final push - and don't forget to log everything.",url:`/challenges/${c.id}`});
+    await pushTo(members(c.id),{kind:'challenge',title:`Two days left in ${c.name}`,body:"Time for a final push - and don't forget to log everything.",url:`/challenges/${c.id}`});
   for(const c of db.prepare("SELECT id,name FROM challenges WHERE end_date=date('now')").all())
-    await pushTo(members(c.id),{title:`Last day of ${c.name}`,body:'Log anything that’s missing before midnight.',url:`/challenges/${c.id}`});
+    await pushTo(members(c.id),{kind:'challenge',title:`Last day of ${c.name}`,body:'Log anything that’s missing before midnight.',url:`/challenges/${c.id}`});
   if(new Date().getUTCDay()!==1)return;
   // Monday: last week in the running challenge each person was busiest in (or a nudge in one they're in).
   const people=db.prepare('SELECT DISTINCT d.user_id FROM push_devices d JOIN users us ON us.id=d.user_id WHERE us.notify_push=1 AND us.deactivated_at IS NULL').all().map(r=>r.user_id);
-  for(const uid of people){
+  for(let i=0;i<people.length;i+=10)await Promise.all(people.slice(i,i+10).map(async uid=>{
     const running=db.prepare("SELECT c.* FROM challenges c JOIN challenge_members cm ON cm.challenge_id=c.id WHERE cm.user_id=? AND c.start_date<=date('now') AND c.end_date>=date('now','-1 day')").all(uid);
-    if(!running.length)continue;
+    if(!running.length)return;
     const week=c=>db.prepare("SELECT COALESCE(SUM(minutes),0) m,COALESCE(SUM(distance_m),0) d,COALESCE(SUM(steps),0) s,COUNT(*) n FROM activities WHERE user_id=? AND challenge_id=? AND activity_date>=date('now','-7 days') AND activity_date<date('now')").get(uid,c.id);
     const best=running.map(c=>({c,w:week(c)})).sort((a,b)=>b.w.n-a.w.n)[0];
     const {c,w}=best,metric=challengeMetric(c),amount=metric==='distance'?`${metersToUnit(w.d,challengeUnit(c))} ${challengeUnit(c)==='km'?'km':'miles'}`:metric==='steps'?`${Number(w.s).toLocaleString('en-GB')} steps`:`${w.m} minutes`;
     const lb=leaderboard(c),i=lb.users.findIndex(r=>r.id===uid);
-    await pushTo([uid],w.n?{title:`Your week in ${c.name}`,body:`You logged ${amount}${i>=0?` - you're ${ordinal(i+1)} of ${lb.users.length}`:''}. Keep it up!`,url:`/challenges/${c.id}`}
-      :{title:`New week in ${c.name}`,body:'Nothing logged last week - a short walk counts. Log one today?',url:`/challenges/${c.id}`});
-  }
+    await pushTo([uid],w.n?{kind:'weekly',title:`Your week in ${c.name}`,body:`You logged ${amount}${i>=0?` - you're ${ordinal(i+1)} of ${lb.users.length}`:''}. Keep it up!`,url:`/challenges/${c.id}`}
+      :{kind:'weekly',title:`New week in ${c.name}`,body:'Nothing logged last week - a short walk counts. Log one today?',url:`/challenges/${c.id}`});
+  }));
 }
+// Errors the server didn't expect: logged, and the global admins hear about it by email and on their phones - at
+// most once every 30 minutes, so a run of them doesn't flood anyone.
+let lastErrorAlert=0;
+function reportError(e,where){
+  console.error(e);
+  if(Date.now()-lastErrorAlert<30*60_000)return;
+  lastErrorAlert=Date.now();
+  try{
+    const admins=db.prepare("SELECT id,email FROM users WHERE role='global_admin' AND deactivated_at IS NULL AND notify_admin=1 AND email_verified_at IS NOT NULL").all();
+    const text=`Hello,\n\nThe server hit an error${where?` (${where})`:''}:\n\n${String(e&&e.stack||e).slice(0,1500)}\n\nAny more in the next 30 minutes are only in the server's log.\n\nActive Together\n${ORIGIN}`;
+    for(const a of admins)sendMail({to:a.email,subject:'Active Together: server error',text});
+    pushTo(admins.map(a=>a.id),{kind:'admin',title:'Server error',body:String(e&&e.message||e).slice(0,150),url:'/'});
+  }catch(x){console.error('Error alert failed',x)}
+}
+process.on('unhandledRejection',e=>reportError(e,'background task'));
 const ordinal=n=>n+(n%100>=11&&n%100<=13?'th':['th','st','nd','rd'][n%10]||'th');
 setInterval(()=>dailyPushes().catch(e=>console.error('Daily notifications failed',e)),15*60_000).unref();
 
@@ -781,7 +814,7 @@ function auth(req){
   const t=sessionToken(req);if(!t)return null;
   const th=crypto.createHash('sha256').update(t).digest('hex');
   const u=db.prepare(`SELECT u.id,u.email,u.name,u.role,u.avatar_url,u.bio,u.profile_sharing,(u.totp_secret IS NOT NULL) two_factor,(instr(u.password_hash,':')>0) has_password,u.notify_email,u.notify_admin,u.notify_push,
-    (u.email_verified_at IS NOT NULL) email_verified,u.pending_email,s.expires_at,s.kind,s.created_at session_created,s.last_used_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>datetime('now') AND u.deactivated_at IS NULL`).get(th);
+    (u.email_verified_at IS NOT NULL) email_verified,u.pending_email,u.push_prefs,s.expires_at,s.kind,s.created_at session_created,s.last_used_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>datetime('now') AND u.deactivated_at IS NULL`).get(th);
   if(!u)return null;
   const fromCookie=!/^Bearer /i.test(req.headers.authorization||''),kind=u.kind||(fromCookie?'web':'app'),days=SESSION_DAYS[kind]||30;
   const at=v=>Date.parse(String(v).replace(' ','T')+'Z');
@@ -796,12 +829,14 @@ function auth(req){
     if(fromCookie)Object.defineProperty(u,'renewCookie',{value:t});
   }
   delete u.expires_at;delete u.kind;delete u.session_created;delete u.last_used_at;
+  u.push_prefs=pushPrefs(u.push_prefs);
   return u;
 }
 // My account as the apps and website show it (as auth() reports it, without the session's details).
 function meRow(uid){
-  const x=db.prepare("SELECT id,email,name,role,avatar_url,bio,profile_sharing,(totp_secret IS NOT NULL) two_factor,(instr(password_hash,':')>0) has_password,notify_email,notify_admin,notify_push,(email_verified_at IS NOT NULL) email_verified,pending_email FROM users WHERE id=?").get(uid);
+  const x=db.prepare("SELECT id,email,name,role,avatar_url,bio,profile_sharing,(totp_secret IS NOT NULL) two_factor,(instr(password_hash,':')>0) has_password,notify_email,notify_admin,notify_push,(email_verified_at IS NOT NULL) email_verified,pending_email,push_prefs FROM users WHERE id=?").get(uid);
   if(x&&x.role==='global_admin'&&!x.two_factor&&ADMIN_TWO_FACTOR_REQUIRED){x.role='member';x.admin_needs_two_factor=true}
+  if(x)x.push_prefs=pushPrefs(x.push_prefs);
   return x;
 }
 const need=(res,u,roles)=>{if(!u){send(res,401,{error:'Sign in required'});return false}if(roles&&!roles.includes(u.role)){send(res,403,{error:'Not authorised'});return false}return true};
@@ -832,9 +867,9 @@ function addMember(cid,uid,{role='member',teamId=null,by}){
   audit(by,existing?(role==='owner'?'made owner':'added to team'):'added to challenge',{user:uid,challenge:cid,detail:[role==='owner'&&'as owner',teamId&&`team ${teamId}`].filter(Boolean).join(', ')||null});
   if(!existing&&uid!==by.id){
     const ch=db.prepare('SELECT name FROM challenges WHERE id=?').get(cid);
-    pushTo([uid],{title:`${by.name} added you to ${ch.name}`,body:"Open it to start logging - or leave it if you didn't expect this.",url:`/challenges/${cid}`});
+    pushTo([uid],{kind:'added',title:`${by.name} added you to ${ch.name}`,body:"Open it to start logging - or leave it if you didn't expect this.",url:`/challenges/${cid}`});
     const who=db.prepare('SELECT email,notify_email,deactivated_at,email_verified_at FROM users WHERE id=?').get(uid),c=db.prepare('SELECT name,start_date,end_date FROM challenges WHERE id=?').get(cid);
-    if(who&&who.notify_email&&who.email_verified_at&&!who.deactivated_at&&!pushReachable(uid))sendMail({to:who.email,subject:`You've been added to ${c.name} on Active Together`,
+    if(who&&who.notify_email&&who.email_verified_at&&!who.deactivated_at&&!pushReachable(uid,'added'))sendMail({to:who.email,subject:`You've been added to ${c.name} on Active Together`,
       text:`Hello,\n\n${by.name} added you to the challenge "${c.name}" on Active Together (${c.start_date} to ${c.end_date}).\n\nOpen it here: ${ORIGIN}/challenges/${cid}\n\nDidn't expect this? Open the challenge and choose Leave challenge: anything you've logged in it goes with you.\n\nYou can turn these emails off in My account.\n\nActive Together\n${ORIGIN}`});
   }
   return !existing;
@@ -846,11 +881,11 @@ function ticketMail(ticketId,toReporter,what){
   const t=db.prepare('SELECT t.id,t.title,t.user_id,u.email,u.notify_email,u.email_verified_at FROM tickets t JOIN users u ON u.id=t.user_id WHERE t.id=?').get(ticketId);
   if(!t)return;
   pushTo(toReporter?[t.user_id]:db.prepare("SELECT id FROM users WHERE role='global_admin' AND notify_admin=1 AND id!=?").all(t.user_id).map(x=>x.id),
-    {title:toReporter?'Your support ticket':`Support ticket #${t.id}`,body:`${what}: ${t.title}`,url:`/help/tickets/${t.id}`});
+    {kind:toReporter?'replies':'admin',title:toReporter?'Your support ticket':`Support ticket #${t.id}`,body:`${what}: ${t.title}`,url:`/help/tickets/${t.id}`});
   if(!emailEnabled())return;
   const people=toReporter?(t.notify_email&&t.email_verified_at?[{id:t.user_id,email:t.email}]:[]):db.prepare("SELECT id,email FROM users WHERE role='global_admin' AND deactivated_at IS NULL AND notify_admin=1 AND email_verified_at IS NOT NULL AND id!=?").all(t.user_id);
   for(const p of people){
-    if(pushReachable(p.id))continue;
+    if(pushReachable(p.id,toReporter?'replies':'admin'))continue;
     if(hitRateLimit(`mail:ticket:${t.id}:${p.id}`,1,10*60_000))continue;
     sendMail({to:p.email,subject:`${toReporter?'Your support ticket':'Support ticket'} #${t.id}: ${what}`,
       text:`Hello,\n\n${toReporter?`There's news on your ticket "${t.title}": ${what}.`:`Ticket #${t.id} "${t.title}": ${what}.`}\n\nOpen it here: ${ORIGIN}/help/tickets/${t.id}\n\nYou can turn these emails off in My account.\n\nActive Together\n${ORIGIN}`});
@@ -891,7 +926,15 @@ function removeFromChallenge(cid,uid){
   pruneRoutes();
   return removed;
 }
-function startSession(uid,kind='web',req=null){const t=crypto.randomBytes(32).toString('hex'),th=crypto.createHash('sha256').update(t).digest('hex');db.prepare("INSERT INTO sessions(token_hash,user_id,expires_at,kind,created_at,last_used_at,device) VALUES(?,?,datetime('now',?),?,datetime('now'),datetime('now'),?)").run(th,uid,`+${SESSION_DAYS[kind]||30} days`,kind,deviceLabel(req,kind));return t}
+function noteDevice(uid,device){
+  const known=db.prepare('SELECT COUNT(*) n,SUM(device=?) here FROM known_devices WHERE user_id=?').get(device,uid);
+  if(known.here)return;
+  db.prepare('INSERT OR IGNORE INTO known_devices(user_id,device) VALUES(?,?)').run(uid,device);
+  if(!known.n)return;
+  securityMail(uid,`A new sign-in from ${device} (if it isn't you, sign it out under My account, Signed-in devices)`);
+  pushTo([uid],{title:'New sign-in to your account',body:`${device} just signed in. Not you? Sign it out in My account, then change your password.`,url:'/'});
+}
+function startSession(uid,kind='web',req=null){if(req)noteDevice(uid,deviceLabel(req,kind));const t=crypto.randomBytes(32).toString('hex'),th=crypto.createHash('sha256').update(t).digest('hex');db.prepare("INSERT INTO sessions(token_hash,user_id,expires_at,kind,created_at,last_used_at,device) VALUES(?,?,datetime('now',?),?,datetime('now'),datetime('now'),?)").run(th,uid,`+${SESSION_DAYS[kind]||30} days`,kind,deviceLabel(req,kind));return t}
 
 function teamAccess(uid,tid){return db.prepare('SELECT team_role FROM team_members WHERE user_id=? AND team_id=?').get(uid,tid)}
 function challengeAccess(uid,cid){return db.prepare('SELECT challenge_role FROM challenge_members WHERE user_id=? AND challenge_id=?').get(uid,cid)}
@@ -1075,7 +1118,10 @@ function dashboard(uid){
   // sync help away then).
   const syncing=!!(db.prepare('SELECT 1 FROM sync_keys WHERE user_id=? LIMIT 1').get(uid)||db.prepare("SELECT 1 FROM activities WHERE user_id=? AND source<>'manual' AND activity_date>=date('now','-30 days') LIMIT 1").get(uid));
   for(const c of challenges)if(c.added_by==null)delete c.added_by;
-  return {challenges,syncing};
+  // Getting started: in a challenge, syncing from a phone, phone notifications on, email confirmed.
+  const setup={challenge:challenges.length>0,syncing,push:!!db.prepare('SELECT 1 FROM push_devices WHERE user_id=? LIMIT 1').get(uid),
+    email:!!db.prepare('SELECT email_verified_at FROM users WHERE id=?').get(uid)?.email_verified_at};
+  return {challenges,syncing,stats:userStats(uid),setup};
 }
 
 // Team and individual standings for one challenge, ranked by whatever it measures. Both totals
@@ -1090,10 +1136,25 @@ function cachedStandings(kind,c,compute){
   const data=compute();remember(standingsCache,key,{v,data},1000);return data;
 }
 function leaderboard(challenge){return cachedStandings('lb',challenge,()=>computeLeaderboard(challenge))}
-function computeLeaderboard(challenge){
+// Streaks and personal bests, across every challenge: days in a row with something logged (the current run counts
+// if it reaches today or yesterday), the longest run in the last year, and the biggest single entries.
+function userStats(uid){
+  const days=db.prepare("SELECT DISTINCT activity_date d FROM activities WHERE user_id=? AND activity_date>=date('now','-400 days') ORDER BY d").all(uid).map(r=>r.d);
+  const dayNo=d=>Math.round(Date.parse(d+'T00:00:00Z')/864e5);
+  let longest=0,run=0,prev=null;
+  for(const d of days){const n=dayNo(d);run=prev!==null&&n===prev+1?run+1:1;longest=Math.max(longest,run);prev=n}
+  const today=dayNo(new Date().toISOString().slice(0,10));
+  const streak=prev!==null&&today-prev<=1?run:0;
+  const best=db.prepare('SELECT MAX(minutes) minutes,MAX(distance_m) distance_m,MAX(steps) steps FROM activities WHERE user_id=?').get(uid);
+  return {streak,longestStreak:longest,bestMinutes:best.minutes||0,bestDistanceKm:best.distance_m?+(best.distance_m/1000).toFixed(2):0,bestDistanceMi:best.distance_m?+(best.distance_m/1609.344).toFixed(2):0,bestSteps:best.steps||0};
+}
+// 13: a leaderboard for part of the challenge (this week or this month), worked out when asked rather than cached.
+function periodStart(period){return period==='week'?db.prepare("SELECT date('now','weekday 1','-7 days') d").get().d:period==='month'?db.prepare("SELECT date('now','start of month') d").get().d:null}
+function computeLeaderboard(challenge,since=null){
   const cid=challenge.id,unit=challengeUnit(challenge),order={distance:'distance_m',steps:'steps'}[challengeMetric(challenge)]||'minutes';
-  const teams=db.prepare(`SELECT t.id,t.name,t.image_url,COALESCE(SUM(a.minutes),0) minutes,COALESCE(SUM(a.distance_m),0) distance_m,COALESCE(SUM(a.steps),0) steps FROM teams t LEFT JOIN activities a ON a.team_id=t.id WHERE t.challenge_id=? GROUP BY t.id ORDER BY ${order} DESC,t.name`).all(cid);
-  const users=db.prepare(`SELECT us.id,us.name,us.email,us.avatar_url,COALESCE(SUM(a.minutes),0) minutes,COALESCE(SUM(a.distance_m),0) distance_m,COALESCE(SUM(a.steps),0) steps FROM challenge_members cmem JOIN users us ON us.id=cmem.user_id LEFT JOIN activities a ON a.user_id=us.id AND a.challenge_id=cmem.challenge_id WHERE cmem.challenge_id=? GROUP BY us.id ORDER BY ${order} DESC,us.name`).all(cid);
+  const when=since?' AND a.activity_date>=?':'',arg=since?[since]:[];
+  const teams=db.prepare(`SELECT t.id,t.name,t.image_url,COALESCE(SUM(a.minutes),0) minutes,COALESCE(SUM(a.distance_m),0) distance_m,COALESCE(SUM(a.steps),0) steps FROM teams t LEFT JOIN activities a ON a.team_id=t.id${when} WHERE t.challenge_id=? GROUP BY t.id ORDER BY ${order} DESC,t.name`).all(...arg,cid);
+  const users=db.prepare(`SELECT us.id,us.name,us.email,us.avatar_url,COALESCE(SUM(a.minutes),0) minutes,COALESCE(SUM(a.distance_m),0) distance_m,COALESCE(SUM(a.steps),0) steps FROM challenge_members cmem JOIN users us ON us.id=cmem.user_id LEFT JOIN activities a ON a.user_id=us.id AND a.challenge_id=cmem.challenge_id${when} WHERE cmem.challenge_id=? GROUP BY us.id ORDER BY ${order} DESC,us.name`).all(...arg,cid);
   const shape=({distance_m,...r})=>({...r,distance:metersToUnit(distance_m,unit)});
   return {teams:teams.map(shape),users:users.map(shape)};
 }
@@ -1364,11 +1425,11 @@ async function api(req,res,url){
    push:{android:pushEnabled.android?{appId:FCM.appId,apiKey:FCM.apiKey,projectId:FCM_SA.project_id,senderId:FCM.senderId}:null,ios:pushEnabled.ios}})}
  // Forgotten password: always the same answer, so it never says whether an email has an account. The email
  // goes out in the background so the reply takes as long either way.
- if(m==='POST'&&url.pathname==='/api/password/forgot'){
+ if(m==='POST'&&(url.pathname==='/api/password/forgot'||url.pathname==='/api/mobile/password/forgot')){
    const b=await body(req),email=String(b.email||'').toLowerCase().trim();
    if(!email)return send(res,400,{error:'Enter your email address'});
    if(loginLimited('forgot',ip,email))return send(res,429,{error:'Too many requests. Please wait a few minutes and try again.'});
-   if(!(await verifyCaptcha(b.captchaToken||b.recaptchaToken,ip)))return send(res,400,{error:'Bot check failed. Please try again.'});
+   if(url.pathname==='/api/password/forgot'&&!(await verifyCaptcha(b.captchaToken||b.recaptchaToken,ip)))return send(res,400,{error:'Bot check failed. Please try again.'});
    const who=emailEnabled()&&db.prepare('SELECT id FROM users WHERE email=? AND deactivated_at IS NULL').get(email);
    // At most two emails an hour for any one account, however many networks the requests come from. The email
    // names nobody: the address is all it's sent to, and an account's name is whatever whoever made it typed.
@@ -1609,6 +1670,11 @@ async function api(req,res,url){
    if(b.notifyEmail!==undefined)db.prepare('UPDATE users SET notify_email=? WHERE id=?').run(b.notifyEmail?1:0,u.id);
    if(b.notifyAdmin!==undefined)db.prepare('UPDATE users SET notify_admin=? WHERE id=?').run(b.notifyAdmin?1:0,u.id);
    if(b.notifyPush!==undefined)db.prepare('UPDATE users SET notify_push=? WHERE id=?').run(b.notifyPush?1:0,u.id);
+   if(b.pushPrefs&&typeof b.pushPrefs==='object'){
+     const merged={...pushPrefs(db.prepare('SELECT push_prefs FROM users WHERE id=?').get(u.id).push_prefs)};
+     for(const k of PUSH_KINDS)if(b.pushPrefs[k]!==undefined)merged[k]=!!b.pushPrefs[k];
+     db.prepare('UPDATE users SET push_prefs=? WHERE id=?').run(JSON.stringify(Object.fromEntries(Object.entries(merged).filter(([,v])=>!v))),u.id);
+   }
    if(pendingEmail){
      db.prepare('UPDATE users SET pending_email=? WHERE id=?').run(pendingEmail,u.id);
      sendEmailCheck(u.id,pendingEmail,{change:true});
@@ -1616,7 +1682,7 @@ async function api(req,res,url){
    }
    if(email!==undefined)db.prepare('UPDATE users SET email_verified_at=NULL WHERE id=?').run(u.id);
    try{
-     const profileChanged=bio!==undefined||sharing!==undefined||b.notifyEmail!==undefined||b.notifyAdmin!==undefined||b.notifyPush!==undefined||!!pendingEmail;
+     const profileChanged=bio!==undefined||sharing!==undefined||b.notifyEmail!==undefined||b.notifyAdmin!==undefined||b.notifyPush!==undefined||!!b.pushPrefs||!!pendingEmail;
      if(bio!==undefined)db.prepare('UPDATE users SET bio=? WHERE id=?').run(bio,u.id);
      if(sharing!==undefined)db.prepare('UPDATE users SET profile_sharing=? WHERE id=?').run(sharing,u.id);
      if(!updateUserFields(u.id,{name,email,passwordHash,avatarUrl})&&!profileChanged)return send(res,400,{error:'Nothing to update'});
@@ -1764,7 +1830,9 @@ async function api(req,res,url){
    const members=db.prepare(`SELECT us.id,us.name,us.email,us.avatar_url,us.deactivated_at,cm.challenge_role,cm.challenge_role role,cm.joined_at,
      (SELECT group_concat(t.name,', ') FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=us.id AND t.challenge_id=cm.challenge_id) teams,
      (SELECT COUNT(*) FROM activities a WHERE a.user_id=us.id AND a.challenge_id=cm.challenge_id) entries
-     FROM challenge_members cm JOIN users us ON us.id=cm.user_id WHERE cm.challenge_id=? ORDER BY cm.challenge_role='owner' DESC,us.name`).all(cid);
+     FROM challenge_members cm JOIN users us ON us.id=cm.user_id WHERE cm.challenge_id=? ORDER BY cm.challenge_role='owner' DESC,us.name`).all(cid)
+     // Owners see who's in, not their email addresses (only global admins do, and everyone sees their own).
+     .map(x=>isAdmin(u)||x.id===u.id?x:{...x,email:null});
    const teams=isIndividual(c)?[]:db.prepare('SELECT id,name FROM teams WHERE challenge_id=? ORDER BY name').all(cid);
    return send(res,200,{members,teams});
  }
@@ -1815,8 +1883,8 @@ async function api(req,res,url){
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard\/export$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner or a global admin can export the leaderboard'});const type=url.searchParams.get('type')==='users'?'users':'teams';const lb=leaderboard(challenge),metric=challengeMetric(challenge),dist=metric==='distance',unitName=challengeUnit(challenge)==='km'?'Kilometres':'Miles';
    // A minutes challenge exports exactly as before; a distance challenge leads with distance and
    // keeps minutes alongside, since synced entries usually carry both.
-   const valueCols=metric==='steps'?['Steps']:dist?[unitName,'Minutes']:['Minutes'],values=r=>metric==='steps'?[r.steps]:dist?[r.distance,r.minutes]:[r.minutes];let header,rows;if(type==='teams'){header=['Rank','Team',...valueCols];rows=lb.teams.map((r,i)=>[i+1,r.name,...values(r)])}else{header=['Rank','Name','Email',...valueCols];rows=lb.users.map((r,i)=>[i+1,r.name,r.email,...values(r)])}const csv=[header,...rows].map(r=>r.map(csvEscape).join(',')).join('\r\n'),safeName=challenge.name.replace(/[^a-z0-9]+/gi,'-').toLowerCase()||'challenge';res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="${safeName}-${type}.csv"`});return res.end(csv)}
- if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!challengeAccess(u.id,cid)&&!isAdmin(u))return send(res,403,{error:'You need an invite code to view this challenge'});const challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});const lb=isJourney(challenge)?journeyStandings(challenge)||leaderboard(challenge):leaderboard(challenge),strip=({email,lat,lon,...r},i)=>({...r,rank:i+1});
+   const valueCols=metric==='steps'?['Steps']:dist?[unitName,'Minutes']:['Minutes'],values=r=>metric==='steps'?[r.steps]:dist?[r.distance,r.minutes]:[r.minutes];let header,rows;if(type==='teams'){header=['Rank','Team',...valueCols];rows=lb.teams.map((r,i)=>[i+1,r.name,...values(r)])}else{header=['Rank','Name',...(isAdmin(u)?['Email']:[]),...valueCols];rows=lb.users.map((r,i)=>[i+1,r.name,...(isAdmin(u)?[r.email]:[]),...values(r)])}const csv=[header,...rows].map(r=>r.map(csvEscape).join(',')).join('\r\n'),safeName=challenge.name.replace(/[^a-z0-9]+/gi,'-').toLowerCase()||'challenge';res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="${safeName}-${type}.csv"`});return res.end(csv)}
+ if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/leaderboard$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]);if(!challengeAccess(u.id,cid)&&!isAdmin(u))return send(res,403,{error:'You need an invite code to view this challenge'});const challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});const period=['week','month'].includes(url.searchParams.get('period'))?url.searchParams.get('period'):null,lb=period?computeLeaderboard(challenge,periodStart(period)):isJourney(challenge)?journeyStandings(challenge)||leaderboard(challenge):leaderboard(challenge),strip=({email,lat,lon,...r},i)=>({...r,rank:i+1});
    // ?top=N: the first N, plus my own row (and my teams) wherever they are, and how many there are in all.
    const top=Math.max(0,Number(url.searchParams.get('top'))||0),mineTeams=top?new Set(db.prepare('SELECT tm.team_id FROM team_members tm JOIN teams t ON t.id=tm.team_id WHERE tm.user_id=? AND t.challenge_id=?').all(u.id,cid).map(r=>r.team_id)):null;
    const cut=(rows,mine)=>{const all=rows.map(strip);return top?all.filter((r,i)=>i<top||mine(r)):all};
@@ -1834,7 +1902,7 @@ async function api(req,res,url){
        team:ti>=0?{name:lb.teams[ti].name,rank:place(lb.teams,ti),of:lb.teams.length}:null};
    }
    return send(res,200,{metric:challengeMetric(challenge),distance_unit:challengeUnit(challenge),participation:isIndividual(challenge)?'individual':'teams',journey:journeyInfo(challenge),
-     teams:cut(lb.teams,r=>mineTeams&&mineTeams.has(r.id)),users:cut(lb.users,r=>r.id===u.id),teams_total:lb.teams.length,users_total:lb.users.length,me})}
+     teams:cut(lb.teams,r=>mineTeams&&mineTeams.has(r.id)),users:cut(lb.users,r=>r.id===u.id),teams_total:lb.teams.length,users_total:lb.users.length,me,period:period||'all'})}
  // The journey map: the route, and where each team (or, in an individuals challenge, each person) has
  // got to along it - a virtual position worked out from their total, never anyone's real location.
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/journey$/)){
@@ -1909,7 +1977,7 @@ async function api(req,res,url){
    return send(res,200,{ok:true});
  }
  if(m==='GET'&&url.pathname.match(/^\/api\/teams\/\d+\/members$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});const manage=canManageTeam(u,team);if(!teamAccess(u.id,tid)&&!manage)return send(res,403,{error:'You need to be in this team to view its members'});// Email addresses only for whoever manages the team; teammates see names.
-   const members=db.prepare('SELECT u.id,u.name,u.email,tm.team_role FROM team_members tm JOIN users u ON u.id=tm.user_id WHERE tm.team_id=? ORDER BY u.name').all(tid).map(x=>manage?x:{id:x.id,name:x.name,team_role:x.team_role});return send(res,200,{members,canManage:manage})}
+   const members=db.prepare('SELECT u.id,u.name,u.email,tm.team_role FROM team_members tm JOIN users u ON u.id=tm.user_id WHERE tm.team_id=? ORDER BY u.name').all(tid).map(x=>isAdmin(u)||x.id===u.id?x:{id:x.id,name:x.name,team_role:x.team_role});return send(res,200,{members,canManage:manage})}
  if(m==='POST'&&url.pathname.match(/^\/api\/teams\/\d+\/members$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can add members'});const b=await body(req),email=String(b.email||'').toLowerCase().trim();if(!email)return send(res,400,{error:'Email is required'});const found=db.prepare('SELECT id,name,email FROM users WHERE email=? AND deactivated_at IS NULL').get(email);
    // Challenge owners and global admins can bring anyone with an account in; a team admin can only add people already in the challenge.
    const owner=canManageChallenge(u,team.challenge_id);
@@ -1944,9 +2012,10 @@ async function api(req,res,url){
          team:team?team.name:null,minutes:me.minutes,distance:me.distance,steps:me.steps,rank:i+1,of:lb.users.length};
      });
    }
+   if(self||sharing!=='private')out.stats=userStats(id);
    if(sharing==='full'&&shared.length){
      const ids=shared.map(c=>c.id);
-     out.activities=db.prepare(`SELECT a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.comment,c.name challenge_name,c.metric,c.distance_unit FROM activities a JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=? AND a.challenge_id IN (${ids.map(()=>'?').join(',')}) ORDER BY a.activity_date DESC,a.start_time DESC,a.id DESC LIMIT 30`)
+     out.activities=db.prepare(`SELECT a.id,(SELECT COUNT(*) FROM kudos k WHERE k.activity_id=a.id) kudos,EXISTS(SELECT 1 FROM kudos k WHERE k.activity_id=a.id AND k.user_id=${Number(u.id)}) kudos_mine,c.id challenge_id,a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.comment,c.name challenge_name,c.metric,c.distance_unit FROM activities a JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=? AND a.challenge_id IN (${ids.map(()=>'?').join(',')}) ORDER BY a.activity_date DESC,a.start_time DESC,a.id DESC LIMIT 30`)
        .all(id,...ids).map(({distance_m,...a})=>({...a,distance:distance_m==null?null:metersToUnit(distance_m,a.distance_unit)}));
    }
    // Followers and following: counts for anyone who can see the profile. The lists only name people
@@ -2010,6 +2079,48 @@ async function api(req,res,url){
  }
  // Everything this user has logged, newest first, across every challenge - the companion's
  // "My activity" list. Paged; has_route says whether a map can be shown.
+ // A challenge's recent entries: mine, and those of people who share their full activity, each with its kudos.
+ if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/feed$/)){
+   if(!need(res,u))return;
+   const cid=Number(url.pathname.split('/')[3]);
+   if(!challengeAccess(u.id,cid)&&!isAdmin(u))return send(res,403,{error:'You need an invite code to view this challenge'});
+   const c=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!c)return send(res,404,{error:'Challenge not found'});
+   const rows=db.prepare(`SELECT a.id,a.user_id,us.name,us.avatar_url,a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.comment,t.name team_name,
+       (SELECT COUNT(*) FROM kudos k WHERE k.activity_id=a.id) kudos,EXISTS(SELECT 1 FROM kudos k WHERE k.activity_id=a.id AND k.user_id=?) kudos_mine
+     FROM activities a JOIN users us ON us.id=a.user_id LEFT JOIN teams t ON t.id=a.team_id
+     WHERE a.challenge_id=? AND us.deactivated_at IS NULL AND (a.user_id=? OR us.profile_sharing='full') ORDER BY a.activity_date DESC,a.id DESC LIMIT 40`).all(u.id,cid,u.id);
+   return send(res,200,{activities:rows.map(({distance_m,...a})=>({...a,distance:distance_m==null?null:metersToUnit(distance_m,challengeUnit(c))}))});
+ }
+ // 👏 on a challenge-mate's entry (or take it back). They hear about it, at most once an hour from each person.
+ if((m==='POST'||m==='DELETE')&&url.pathname.match(/^\/api\/activities\/\d+\/kudos$/)){
+   if(!need(res,u))return;
+   const a=db.prepare('SELECT a.*,c.name challenge_name,c.metric,c.distance_unit FROM activities a JOIN challenges c ON c.id=a.challenge_id WHERE a.id=?').get(Number(url.pathname.split('/')[3]));
+   if(!a||!challengeAccess(u.id,a.challenge_id))return send(res,404,{error:'Not found'});
+   if(a.user_id===u.id)return send(res,400,{error:"You can't give yourself kudos"});
+   if(m==='DELETE')db.prepare('DELETE FROM kudos WHERE activity_id=? AND user_id=?').run(a.id,u.id);
+   else if(db.prepare('INSERT OR IGNORE INTO kudos(activity_id,user_id) VALUES(?,?)').run(a.id,u.id).changes&&!hitRateLimit(`kudos:${u.id}:${a.user_id}`,1,60*60_000)){
+     const amount=a.metric==='steps'?`${a.steps} steps`:a.metric==='distance'&&a.distance_m?`${metersToUnit(a.distance_m,a.distance_unit)} ${a.distance_unit==='km'?'km':'mi'}`:a.minutes?`${a.minutes} min`:'';
+     pushTo([a.user_id],{kind:'kudos',title:`👏 from ${u.name}`,body:`For your ${amount?amount+' ':''}${a.activity_type} in ${a.challenge_name}`,url:`/challenges/${a.challenge_id}`});
+   }
+   return send(res,200,{kudos:db.prepare('SELECT COUNT(*) n FROM kudos WHERE activity_id=?').get(a.id).n,mine:m==='POST'});
+ }
+ // Count an entry I logged in another challenge too: a copy there (same workout, times, route), checked as a new entry
+ // would be - the date within the challenge, what it measures, and the journey's way of getting there.
+ if(m==='POST'&&url.pathname.match(/^\/api\/activities\/\d+\/copy$/)){
+   if(!need(res,u))return;
+   const a=db.prepare('SELECT * FROM activities WHERE id=?').get(Number(url.pathname.split('/')[3]));
+   if(!a||a.user_id!==u.id)return send(res,404,{error:'Activity not found'});
+   const b=await body(req),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(Number(b.challenge_id));
+   const target=activityTarget(u,challenge,b.team_id);
+   if(target.error)return send(res,target.status,{error:target.error});
+   if(db.prepare("SELECT 1 FROM activities WHERE user_id=? AND challenge_id=? AND activity_date=? AND activity_type=? AND COALESCE(start_time,'')=COALESCE(?,'') AND COALESCE(source_ref,'')=COALESCE(?,'') AND COALESCE(minutes,0)=COALESCE(?,0)").get(u.id,challenge.id,a.activity_date,a.activity_type,a.start_time,a.source_ref,a.minutes))
+     return send(res,400,{error:`It already counts in ${challenge.name}`});
+   try{requireInWindow(challenge,a.activity_date);requireMeasure(challenge,a.minutes,a.distance_m,a.steps,a.activity_type)}catch(e){return send(res,400,{error:e.message})}
+   try{db.prepare('INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,distance_m,steps,activity_date,source,source_ref,start_time,end_time,comment,route_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+     .run(u.id,target.teamId,challenge.id,a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.source,a.source_ref,a.start_time,a.end_time,a.comment,a.route_id)}
+   catch(e){return send(res,400,{error:`It already counts in ${challenge.name}`})}
+   return send(res,201,{ok:true});
+ }
  if(m==='GET'&&url.pathname==='/api/me/activities'){
    if(!need(res,u))return;
    const limit=Math.min(Math.max(Number(url.searchParams.get('limit'))||50,1),200),offset=Math.max(Number(url.searchParams.get('offset'))||0,0);
@@ -2570,7 +2681,7 @@ const server=http.createServer(async(req,res)=>{try{for(const [k,v] of Object.en
  if(!invitePage&&String(req.headers['if-none-match']||'').split(',').some(t=>t.trim().replace(/^W\//,'')===etag)){res.writeHead(304,headers);return res.end()}
  res.writeHead(200,headers);
  if(html)return res.end(invitePage?previewTags(pageHtml(f,st),url.pathname,clientIp(req)):pageHtml(f,st));
- fs.createReadStream(f).pipe(res)}catch(e){if(e.status){if(!res.headersSent)send(res,e.status,{error:e.message});return}console.error(e);if(!res.headersSent)send(res,500,{error:'Server error'})}});// Node's default keepAliveTimeout is 5s, which races a client that reuses a pooled keep-alive
+ fs.createReadStream(f).pipe(res)}catch(e){if(e.status){if(!res.headersSent)send(res,e.status,{error:e.message});return}reportError(e,`${req.method} ${String(req.url).split('?')[0]}`);if(!res.headersSent)send(res,500,{error:'Server error'})}});// Node's default keepAliveTimeout is 5s, which races a client that reuses a pooled keep-alive
 // connection right as the server decides to close it - the client's write lands on a socket the
 // server is already tearing down, seen as a bare ECONNRESET with no HTTP response at all.
 // headersTimeout must exceed keepAliveTimeout or Node logs a warning and clamps it back down.

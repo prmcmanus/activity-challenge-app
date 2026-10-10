@@ -255,6 +255,13 @@ private struct ChallengeForm: View {
     @State private var deleting = false
     @State private var typedName = ""
     @State private var loaded = false
+    // A virtual journey: chosen when creating; an existing journey's route can be changed.
+    @State private var isJourney = false
+    @State private var draft = JourneyDraft(nil)
+
+    /// A journey counts distance or steps (a cycling one, distance only).
+    private var measures: [Measure] { !isJourney ? Measure.allCases : draft.cycling ? [.distance] : [.distance, .steps] }
+    private func fitMeasure() { if !measures.contains(measure) { measure = .distance } }
 
     var body: some View {
         Form {
@@ -268,10 +275,14 @@ private struct ChallengeForm: View {
                 DatePicker("Ends", selection: $end, in: start..., displayedComponents: .date)
             }
             if existing == nil {
-                Section { Text("Virtual journeys (a route on a map, like London to Edinburgh) are set up on the website, then show here with their map.").font(.caption).foregroundStyle(.secondary) }
+                Section("Kind of challenge") {
+                    Picker("Kind", selection: $isJourney) { Text("Standard").tag(false); Text("Virtual journey").tag(true) }.pickerStyle(.segmented)
+                    if !isJourney { Text("Everyone logs activity and the leaderboards rank the totals.").font(.caption).foregroundStyle(.secondary) }
+                }
             }
+            if isJourney { JourneySection(draft: draft, editing: existing != nil) }
             Section("How it works") {
-                Picker("Measure", selection: $measure) { ForEach(Measure.allCases) { Text($0.label).tag($0) } }
+                Picker("Measure", selection: $measure) { ForEach(measures) { Text($0.label).tag($0) } }
                 if measure == .distance { Picker("Distance unit", selection: $unit) { Text("Miles").tag("mi"); Text("Kilometres").tag("km") } }
                 if measure == .steps { Text("Everyone's daily step total counts. The app fills it in from Apple Health, or people enter it by hand.").font(.caption).foregroundStyle(.secondary) }
                 Picker("Who takes part", selection: $individual) { Text("Teams").tag(false); Text("Individuals only").tag(true) }
@@ -298,6 +309,8 @@ private struct ChallengeForm: View {
         }
         .navigationTitle(existing == nil ? "New challenge" : "Edit challenge").navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: load)
+        .onChange(of: isJourney) { fitMeasure() }
+        .onChange(of: draft.mode) { fitMeasure() }
         .alert("Delete \"\(existing?.name ?? "")\"?", isPresented: $deleting) {
             TextField("Challenge name", text: $typedName)
             Button("Delete", role: .destructive) {
@@ -314,6 +327,7 @@ private struct ChallengeForm: View {
         if let e = existing {
             name = e.name; originalDescription = htmlToText(e.descriptionHTML); description = originalDescription
             start = e.startDate.date; end = e.endDate.date; measure = e.measure; unit = e.distanceUnit; individual = e.individual
+            if let j = e.journey { isJourney = true; draft = JourneyDraft(j) }
         }
     }
 
@@ -321,11 +335,13 @@ private struct ChallengeForm: View {
         let s = Day(start), e = Day(end)
         if name.trimmingCharacters(in: .whitespaces).isEmpty { error = "Give the challenge a name."; return }
         if e < s { error = "The end date is before the start date."; return }
+        if isJourney && draft.value == nil { error = "Choose a start and a finish for the journey."; return }
         error = nil
         // The web editor allows formatting; only replace the description when it was actually edited here.
         let desc: String? = existing == nil ? (textToHTML(description).isEmpty ? nil : textToHTML(description))
             : (description.trimmingCharacters(in: .whitespacesAndNewlines) != originalDescription ? textToHTML(description) : nil)
-        let f = ChallengeFields(name: name.trimmingCharacters(in: .whitespaces), description: desc, startDate: s, endDate: e, measure: measure, distanceUnit: unit, individual: individual)
+        let f = ChallengeFields(name: name.trimmingCharacters(in: .whitespaces), description: desc, startDate: s, endDate: e, measure: measure, distanceUnit: unit, individual: individual,
+                                journey: isJourney ? draft.value : nil)
         busy = true
         Task {
             if let ex = existing {

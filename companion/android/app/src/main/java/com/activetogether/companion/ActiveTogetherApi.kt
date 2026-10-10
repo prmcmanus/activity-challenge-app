@@ -154,9 +154,24 @@ data class AdminChallenge(val id: Int, val name: String, val startDate: LocalDat
     val distanceUnit: String, val individual: Boolean, val inviteCode: String, val owners: String?, val members: Int, val teams: Int,
     val activities: Int, val state: String, val purgeDate: String, val measuresSteps: Boolean = false)
 
-/** What a new or edited challenge is set to. description is null to leave it unchanged. */
+/** What a new or edited challenge is set to. description is null to leave it unchanged; journey is set for a virtual journey. */
 data class ChallengeFields(val name: String, val description: String?, val startDate: LocalDate, val endDate: LocalDate,
-    val measuresDistance: Boolean, val distanceUnit: String, val individual: Boolean, val measuresSteps: Boolean = false)
+    val measuresDistance: Boolean, val distanceUnit: String, val individual: Boolean, val measuresSteps: Boolean = false,
+    val journey: JourneyInput? = null)
+
+/** A place on a journey being set up: what the challenge calls it, and where it is. */
+data class JourneyPlace(val name: String, val lat: Double, val lon: Double)
+/** A journey as the owner sets it up: start, finish, stops on the way, by road or straight, on foot or cycling. */
+data class JourneyInput(val from: JourneyPlace, val to: JourneyPlace, val via: List<JourneyPlace>, val shape: String, val mode: String) {
+    fun json(): JSONObject {
+        fun p(x: JourneyPlace) = JSONObject().put("name", x.name).put("lat", x.lat).put("lon", x.lon)
+        return JSONObject().put("from", p(from)).put("to", p(to)).put("via", JSONArray(via.map { p(it) })).put("shape", shape).put("mode", mode)
+    }
+}
+/** A place search result: its short name and the full description to choose by. */
+data class PlaceResult(val name: String, val detail: String, val lat: Double, val lon: Double)
+/** A planned route: its line and length. */
+data class JourneyPreview(val points: List<RoutePoint>, val miles: Double, val km: Double, val steps: Long)
 
 /** A leaderboard row; userId is set for people (tap to see their profile), null for teams. */
 data class Standing(val name: String, val minutes: Double, val distance: Double, val imageUrl: String?, val userId: Int? = null, val steps: Double = 0.0,
@@ -319,6 +334,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         .put("distance_unit", f.distanceUnit)
         .put("participation", if (f.individual) "individual" else "teams")
         .apply { f.description?.let { put("description", it) } }
+        .apply { f.journey?.let { put("kind", "journey"); put("journey", it.json()) } }
 
     /** Create a challenge (I become its owner). Returns its id and invite code. */
     fun createChallenge(f: ChallengeFields): Pair<Int, String> =
@@ -341,6 +357,21 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
     fun leaveTeam(teamId: Int) { request("/api/teams/$teamId/leave", "POST", JSONObject()) }
     /** Leaves the challenge and its teams, deleting everything I logged in it. */
     fun leaveChallenge(id: Int) { request("/api/challenges/$id/leave", "POST", JSONObject()) }
+
+    // --- Virtual journeys: finding places and planning the route ---
+    fun searchPlaces(q: String): List<PlaceResult> {
+        val a = request("/api/places?q=" + java.net.URLEncoder.encode(q.trim(), "UTF-8")).getJSONArray("places")
+        return (0 until a.length()).map { i -> a.getJSONObject(i).let { PlaceResult(it.optString("name"), it.optString("detail"), it.getDouble("lat"), it.getDouble("lon")) } }
+    }
+    /** The name of the place at a point (a town, say), or null. */
+    fun placeName(lat: Double, lon: Double): String? =
+        request("/api/places/reverse?lat=$lat&lon=$lon").let { if (it.isNull("name")) null else it.optString("name").takeIf { n -> n.isNotBlank() } }
+    fun previewJourney(j: JourneyInput): JourneyPreview {
+        val r = request("/api/journeys/preview", "POST", JSONObject().put("journey", j.json()))
+        val pts = r.getJSONArray("points")
+        return JourneyPreview((0 until pts.length()).map { i -> pts.getJSONArray(i).let { RoutePoint(it.getDouble(0), it.getDouble(1)) } },
+            r.optDouble("miles"), r.optDouble("km"), r.optLong("steps"))
+    }
 
     /** I've seen that someone added me: stop showing the notice. */
     fun ackAdded(challengeId: Int) { request("/api/challenges/$challengeId/ack", "POST", JSONObject()) }

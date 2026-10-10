@@ -129,7 +129,24 @@ struct ChallengeDetail: Hashable {
 
 struct ChallengeFields {
     var name: String, description: String?, startDate: Day, endDate: Day, measure: Measure, distanceUnit: String, individual: Bool
+    /// Set for a virtual journey.
+    var journey: JourneyInput? = nil
 }
+
+/// A place on a journey being set up: what the challenge calls it, and where it is.
+struct JourneyPlace: Hashable { let name: String, lat: Double, lon: Double }
+/// A journey as the owner sets it up: start, finish, stops on the way, by road or straight, on foot or cycling.
+struct JourneyInput: Hashable {
+    let from: JourneyPlace, to: JourneyPlace, via: [JourneyPlace], shape: String, mode: String
+    var json: [String: Any] {
+        func p(_ x: JourneyPlace) -> [String: Any] { ["name": x.name, "lat": x.lat, "lon": x.lon] }
+        return ["from": p(from), "to": p(to), "via": via.map(p), "shape": shape, "mode": mode]
+    }
+}
+/// A place search result: its short name and the full description to choose by.
+struct PlaceResult: Identifiable, Hashable { let id = UUID(); let name: String, detail: String, lat: Double, lon: Double }
+/// A planned route: its line and length.
+struct JourneyPreview { let points: [[Double]]; let miles: Double, km: Double, steps: Int }
 
 /// A leaderboard row; userId is set for people (tap to see their profile), nil for teams.
 struct Standing: Hashable {
@@ -304,6 +321,7 @@ final class API: @unchecked Sendable {
         var b: [String: Any] = ["name": f.name, "start_date": f.startDate.description, "end_date": f.endDate.description, "metric": f.measure.rawValue,
                                 "distance_unit": f.distanceUnit, "participation": f.individual ? "individual" : "teams"]
         if let d = f.description { b["description"] = d }
+        if let j = f.journey { b["kind"] = "journey"; b["journey"] = j.json }
         return b
     }
     func createChallenge(_ f: ChallengeFields) async throws -> (Int, String) {
@@ -322,6 +340,21 @@ final class API: @unchecked Sendable {
     func leaveTeam(_ id: Int) async throws { _ = try await request("/api/teams/\(id)/leave", "POST", [:]) }
     /// Leaves the challenge and its teams, deleting everything I logged in it.
     func leaveChallenge(_ id: Int) async throws { _ = try await request("/api/challenges/\(id)/leave", "POST", [:]) }
+    // Virtual journeys: finding places and planning the route
+    func searchPlaces(_ q: String) async throws -> [PlaceResult] {
+        try await request("/api/places?q=" + (q.trimmingCharacters(in: .whitespaces).addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? q)).arr("places").map {
+            PlaceResult(name: $0.string("name"), detail: $0.string("detail"), lat: $0.double("lat"), lon: $0.double("lon"))
+        }
+    }
+    /// The name of the place at a point (a town, say), or nil.
+    func placeName(lat: Double, lon: Double) async throws -> String? { try await request("/api/places/reverse?lat=\(lat)&lon=\(lon)").str("name") }
+    func previewJourney(_ j: JourneyInput) async throws -> JourneyPreview {
+        let r = try await request("/api/journeys/preview", "POST", ["journey": j.json])
+        let pts = (r.o["points"] as? [[Any]] ?? []).compactMap { p -> [Double]? in
+            guard p.count >= 2, let a = (p[0] as? NSNumber)?.doubleValue, let b = (p[1] as? NSNumber)?.doubleValue else { return nil }; return [a, b] }
+        return JourneyPreview(points: pts, miles: r.double("miles"), km: r.double("km"), steps: r.int("steps"))
+    }
+
     /// I've seen that someone added me: stop showing the notice.
     func ackAdded(_ challengeId: Int) async throws { _ = try await request("/api/challenges/\(challengeId)/ack", "POST", [:]) }
 

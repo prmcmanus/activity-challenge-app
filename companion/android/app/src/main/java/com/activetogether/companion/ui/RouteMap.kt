@@ -25,7 +25,7 @@ import org.osmdroid.views.overlay.Polyline
  * OpenStreetMap's tile policy: an identifying user agent with a way to reach us, and the map credited on the
  * map itself (see [osmCredit]). osmdroid caches tiles in the app's own cache, as the policy asks.
  */
-private fun configureOsm(context: Context) {
+internal fun configureOsm(context: Context) {
     val c = Configuration.getInstance()
     c.userAgentValue = "ActiveTogether/${com.activetogether.companion.BuildConfig.VERSION_NAME} (${context.packageName}; +https://activetogether.team)"
     c.osmdroidBasePath = context.cacheDir.resolve("osmdroid")
@@ -33,7 +33,7 @@ private fun configureOsm(context: Context) {
 }
 
 /** "© OpenStreetMap contributors" in the map's bottom corner, as its licence asks. */
-private fun osmCredit(view: MapView) = org.osmdroid.views.overlay.CopyrightOverlay(view.context).apply {
+internal fun osmCredit(view: MapView) = org.osmdroid.views.overlay.CopyrightOverlay(view.context).apply {
     setAlignBottom(true); setAlignRight(true); setTextSize(10)
 }
 

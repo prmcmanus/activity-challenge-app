@@ -94,17 +94,23 @@ private fun ChallengeForm(vm: AppViewModel, existing: ChallengeDetail?, done: (I
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf(false) }
+    // A virtual journey: chosen when creating; an existing journey's route can be changed.
+    var isJourney by remember { mutableStateOf(existing?.journey != null) }
+    val draft = remember { JourneyDraft(existing?.journey) }
+    // A journey counts distance or steps (a cycling one, distance only).
+    fun fitMeasure() { if (isJourney && (measure == "minutes" || (draft.cycling && measure == "steps"))) measure = "distance" }
 
     fun save() {
         error = when {
             name.isBlank() -> "Give the challenge a name."
             end.isBefore(start) -> "The end date is before the start date."
+            isJourney && draft.value() == null -> "Choose a start and a finish for the journey."
             else -> null
         }
         if (error != null) return
         // The web editor allows formatting; only replace the description when it was actually edited here.
         val desc = if (existing == null) textToHtml(description).ifBlank { null } else if (description.trim() != originalDescription) textToHtml(description) else null
-        val f = ChallengeFields(name.trim(), desc, start, end, distance, unit, individual, measure == "steps")
+        val f = ChallengeFields(name.trim(), desc, start, end, distance, unit, individual, measure == "steps", if (isJourney) draft.value() else null)
         busy = true
         scope.launch {
             val id = if (existing == null) vm.createChallenge(f, firstTeam) else if (vm.updateChallenge(existing.id, f)) existing.id else null
@@ -127,10 +133,18 @@ private fun ChallengeForm(vm: AppViewModel, existing: ChallengeDetail?, done: (I
                 DateButton("Ends", end, Modifier.weight(1f)) { end = it }
             }
         }
-        if (existing == null) Text("Virtual journeys (a route on a map, like London to Edinburgh) are set up on the website, then show here with their map.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (existing == null) SectionCard("Kind of challenge") {
+            Dropdown("Kind", listOf(false, true), isJourney, { if (it) "Virtual journey" else "Standard: totals and leaderboards" }, { isJourney = it; fitMeasure() })
+            EmptyNote(if (isJourney) "Teams or people travel a route on a map (say, London to Edinburgh) by the distance or steps they log."
+                else "Everyone logs activity and the leaderboards rank the totals.")
+        }
+        if (isJourney) SectionCard("The journey") {
+            JourneyEditor(vm, draft, onModeChange = { fitMeasure() })
+            if (existing?.journey != null) EmptyNote("Changing the route moves everyone along the new one by what they've already logged.")
+        }
         SectionCard("How it works") {
-            Dropdown("Measure", listOf("minutes", "distance", "steps"), measure, { when (it) { "distance" -> "Distance"; "steps" -> "Steps"; else -> "Active minutes" } }, { measure = it })
+            val measures = if (!isJourney) listOf("minutes", "distance", "steps") else if (draft.cycling) listOf("distance") else listOf("distance", "steps")
+            Dropdown("Measure", measures, measure, { when (it) { "distance" -> "Distance"; "steps" -> "Steps"; else -> "Active minutes" } }, { measure = it })
             if (measure == "steps") Text("Everyone's daily step total counts. The app fills it in from the phone, or people enter it by hand.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (distance) Dropdown("Distance unit", listOf("mi", "km"), unit, { if (it == "km") "Kilometres" else "Miles" }, { unit = it })

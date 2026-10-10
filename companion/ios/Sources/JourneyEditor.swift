@@ -8,8 +8,10 @@ struct DraftPlace: Hashable { var name: String, lat: Double, lon: Double, custom
 
 /// The journey an owner is setting up: start, finish, stops (nil while one is being searched for), how and which way.
 @MainActor @Observable final class JourneyDraft {
-    var mode: String, shape: String
-    var from: DraftPlace?, to: DraftPlace?
+    var mode: String
+    var shape: String
+    var from: DraftPlace?
+    var to: DraftPlace?
     var via: [DraftPlace?]
     var preview: JourneyPreview?
     var status: String?

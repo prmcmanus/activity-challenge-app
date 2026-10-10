@@ -34,6 +34,29 @@ services:
       APPLE_SERVICES_ID: ${APPLE_SERVICES_ID:-}
       # Emergency only: turns off two-step sign-in for this email at start-up. Remove it again afterwards.
       CLEAR_TWO_FACTOR_FOR: ${CLEAR_TWO_FACTOR_FOR:-}
+      # Encrypts two-step secrets in the database (32 random bytes, base64). The standby must have the same key.
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:-}
+      # Global admins need two-step sign-in for their powers ("optional" turns that off - for testing only).
+      ADMIN_TWO_FACTOR: ${ADMIN_TWO_FACTOR:-required}
+      # Phone notifications - Android (Firebase): the service account JSON key and the Android app's Firebase details.
+      FCM_SERVICE_ACCOUNT: ${FCM_SERVICE_ACCOUNT:-}
+      FCM_ANDROID_APP_ID: ${FCM_ANDROID_APP_ID:-}
+      FCM_API_KEY: ${FCM_API_KEY:-}
+      FCM_SENDER_ID: ${FCM_SENDER_ID:-}
+      # - iPhone (Apple push): the .p8 key (base64), its key ID and the team ID.
+      APNS_KEY: ${APNS_KEY:-}
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      PUSH_HOUR: ${PUSH_HOUR:-8}
+      # Map tiles and place search from a provider (defaults: OpenStreetMap's own, and Nominatim).
+      TILE_URL: ${TILE_URL:-}
+      TILE_ATTRIBUTION: ${TILE_ATTRIBUTION:-}
+      GEOCODER_BASE: ${GEOCODER_BASE:-}
+      GEOCODER_KEY: ${GEOCODER_KEY:-}
+      GEOCODER_GAP_MS: ${GEOCODER_GAP_MS:-}
+      # Store listings: PLAY_STORE_LIVE=1 once anyone can install from Google Play; APP_STORE_URL once the App Store listing is live.
+      PLAY_STORE_LIVE: ${PLAY_STORE_LIVE:-}
+      APP_STORE_URL: ${APP_STORE_URL:-}
       AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-20}
       AUTH_RATE_LIMIT_WINDOW_MS: ${AUTH_RATE_LIMIT_WINDOW_MS:-900000}
       API_RATE_LIMIT_MAX: ${API_RATE_LIMIT_MAX:-300}

@@ -498,6 +498,12 @@ enum BackgroundSync {
             let stepNote = stepDays > 0 ? "Updated steps for \(stepDays) day\(stepDays == 1 ? "" : "s"). " : ""
             if stepDays > 0 { message = stepNote.trimmingCharacters(in: .whitespaces) }
             let candidates = try await planner.plan(fresh, withRoutes: Prefs.includeRoutes)
+            // Nothing new to choose from: say so, rather than opening an empty review.
+            if !candidates.contains(where: { !$0.outstanding.isEmpty }) {
+                review = nil
+                syncStatus = stepNote + (candidates.isEmpty ? "No workouts in Apple Health fall within your challenges' dates." : "You're up to date: every workout in Apple Health is already synced.")
+                return
+            }
             review = candidates.map { c in
                 ReviewItem(c, unit: c.outstanding.first(where: \.measuresDistance)?.distanceUnit ?? c.fits.first(where: \.measuresDistance)?.distanceUnit ?? Prefs.preferredUnit)
             }

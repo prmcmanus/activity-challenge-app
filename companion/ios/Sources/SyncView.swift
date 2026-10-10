@@ -26,7 +26,7 @@ struct SyncView: View {
                 }
             }
             if let review = model.review {
-                Text("Tick the workouts to sync, check the type and distance, and choose the challenges each one counts in.").font(.subheadline)
+                Text("Switch on the workouts to sync, check the type and distance, and choose the challenges each one counts in.").font(.subheadline)
                 ForEach(review) { item in ReviewCard(item: item) }
                 let count = review.filter { $0.include && !$0.into.isEmpty }.count
                 HStack {

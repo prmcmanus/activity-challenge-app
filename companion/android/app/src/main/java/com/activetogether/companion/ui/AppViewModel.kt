@@ -500,6 +500,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val stepNote = if (stepDays > 0) "Updated steps for $stepDays day${if (stepDays == 1) "" else "s"}. " else ""
             if (stepDays > 0) message = stepNote.trim()
             val candidates = withContext(Dispatchers.IO) { planner.plan(api(), fresh, prefs.includeRoutes) }
+            // Nothing new to choose from: say so, rather than opening an empty review.
+            if (candidates.none { it.outstanding.isNotEmpty() }) {
+                review = null
+                syncStatus = stepNote + if (candidates.isEmpty()) "No workouts in Health Connect fall within your challenges' dates." else "You're up to date: every workout in Health Connect is already synced."
+                return@launch
+            }
             review = candidates.map { c ->
                 val unit = c.outstanding.firstOrNull { it.measuresDistance }?.distanceUnit ?: c.fits.firstOrNull { it.measuresDistance }?.distanceUnit ?: prefs.preferredUnit
                 ReviewItem(c, unit)

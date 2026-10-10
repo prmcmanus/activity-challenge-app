@@ -57,17 +57,25 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$PW" "$KC" >/dev/null
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
           rm "$RUNNER_TEMP/dist.p12"
-          echo "SIGN_IDENTITY=Apple Distribution" >> "$GITHUB_ENV"
+          # A fresh App Store profile for that certificate, made through the API (it carries the app's current capabilities).
+          SERIAL=$(security find-certificate -c "Apple Distribution" -p "$KC" | openssl x509 -noout -serial | cut -d= -f2)
+          UUID=$(node tools/asc-profile.mjs "$ASC_KEY_ID" "$ASC_ISSUER_ID" ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 team.activetogether.companion "$SERIAL" "$RUNNER_TEMP/appstore.mobileprovision")
+          for d in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do mkdir -p "$d"; cp "$RUNNER_TEMP/appstore.mobileprovision" "$d/$UUID.mobileprovision"; done
+          echo "Profile $UUID"
+          echo "MANUAL_SIGNING=1" >> "$GITHUB_ENV"
       - name: Archive (App Store build)
         working-directory: companion/ios
         run: |
           set -o pipefail
           BUILD=$((1000 + ${{ github.run_number }}))
           echo "Build number $BUILD"
+          # With the saved certificate: manual signing with it and the profile made above. Without: automatic, as before.
+          if [ -n "$MANUAL_SIGNING" ]; then SIGNING=(CODE_SIGN_STYLE=Manual "CODE_SIGN_IDENTITY=Apple Distribution" "PROVISIONING_PROFILE_SPECIFIER=Active Together CI")
+          else SIGNING=(CODE_SIGN_STYLE=Automatic); fi
           xcodebuild -project ActiveTogether.xcodeproj -scheme ActiveTogether -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -archivePath build/ActiveTogether.xcarchive \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic AT_DISTRIBUTION=appstore CURRENT_PROJECT_VERSION="$BUILD" \
-            CODE_SIGN_ENTITLEMENTS=ActiveTogetherCompanion-AppStore.entitlements ${SIGN_IDENTITY:+"CODE_SIGN_IDENTITY=$SIGN_IDENTITY"} \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" "${SIGNING[@]}" AT_DISTRIBUTION=appstore CURRENT_PROJECT_VERSION="$BUILD" \
+            CODE_SIGN_ENTITLEMENTS=ActiveTogetherCompanion-AppStore.entitlements \
             -allowProvisioningUpdates \
             -authenticationKeyPath ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8 \
             -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
@@ -83,7 +91,7 @@ jobs:
             <key>method</key><string>app-store-connect</string>
             <key>destination</key><string>upload</string>
             <key>teamID</key><string>$APPLE_TEAM_ID</string>
-            <key>signingStyle</key><string>automatic</string>
+          $(if [ -n "$MANUAL_SIGNING" ]; then echo '<key>signingStyle</key><string>manual</string><key>signingCertificate</key><string>Apple Distribution</string><key>provisioningProfiles</key><dict><key>team.activetogether.companion</key><string>Active Together CI</string></dict>'; else echo '<key>signingStyle</key><string>automatic</string>'; fi)
             <key>manageAppVersionAndBuildNumber</key><false/>
             <key>uploadSymbols</key><true/>
           </dict></plist>

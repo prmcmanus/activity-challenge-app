@@ -319,7 +319,7 @@ $all('[data-authtab]').forEach(b=>b.onclick=()=>{authTab=b.dataset.authtab;if(/^
 async function loadDashboard(){dash=await api('/api/dashboard')}
 
 // One view at a time: home, a challenge, help, or (global admins) the admin page.
-function showView(id){['#homeView','#newChallengeView','#challengeView','#helpView','#adminView'].forEach(v=>$(v).classList.toggle('hidden',v!==id));window.scrollTo(0,0)}
+function showView(id){document.body.classList.remove('map-full');['#homeView','#newChallengeView','#challengeView','#helpView','#adminView'].forEach(v=>$(v).classList.toggle('hidden',v!==id));window.scrollTo(0,0)}
 function showHome(){challengeBack='home';setUrl('/');showView('#homeView');renderHome()}
 // Challenges that are on today (where something can be logged now).
 const activeToday=()=>{const d=localToday();return dash.challenges.filter(c=>c.role!=='admin'&&c.start_date<=d&&d<=c.end_date)};
@@ -1015,6 +1015,15 @@ async function renderJourneyMap(c){
     $('#journeyMeta').textContent=`${done} of ${j.markers.length} ${j.by==='team'?'teams':'people'} finished`;
   }catch(e){el.innerHTML=`<p class="error">${esc(e.message)}</p>`}
 }
+
+// The journey map filling the screen (on phones too, where the browser's own full screen isn't offered).
+function setJourneyFull(on){
+  document.body.classList.toggle('map-full',on);
+  if(journeyMap){journeyMap.invalidateSize();journeyMap.scrollWheelZoom[on?'enable':'disable']()}
+}
+$('#journeyFull').onclick=()=>setJourneyFull(true);
+$('#journeyFullClose').onclick=()=>setJourneyFull(false);
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.body.classList.contains('map-full'))setJourneyFull(false)});
 
 // --- Administration (global admins) ---------------------------------------------------------
 let challengeBack='home',adminTab='users',adminUsers=[],adminChallenges=[];

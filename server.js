@@ -3,7 +3,8 @@ const http=require('node:http'), fs=require('node:fs'), path=require('node:path'
 const {DatabaseSync}=require('node:sqlite');
 const PORT=Number(process.env.PORT||3000), DATA=process.env.DATA_DIR||'.', ORIGIN=process.env.APP_ORIGIN||`http://localhost:${PORT}`;
 fs.mkdirSync(DATA,{recursive:true}); const db=new DatabaseSync(path.join(DATA,'activity.sqlite'));
-db.exec(`PRAGMA foreign_keys=ON;PRAGMA journal_mode=WAL;PRAGMA busy_timeout=5000;
+// WAL with synchronous=NORMAL: safe against the app crashing, and much quicker to write (Litestream copies the WAL).
+db.exec(`PRAGMA foreign_keys=ON;PRAGMA journal_mode=WAL;PRAGMA synchronous=NORMAL;PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,email TEXT UNIQUE NOT NULL,name TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'member',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,expires_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS challenges(id INTEGER PRIMARY KEY,name TEXT NOT NULL,start_date TEXT NOT NULL,end_date TEXT NOT NULL,created_by INTEGER NOT NULL,invite_code TEXT UNIQUE NOT NULL,active INTEGER NOT NULL DEFAULT 1,created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(created_by) REFERENCES users(id));
@@ -40,6 +41,24 @@ ensureColumn('sessions','kind','TEXT');
 ensureColumn('users','totp_secret','TEXT');
 ensureColumn('users','totp_pending','TEXT');
 ensureColumn('users','totp_last_step','INTEGER');
+// Two-step secrets are encrypted in the database (AES-256-GCM) with TOTP_ENCRYPTION_KEY (32 random bytes, base64) from
+// the server's settings, so a copy of the database - a backup - doesn't give them away. The standby needs the same
+// key. Without one they're stored as they are.
+const TOTP_KEY=(()=>{const k=process.env.TOTP_ENCRYPTION_KEY||'';if(!k)return null;const b=Buffer.from(k,'base64');if(b.length!==32){console.error('TOTP_ENCRYPTION_KEY must be 32 bytes, base64 - two-step secrets are NOT being encrypted');return null}return b})();
+function sealSecret(v){
+  if(!v||!TOTP_KEY||String(v).startsWith('enc:'))return v;
+  const iv=crypto.randomBytes(12),c=crypto.createCipheriv('aes-256-gcm',TOTP_KEY,iv),ct=Buffer.concat([c.update(String(v),'utf8'),c.final()]);
+  return `enc:v1:${iv.toString('base64')}:${c.getAuthTag().toString('base64')}:${ct.toString('base64')}`;
+}
+function openSecret(v){
+  if(!v||!String(v).startsWith('enc:v1:'))return v;
+  if(!TOTP_KEY){console.error('A two-step secret is encrypted but TOTP_ENCRYPTION_KEY is not set');return null}
+  try{const [,,iv,tag,ct]=String(v).split(':'),d=crypto.createDecipheriv('aes-256-gcm',TOTP_KEY,Buffer.from(iv,'base64'));d.setAuthTag(Buffer.from(tag,'base64'));return Buffer.concat([d.update(Buffer.from(ct,'base64')),d.final()]).toString('utf8')}
+  catch(e){console.error('A two-step secret could not be decrypted (wrong TOTP_ENCRYPTION_KEY?)');return null}
+}
+// Secrets saved before encryption was switched on are encrypted at start-up.
+if(TOTP_KEY)for(const r of db.prepare("SELECT id,totp_secret,totp_pending FROM users WHERE (totp_secret IS NOT NULL AND totp_secret NOT LIKE 'enc:%') OR (totp_pending IS NOT NULL AND totp_pending NOT LIKE 'enc:%')").all())
+  db.prepare('UPDATE users SET totp_secret=?,totp_pending=? WHERE id=?').run(sealSecret(r.totp_secret),sealSecret(r.totp_pending),r.id);
 db.exec(`CREATE TABLE IF NOT EXISTS totp_backup_codes(user_id INTEGER NOT NULL,code_hash TEXT NOT NULL,used_at TEXT,
   PRIMARY KEY(user_id,code_hash),FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`);
 // Signing in with Google or Apple: each account those link to. An account made this way has no password until
@@ -48,6 +67,23 @@ db.exec(`CREATE TABLE IF NOT EXISTS identities(provider TEXT NOT NULL,sub TEXT N
   PRIMARY KEY(provider,sub),FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS identities_user ON identities(user_id);`);
 const NO_PASSWORD='!',hasPassword=h=>String(h||'').includes(':');
+// Confirmed email addresses (see sendEmailCheck): the address someone is changing to waits in pending_email until
+// it's confirmed. Accounts from before confirming existed count as confirmed.
+{const had=db.prepare('PRAGMA table_info(users)').all().some(c=>c.name==='email_verified_at');ensureColumn('users','email_verified_at','TEXT');if(!had)db.exec("UPDATE users SET email_verified_at=COALESCE(created_at,datetime('now'))")}
+ensureColumn('users','pending_email','TEXT');
+db.exec(`CREATE TABLE IF NOT EXISTS email_checks(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,email TEXT NOT NULL,expires_at TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`);
+// Signed-in devices: when each session started and was last used, and what it is ("Firefox on Windows", "Android app").
+ensureColumn('sessions','created_at','TEXT');
+ensureColumn('sessions','last_used_at','TEXT');
+ensureColumn('sessions','device','TEXT');
+db.exec("UPDATE sessions SET created_at=datetime('now') WHERE created_at IS NULL");
+// Phone notifications: each app install's push token, tied to the session that registered it, so signing that
+// session out (or it expiring) stops them.
+ensureColumn('users','notify_push','INTEGER NOT NULL DEFAULT 1');
+db.exec(`CREATE TABLE IF NOT EXISTS push_devices(token TEXT PRIMARY KEY,user_id INTEGER NOT NULL,platform TEXT NOT NULL,session_hash TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(session_hash) REFERENCES sessions(token_hash) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS push_devices_user ON push_devices(user_id);`);
 // Emails: about my tickets and being added to a challenge (everyone), and about new support tickets (admins).
 ensureColumn('users','notify_email','INTEGER NOT NULL DEFAULT 1');
 // Added by someone else (an owner or a global admin) rather than joining: who, and whether they've said keep.
@@ -204,7 +240,8 @@ CREATE INDEX IF NOT EXISTS activities_route ON activities(route_id);`);
 // is baked into the Docker image and wiped on every rebuild.
 const UPLOADS_DIR=path.join(DATA,'uploads');
 fs.mkdirSync(UPLOADS_DIR,{recursive:true});
-const UPLOAD_MAX_BYTES=10*1024*1024;
+// Pictures are shrunk on the phone or in the browser before they're sent, so 3MB is plenty.
+const UPLOAD_MAX_BYTES=3*1024*1024;
 // Never trust the client's declared mime type for what we write to disk or serve back -
 // sniff real magic bytes so a mislabelled or malicious payload can't pick its own extension.
 function detectImageType(buf){
@@ -297,7 +334,7 @@ function newBackupCodes(uid){
 }
 // A code from the authenticator app, or one of the backup codes (each works once). True if it's good.
 function checkSecondFactor(user,code){
-  const step=totpStep(user.totp_secret,code,user.totp_last_step);
+  const secret=openSecret(user.totp_secret),step=secret?totpStep(secret,code,user.totp_last_step):null;
   if(step!==null){db.prepare('UPDATE users SET totp_last_step=? WHERE id=?').run(step,user.id);return true}
   const b=normaliseBackup(code);
   if(b.length!==8)return false;
@@ -318,6 +355,22 @@ const hash=async p=>{const salt=crypto.randomBytes(16).toString('hex');return sa
 const verify=async(p,h)=>{const [s,k]=String(h).split(':');const key=Buffer.from(k||'','hex');const got=await scryptAsync(p,s||'');return key.length===got.length&&crypto.timingSafeEqual(key,got)};
 // Checked against when an email has no account, so a wrong email takes as long as a wrong password.
 const DUMMY_HASH=hashSync(crypto.randomBytes(16).toString('hex'));
+// Passwords: at least 8 characters, not one of the 20,000 most common (the UK NCSC's list of passwords seen in
+// breaches - the ones tried first), and not the account's own email or name.
+const COMMON_PASSWORDS=new Set((()=>{try{return fs.readFileSync(path.join(__dirname,'common-passwords.txt'),'utf8').split('\n').map(x=>x.trim()).filter(Boolean)}catch(e){console.error('common-passwords.txt is missing: common passwords are not being refused');return []}})());
+function passwordProblem(p,{email='',name=''}={}){
+  const pw=String(p||''),low=pw.toLowerCase(),mail=String(email).toLowerCase(),local=mail.split('@')[0];
+  if(pw.length<8)return 'Choose a password of at least 8 characters';
+  if(pw.length>200)return 'That password is too long - 200 characters at most';
+  if(COMMON_PASSWORDS.has(low))return "That's one of the most common passwords, so it's easy to guess. Choose another.";
+  if(low===mail||(local.length>=4&&low.includes(local))||(name&&low.replace(/[^a-z0-9]/g,'')===String(name).toLowerCase().replace(/[^a-z0-9]/g,'')))return "Don't use your email address or name as your password. Choose another.";
+  if(/^(.)\1+$/.test(pw))return "Choose a password that isn't one character over and over.";
+  return null;
+}
+// What people can type: generous, but bounded, so a name can't fill a page (or the database).
+const MAX_LEN={person:80,challenge:100,team:60,activity:60,description:20000};
+const tooLong=(v,max,what)=>String(v||'').length>max?`Keep ${what} to ${max} characters or fewer`:null;
+const validEmail=e=>e.length<=254&&/^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/.test(e);
 
 // --- bot/abuse precautions ---------------------------------------------------------------
 // In-memory, per-IP, fixed-window counters. Resets on restart, which is an acceptable escape
@@ -335,6 +388,14 @@ const loginLimited=(kind,ip,email)=>hitRateLimit(`${kind}:${ip}:${String(email||
 const UPLOAD_RATE_LIMIT_MAX=Number(process.env.UPLOAD_RATE_LIMIT_MAX||30), UPLOAD_RATE_LIMIT_WINDOW_MS=Number(process.env.UPLOAD_RATE_LIMIT_WINDOW_MS||15*60_000);
 const rateBuckets=new Map();
 function hitRateLimit(key,max,windowMs){const now=Date.now(),b=rateBuckets.get(key);if(!b||b.resetAt<=now){rateBuckets.set(key,{count:1,resetAt:now+windowMs});return false}b.count++;return b.count>max}
+// How many times a key has been counted in its current window, without counting this look.
+const peekRate=key=>{const b=rateBuckets.get(key);return b&&b.resetAt>Date.now()?b.count:0};
+// Invite codes that don't work: a few an hour per account, and a few more per network (an office mistyping), so
+// nobody can find a challenge by trying codes. Right codes never count.
+const CODE_FAIL_MAX=Number(process.env.CODE_FAIL_MAX||10),CODE_FAIL_NET_MAX=Number(process.env.CODE_FAIL_NET_MAX||30),CODE_FAIL_WINDOW_MS=60*60_000;
+const codeGuessBlocked=(ip,uid)=>peekRate('codefail:'+ip)>=CODE_FAIL_NET_MAX||(!!uid&&peekRate('codefailu:'+uid)>=CODE_FAIL_MAX);
+const noteBadCode=(ip,uid)=>{hitRateLimit('codefail:'+ip,CODE_FAIL_NET_MAX,CODE_FAIL_WINDOW_MS);if(uid)hitRateLimit('codefailu:'+uid,CODE_FAIL_MAX,CODE_FAIL_WINDOW_MS)};
+const CODE_BLOCKED={error:"Too many invite codes that didn't work. Wait an hour and try again, or ask for the invite link.",codeBlocked:true};
 setInterval(()=>{const now=Date.now();for(const [k,b] of rateBuckets)if(b.resetAt<=now)rateBuckets.delete(k)},10*60_000).unref();
 // Prefer Cloudflare's own header (this deployment sits behind a Cloudflare Tunnel) over the
 // generic, more easily spoofed X-Forwarded-For.
@@ -382,6 +443,25 @@ async function verifyIdToken(provider,token){
   if(!cfg.issuers.includes(claims.iss)||!auds.some(a=>cfg.audiences().includes(a))||!(claims.exp>now-60)||!claims.sub)throw Error('not for us');
   return claims;
 }
+// Confirming an email address: a link, good for three days, sent to it. Until it's used the account works, but
+// nothing else is emailed there, and signing in with Google or Apple as that address takes the account over (in
+// case whoever made it didn't own the address). Changing the address waits for the new one to be confirmed.
+function sendEmailCheck(uid,email,{change=false}={}){
+  if(!emailEnabled())return false;
+  const t=crypto.randomBytes(32).toString('base64url');
+  db.prepare('DELETE FROM email_checks WHERE user_id=?').run(uid);
+  db.prepare("INSERT INTO email_checks(token_hash,user_id,email,expires_at) VALUES(?,?,?,datetime('now','+3 days'))").run(sha256hex(t),uid,email);
+  sendMail({to:email,subject:change?'Confirm your new email address for Active Together':'Confirm your email address for Active Together',
+    text:`Hello,\n\n${change?'To use this address for your Active Together account, open this link':'Please confirm this is your email address for Active Together: open this link'} within the next three days:\n\n${ORIGIN}/verify/${t}\n\nIf you didn't ${change?'ask for this':'make an account'}, ignore this email${change?' - nothing changes':''}.\n\nActive Together\n${ORIGIN}`});
+  return true;
+}
+// A note to the account's (confirmed) address when something about signing in to it changes, so a change made by
+// someone else doesn't go unseen. Sent whatever the email settings say.
+function securityMail(uid,what,{to=null}={}){
+  const x=db.prepare('SELECT email,email_verified_at FROM users WHERE id=?').get(uid);
+  if(!x||!(to||x.email_verified_at))return;
+  sendMail({to:to||x.email,subject:'Security notice from Active Together',text:`Hello,\n\n${what} - on the Active Together account for ${x.email}, at ${new Date().toISOString().slice(0,16).replace('T',' ')} UTC.\n\nIf that was you, there's nothing to do.\n\nIf it wasn't, reset your password now at ${ORIGIN}/forgot and tell us at support@activetogether.team.\n\nActive Together\n${ORIGIN}`});
+}
 // Replies go to the support mailbox rather than the no-reply sender.
 const MAIL_REPLY_TO=process.env.MAIL_REPLY_TO||'support@activetogether.team';
 async function sendMail({to,subject,text}){
@@ -393,7 +473,83 @@ async function sendMail({to,subject,text}){
     return true;
   }catch(e){console.error('Email not sent:',e.message);return false}
 }
+// --- Phone notifications ------------------------------------------------------------------------------------------
+// Android through Firebase Cloud Messaging: FCM_SERVICE_ACCOUNT (the Firebase service account's JSON key, as it is or
+// base64), plus the Android app's Firebase details, which the app fetches from /api/config so it needs no rebuild:
+// FCM_ANDROID_APP_ID, FCM_API_KEY and FCM_SENDER_ID. iPhone through Apple's push service: APNS_KEY (the .p8 key, as
+// it is or base64), APNS_KEY_ID, APNS_TEAM_ID (and APNS_TOPIC, the app's bundle ID). Each is off until it's set up.
+const envJson=v=>{if(!v)return null;for(const t of [v,Buffer.from(v,'base64').toString('utf8')])try{return JSON.parse(t)}catch(e){}console.error('FCM_SERVICE_ACCOUNT is not valid JSON');return null};
+const FCM_SA=envJson(process.env.FCM_SERVICE_ACCOUNT||'');
+const FCM={appId:process.env.FCM_ANDROID_APP_ID||'',apiKey:process.env.FCM_API_KEY||'',senderId:process.env.FCM_SENDER_ID||'',
+  tokenUrl:process.env.FCM_TOKEN_URL||'https://oauth2.googleapis.com/token',sendBase:(process.env.FCM_SEND_BASE||'https://fcm.googleapis.com').replace(/\/$/,'')};
+const APNS_KEY=(()=>{const v=process.env.APNS_KEY||'';if(!v)return null;try{return crypto.createPrivateKey(v.includes('BEGIN')?v:Buffer.from(v,'base64').toString('utf8'))}catch(e){console.error('APNS_KEY is not a valid .p8 key');return null}})();
+const APNS={keyId:process.env.APNS_KEY_ID||'',teamId:process.env.APNS_TEAM_ID||'',topic:process.env.APNS_TOPIC||'team.activetogether.companion',host:process.env.APNS_HOST||'https://api.push.apple.com'};
+const pushEnabled={android:!!(FCM_SA&&FCM_SA.private_key&&FCM_SA.client_email&&FCM_SA.project_id&&FCM.appId&&FCM.apiKey&&FCM.senderId),ios:!!(APNS_KEY&&APNS.keyId&&APNS.teamId)};
+const b64url=o=>Buffer.from(typeof o==='string'?o:JSON.stringify(o)).toString('base64url');
+let fcmAccess=null;
+async function fcmAccessToken(){
+  if(fcmAccess&&fcmAccess.until>Date.now()+60e3)return fcmAccess.value;
+  const now=Math.floor(Date.now()/1000),head=b64url({alg:'RS256',typ:'JWT'}),claims=b64url({iss:FCM_SA.client_email,scope:'https://www.googleapis.com/auth/firebase.messaging',aud:FCM.tokenUrl,iat:now,exp:now+3600});
+  const sig=crypto.sign('RSA-SHA256',Buffer.from(`${head}.${claims}`),FCM_SA.private_key).toString('base64url');
+  const r=await fetch(FCM.tokenUrl,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer',assertion:`${head}.${claims}.${sig}`}),signal:AbortSignal.timeout(15000)});
+  const j=await r.json().catch(()=>({}));if(!r.ok||!j.access_token)throw new Error(`Firebase sign-in failed (${r.status})`);
+  fcmAccess={value:j.access_token,until:Date.now()+(j.expires_in||3600)*1000};return fcmAccess.value;
+}
+async function sendFcm(token,msg){
+  const r=await fetch(`${FCM.sendBase}/v1/projects/${FCM_SA.project_id}/messages:send`,{method:'POST',headers:{Authorization:`Bearer ${await fcmAccessToken()}`,'Content-Type':'application/json'},
+    body:JSON.stringify({message:{token,notification:{title:msg.title,body:msg.body},data:{url:msg.url||'/'},android:{priority:'high',notification:{channel_id:'updates'}}}}),signal:AbortSignal.timeout(15000)});
+  if(r.ok)return 'ok';
+  const t=await r.text();
+  if(r.status===404||/UNREGISTERED|registration token/i.test(t))return 'gone';
+  throw new Error(`FCM ${r.status}: ${t.slice(0,200)}`);
+}
+let apnsJwt=null,apnsSession=null;
+function apnsBearer(){
+  if(apnsJwt&&apnsJwt.at>Date.now()-40*60e3)return apnsJwt.value;
+  const head=b64url({alg:'ES256',kid:APNS.keyId}),claims=b64url({iss:APNS.teamId,iat:Math.floor(Date.now()/1000)});
+  apnsJwt={value:`${head}.${claims}.${crypto.sign('sha256',Buffer.from(`${head}.${claims}`),{key:APNS_KEY,dsaEncoding:'ieee-p1363'}).toString('base64url')}`,at:Date.now()};
+  return apnsJwt.value;
+}
+function apnsConnection(){
+  if(apnsSession&&!apnsSession.closed&&!apnsSession.destroyed)return apnsSession;
+  const sess=require('node:http2').connect(APNS.host);
+  sess.on('error',e=>{console.error('APNs connection:',e.message);if(apnsSession===sess)apnsSession=null});
+  sess.on('goaway',()=>{if(apnsSession===sess)apnsSession=null});
+  sess.setTimeout(10*60_000,()=>sess.close());sess.unref();
+  return apnsSession=sess;
+}
+function sendApns(token,msg){
+  return new Promise((resolve,reject)=>{
+    let req;
+    try{req=apnsConnection().request({':method':'POST',':path':`/3/device/${token}`,authorization:`bearer ${apnsBearer()}`,'apns-topic':APNS.topic,'apns-push-type':'alert','apns-priority':'10','content-type':'application/json'})}catch(e){return reject(e)}
+    let status=0,data='';
+    req.setTimeout(15000,()=>{req.close();reject(new Error('APNs timed out'))});
+    req.on('response',h=>{status=h[':status']});
+    req.setEncoding('utf8');req.on('data',c=>data+=c);
+    req.on('end',()=>status===200?resolve('ok'):status===410||/BadDeviceToken|Unregistered|DeviceTokenNotForTopic/.test(data)?resolve('gone'):reject(new Error(`APNs ${status}: ${data.slice(0,200)}`)));
+    req.on('error',reject);
+    req.end(JSON.stringify({aps:{alert:{title:msg.title,body:msg.body},sound:'default'},url:msg.url||'/'}));
+  });
+}
+// To everyone in userIds who allows phone notifications, on each of their phones. Tokens a service says are gone are
+// forgotten. Never throws; returns how many were sent.
+async function pushTo(userIds,msg){
+  if(!pushEnabled.android&&!pushEnabled.ios)return 0;
+  const ids=[...new Set(userIds)].filter(Boolean);if(!ids.length)return 0;
+  const devices=db.prepare(`SELECT d.token,d.platform FROM push_devices d JOIN users us ON us.id=d.user_id WHERE d.user_id IN (${ids.map(()=>'?').join(',')}) AND us.notify_push=1 AND us.deactivated_at IS NULL`).all(...ids);
+  let sent=0;
+  for(const d of devices){
+    if(!pushEnabled[d.platform])continue;
+    try{const r=d.platform==='android'?await sendFcm(d.token,msg):await sendApns(d.token,msg);if(r==='gone')db.prepare('DELETE FROM push_devices WHERE token=?').run(d.token);else sent++}
+    catch(e){console.error('Push not sent:',e.message)}
+  }
+  return sent;
+}
 // The shared Apple Shortcut (an iCloud link made on an iPhone); the website offers it once set.
+// Where to get the apps: the Play listing (PLAY_STORE_LIVE=1 once anyone can install from it, rather than testers), the
+// App Store listing once it's live (APP_STORE_URL), and TestFlight until then.
+const STORES={play:process.env.PLAY_STORE_URL||'https://play.google.com/store/apps/details?id=com.activetogether.companion',playLive:process.env.PLAY_STORE_LIVE==='1',
+  appStore:process.env.APP_STORE_URL||null,testFlight:process.env.TESTFLIGHT_URL||'https://testflight.apple.com/join/cFAwqWKT'};
 const SHORTCUT_URL=/^https:\/\/www\.icloud\.com\/shortcuts\/[A-Za-z0-9]+$/.test(process.env.SHORTCUT_URL||'')?process.env.SHORTCUT_URL:'';
 // Cloudflare Turnstile (usually invisible, no Google) takes over from reCAPTCHA once its keys are set.
 const TURNSTILE_SITE_KEY=process.env.TURNSTILE_SITE_KEY||'',TURNSTILE_SECRET_KEY=process.env.TURNSTILE_SECRET_KEY||'';
@@ -417,10 +573,10 @@ async function verifyRecaptcha(token,ip){
     return j.success===true;
   }catch(e){console.error('reCAPTCHA verification request failed',e);return false}
 }
-async function attemptLogin(email,password,kind='web'){const x=db.prepare('SELECT * FROM users WHERE email=?').get(String(email||'').toLowerCase().trim());const ok=await verify(password||'',x?x.password_hash:DUMMY_HASH);if(!x||!ok)return null;if(x.deactivated_at)return {deactivated:true};
+async function attemptLogin(email,password,kind='web',req=null){const x=db.prepare('SELECT * FROM users WHERE email=?').get(String(email||'').toLowerCase().trim());const ok=await verify(password||'',x?x.password_hash:DUMMY_HASH);if(!x||!ok)return null;if(x.deactivated_at)return {deactivated:true};
   // Two-step sign-in: the password was right, so the next step is the code; no session yet.
   if(x.totp_secret)return {twoFactor:true,ticket:makeLoginTicket(x.id,kind)};
-  const t=startSession(x.id,kind);return {sessionToken:t,user:{id:x.id,email:x.email,name:x.name,role:x.role,avatarUrl:x.avatar_url}}}
+  const t=startSession(x.id,kind,req);return {sessionToken:t,user:{id:x.id,email:x.email,name:x.name,role:x.role,avatarUrl:x.avatar_url}}}
 
 // Excludes 0/O/1/I/L to avoid transcription mistakes when someone reads a code aloud or off a screen.
 const CODE_ALPHABET='ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -472,7 +628,7 @@ function validateImageUrl(v){
 const seedEmail=(process.env.SEED_ADMIN_EMAIL||'admin@example.com').toLowerCase(), seedPass=process.env.SEED_ADMIN_PASSWORD||'ChangeMe123!';
 let seedAdmin=db.prepare('SELECT id FROM users WHERE email=?').get(seedEmail);
 if(!seedAdmin){
-  db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'global_admin')").run(seedEmail,'Administrator',hashSync(seedPass));
+  db.prepare("INSERT INTO users(email,name,password_hash,role,email_verified_at) VALUES(?,?,?,'global_admin',datetime('now'))").run(seedEmail,'Administrator',hashSync(seedPass));
   seedAdmin=db.prepare('SELECT id FROM users WHERE email=?').get(seedEmail);
 }
 if(!db.prepare('SELECT id FROM challenges LIMIT 1').get()){
@@ -526,10 +682,43 @@ const purgeSessions=()=>{
   db.prepare("DELETE FROM sessions WHERE expires_at<=datetime('now')").run();
   db.prepare("DELETE FROM password_resets WHERE used_at IS NOT NULL OR expires_at<=datetime('now')").run();
   db.prepare("DELETE FROM audit_log WHERE at<datetime('now','-365 days')").run();
+  // Keeps the query planner's statistics fresh as the tables grow (cheap; only re-analyses what changed).
+  db.exec('PRAGMA optimize');
 };
 
 purgeSessions();
 setInterval(purgeSessions,24*60*60*1000).unref();
+// Phone notifications sent once a day (at PUSH_HOUR, UTC): challenges starting tomorrow, with two days left, or on
+// their last day; and on Mondays, each person's week in their busiest running challenge.
+const PUSH_HOUR=Number(process.env.PUSH_HOUR||8);
+async function dailyPushes(force=false){
+  if(!pushEnabled.android&&!pushEnabled.ios)return;
+  const today=new Date().toISOString().slice(0,10);
+  if(!force&&(new Date().getUTCHours()<PUSH_HOUR||getSetting('push_daily')===today))return;
+  setSetting('push_daily',today);
+  const members=cid=>db.prepare('SELECT user_id FROM challenge_members WHERE challenge_id=?').all(cid).map(r=>r.user_id);
+  for(const c of db.prepare("SELECT id,name FROM challenges WHERE start_date=date('now','+1 day')").all())
+    await pushTo(members(c.id),{title:`${c.name} starts tomorrow`,body:'Get ready - everything you log from tomorrow counts.',url:`/challenges/${c.id}`});
+  for(const c of db.prepare("SELECT id,name FROM challenges WHERE end_date=date('now','+2 days')").all())
+    await pushTo(members(c.id),{title:`Two days left in ${c.name}`,body:"Time for a final push - and don't forget to log everything.",url:`/challenges/${c.id}`});
+  for(const c of db.prepare("SELECT id,name FROM challenges WHERE end_date=date('now')").all())
+    await pushTo(members(c.id),{title:`Last day of ${c.name}`,body:'Log anything that’s missing before midnight.',url:`/challenges/${c.id}`});
+  if(new Date().getUTCDay()!==1)return;
+  // Monday: last week in the running challenge each person was busiest in (or a nudge in one they're in).
+  const people=db.prepare('SELECT DISTINCT d.user_id FROM push_devices d JOIN users us ON us.id=d.user_id WHERE us.notify_push=1 AND us.deactivated_at IS NULL').all().map(r=>r.user_id);
+  for(const uid of people){
+    const running=db.prepare("SELECT c.* FROM challenges c JOIN challenge_members cm ON cm.challenge_id=c.id WHERE cm.user_id=? AND c.start_date<=date('now') AND c.end_date>=date('now','-1 day')").all(uid);
+    if(!running.length)continue;
+    const week=c=>db.prepare("SELECT COALESCE(SUM(minutes),0) m,COALESCE(SUM(distance_m),0) d,COALESCE(SUM(steps),0) s,COUNT(*) n FROM activities WHERE user_id=? AND challenge_id=? AND activity_date>=date('now','-7 days') AND activity_date<date('now')").get(uid,c.id);
+    const best=running.map(c=>({c,w:week(c)})).sort((a,b)=>b.w.n-a.w.n)[0];
+    const {c,w}=best,metric=challengeMetric(c),amount=metric==='distance'?`${metersToUnit(w.d,challengeUnit(c))} ${challengeUnit(c)==='km'?'km':'miles'}`:metric==='steps'?`${Number(w.s).toLocaleString('en-GB')} steps`:`${w.m} minutes`;
+    const lb=leaderboard(c),i=lb.users.findIndex(r=>r.id===uid);
+    await pushTo([uid],w.n?{title:`Your week in ${c.name}`,body:`You logged ${amount}${i>=0?` - you're ${ordinal(i+1)} of ${lb.users.length}`:''}. Keep it up!`,url:`/challenges/${c.id}`}
+      :{title:`New week in ${c.name}`,body:'Nothing logged last week - a short walk counts. Log one today?',url:`/challenges/${c.id}`});
+  }
+}
+const ordinal=n=>n+(n%100>=11&&n%100<=13?'th':['th','st','nd','rd'][n%10]||'th');
+setInterval(()=>dailyPushes().catch(e=>console.error('Daily notifications failed',e)),15*60_000).unref();
 
 const send=(res,status,data,headers={})=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...headers});res.end(JSON.stringify(data))};
 // 1MB default cap on every request body; the image upload route raises it explicitly, since a
@@ -568,19 +757,45 @@ const cookies=req=>Object.fromEntries((req.headers.cookie||'').split(';').filter
 function sessionToken(req){const bearer=(req.headers.authorization||'').match(/^Bearer (.+)$/i);return bearer?.[1]||cookies(req).session||null}
 // Lifetimes from the last use: 30 days on the web, 90 in the apps (automatic sync keeps an app signed in).
 const SESSION_DAYS={web:30,app:90};
+// However often it's used, a session ends in the end: six months on the website, a year in the apps.
+const SESSION_MAX_DAYS={web:182,app:365};
+// Global admins can see and change everything, so their powers need two-step sign-in (ADMIN_TWO_FACTOR=optional
+// turns that off, for local testing). Until it's on they're treated as members, with a reminder.
+const ADMIN_TWO_FACTOR_REQUIRED=process.env.ADMIN_TWO_FACTOR!=='optional';
+// What a session is, for the signed-in devices list: "Firefox on Windows", "Android app"...
+function deviceLabel(req,kind){
+  const ua=String(req?.headers?.['user-agent']||'');
+  if(kind==='app')return /Android|Dalvik/i.test(ua)?'Android app':/iPhone|iPad|iOS|CFNetwork|Darwin/i.test(ua)?'iPhone app':'Phone app';
+  const browser=/Edg\//.test(ua)?'Edge':/OPR\//.test(ua)?'Opera':/Firefox\//.test(ua)?'Firefox':/Chrome\//.test(ua)?'Chrome':/Safari\//.test(ua)?'Safari':'A web browser';
+  const os=/iPhone|iPad/.test(ua)?'iPhone':/Android/.test(ua)?'Android':/Windows/.test(ua)?'Windows':/CrOS/.test(ua)?'Chromebook':/Mac OS X|Macintosh/.test(ua)?'Mac':/Linux/.test(ua)?'Linux':'';
+  return os?`${browser} on ${os}`:browser;
+}
 function auth(req){
   const t=sessionToken(req);if(!t)return null;
   const th=crypto.createHash('sha256').update(t).digest('hex');
-  const u=db.prepare(`SELECT u.id,u.email,u.name,u.role,u.avatar_url,u.bio,u.profile_sharing,(u.totp_secret IS NOT NULL) two_factor,(instr(u.password_hash,':')>0) has_password,u.notify_email,u.notify_admin,s.expires_at,s.kind FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>datetime('now') AND u.deactivated_at IS NULL`).get(th);
+  const u=db.prepare(`SELECT u.id,u.email,u.name,u.role,u.avatar_url,u.bio,u.profile_sharing,(u.totp_secret IS NOT NULL) two_factor,(instr(u.password_hash,':')>0) has_password,u.notify_email,u.notify_admin,u.notify_push,
+    (u.email_verified_at IS NOT NULL) email_verified,u.pending_email,s.expires_at,s.kind,s.created_at session_created,s.last_used_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>datetime('now') AND u.deactivated_at IS NULL`).get(th);
   if(!u)return null;
   const fromCookie=!/^Bearer /i.test(req.headers.authorization||''),kind=u.kind||(fromCookie?'web':'app'),days=SESSION_DAYS[kind]||30;
+  const at=v=>Date.parse(String(v).replace(' ','T')+'Z');
+  if(u.session_created&&at(u.session_created)<Date.now()-(SESSION_MAX_DAYS[kind]||182)*864e5){db.prepare('DELETE FROM sessions WHERE token_hash=?').run(th);return null}
+  // When it was last used, to the hour, for the signed-in devices list.
+  if(!u.last_used_at||at(u.last_used_at)<Date.now()-36e5)db.prepare("UPDATE sessions SET last_used_at=datetime('now') WHERE token_hash=?").run(th);
+  if(u.role==='global_admin'&&!u.two_factor&&ADMIN_TWO_FACTOR_REQUIRED){u.role='member';u.admin_needs_two_factor=true}
+  Object.defineProperty(u,'sessionHash',{value:th});
   // Extended at most once a day; a web session's cookie is renewed with it (see api()).
   if(Date.parse(String(u.expires_at).replace(' ','T')+'Z')<Date.now()+(days-1)*864e5){
     db.prepare("UPDATE sessions SET expires_at=datetime('now',?),kind=? WHERE token_hash=?").run(`+${days} days`,kind,th);
     if(fromCookie)Object.defineProperty(u,'renewCookie',{value:t});
   }
-  delete u.expires_at;delete u.kind;
+  delete u.expires_at;delete u.kind;delete u.session_created;delete u.last_used_at;
   return u;
+}
+// My account as the apps and website show it (as auth() reports it, without the session's details).
+function meRow(uid){
+  const x=db.prepare("SELECT id,email,name,role,avatar_url,bio,profile_sharing,(totp_secret IS NOT NULL) two_factor,(instr(password_hash,':')>0) has_password,notify_email,notify_admin,notify_push,(email_verified_at IS NOT NULL) email_verified,pending_email FROM users WHERE id=?").get(uid);
+  if(x&&x.role==='global_admin'&&!x.two_factor&&ADMIN_TWO_FACTOR_REQUIRED){x.role='member';x.admin_needs_two_factor=true}
+  return x;
 }
 const need=(res,u,roles)=>{if(!u){send(res,401,{error:'Sign in required'});return false}if(roles&&!roles.includes(u.role)){send(res,403,{error:'Not authorised'});return false}return true};
 const SECURE=ORIGIN.startsWith('https:')?'; Secure':'';
@@ -594,7 +809,7 @@ function makeResetLink(uid,minutes,createdBy=null){
   db.prepare("INSERT INTO password_resets(token_hash,user_id,expires_at,created_by) VALUES(?,?,datetime('now',?),?)").run(sha256hex(t),uid,`+${minutes} minutes`,createdBy);
   return {url:`${ORIGIN}/reset/${t}`,expiresAt:new Date(Date.now()+minutes*6e4).toISOString()};
 }
-const findReset=t=>t&&db.prepare("SELECT r.token_hash,r.user_id,u.email,u.name FROM password_resets r JOIN users u ON u.id=r.user_id WHERE r.token_hash=? AND r.used_at IS NULL AND r.expires_at>datetime('now') AND u.deactivated_at IS NULL").get(sha256hex(String(t)));
+const findReset=t=>t&&db.prepare("SELECT r.token_hash,r.user_id,r.created_by,u.email,u.name FROM password_resets r JOIN users u ON u.id=r.user_id WHERE r.token_hash=? AND r.used_at IS NULL AND r.expires_at>datetime('now') AND u.deactivated_at IS NULL").get(sha256hex(String(t)));
 // Put an existing account into a challenge (and optionally a team), as an owner or a global admin does. Someone
 // added - rather than joining themselves - is told: by email if they allow it, and on their home page, where
 // they can keep it or leave. Returns whether they were new to the challenge.
@@ -609,8 +824,10 @@ function addMember(cid,uid,{role='member',teamId=null,by}){
   }catch(e){db.exec('ROLLBACK');throw e}
   audit(by,existing?(role==='owner'?'made owner':'added to team'):'added to challenge',{user:uid,challenge:cid,detail:[role==='owner'&&'as owner',teamId&&`team ${teamId}`].filter(Boolean).join(', ')||null});
   if(!existing&&uid!==by.id){
-    const who=db.prepare('SELECT email,notify_email,deactivated_at FROM users WHERE id=?').get(uid),c=db.prepare('SELECT name,start_date,end_date FROM challenges WHERE id=?').get(cid);
-    if(who&&who.notify_email&&!who.deactivated_at)sendMail({to:who.email,subject:`You've been added to ${c.name} on Active Together`,
+    const ch=db.prepare('SELECT name FROM challenges WHERE id=?').get(cid);
+    pushTo([uid],{title:`${by.name} added you to ${ch.name}`,body:"Open it to start logging - or leave it if you didn't expect this.",url:`/challenges/${cid}`});
+    const who=db.prepare('SELECT email,notify_email,deactivated_at,email_verified_at FROM users WHERE id=?').get(uid),c=db.prepare('SELECT name,start_date,end_date FROM challenges WHERE id=?').get(cid);
+    if(who&&who.notify_email&&who.email_verified_at&&!who.deactivated_at)sendMail({to:who.email,subject:`You've been added to ${c.name} on Active Together`,
       text:`Hello,\n\n${by.name} added you to the challenge "${c.name}" on Active Together (${c.start_date} to ${c.end_date}).\n\nOpen it here: ${ORIGIN}/challenges/${cid}\n\nDidn't expect this? Open the challenge and choose Leave challenge: anything you've logged in it goes with you.\n\nYou can turn these emails off in My account.\n\nActive Together\n${ORIGIN}`});
   }
   return !existing;
@@ -618,9 +835,12 @@ function addMember(cid,uid,{role='member',teamId=null,by}){
 // Ticket news by email: a reply or status change to the reporter, a new ticket or reporter reply to the global
 // admins (each as they allow, at most one email per ticket per person every 10 minutes).
 function ticketMail(ticketId,toReporter,what){
-  const t=db.prepare('SELECT t.id,t.title,t.user_id,u.email,u.notify_email FROM tickets t JOIN users u ON u.id=t.user_id WHERE t.id=?').get(ticketId);
-  if(!t||!emailEnabled())return;
-  const people=toReporter?(t.notify_email?[{id:t.user_id,email:t.email}]:[]):db.prepare("SELECT id,email FROM users WHERE role='global_admin' AND deactivated_at IS NULL AND notify_admin=1 AND id!=?").all(t.user_id);
+  const t=db.prepare('SELECT t.id,t.title,t.user_id,u.email,u.notify_email,u.email_verified_at FROM tickets t JOIN users u ON u.id=t.user_id WHERE t.id=?').get(ticketId);
+  if(!t)return;
+  pushTo(toReporter?[t.user_id]:db.prepare("SELECT id FROM users WHERE role='global_admin' AND notify_admin=1 AND id!=?").all(t.user_id).map(x=>x.id),
+    {title:toReporter?'Your support ticket':`Support ticket #${t.id}`,body:`${what}: ${t.title}`,url:`/help/tickets/${t.id}`});
+  if(!emailEnabled())return;
+  const people=toReporter?(t.notify_email&&t.email_verified_at?[{id:t.user_id,email:t.email}]:[]):db.prepare("SELECT id,email FROM users WHERE role='global_admin' AND deactivated_at IS NULL AND notify_admin=1 AND email_verified_at IS NOT NULL AND id!=?").all(t.user_id);
   for(const p of people){
     if(hitRateLimit(`mail:ticket:${t.id}:${p.id}`,1,10*60_000))continue;
     sendMail({to:p.email,subject:`${toReporter?'Your support ticket':'Support ticket'} #${t.id}: ${what}`,
@@ -632,7 +852,8 @@ const codeTaken=code=>!!db.prepare('SELECT 1 FROM challenges WHERE invite_code=?
 function freeCode(){for(let i=0;i<10;i++){const c=genCode();if(!codeTaken(c))return c}throw new Error('Could not allocate a unique invite code')}
 // Why a code someone typed can't be used (null when it can). It goes in links as /join/CODE, so letters and numbers only.
 function customCodeProblem(code,current){
-  if(!/^[A-Z0-9]{4,20}$/.test(code))return {status:400,error:'Use 4 to 20 letters and numbers, with no spaces or symbols.'};
+  // Six or more, so a chosen code (often a word) can't be found by trying the short ones.
+  if(!/^[A-Z0-9]{6,20}$/.test(code))return {status:400,error:'Use 6 to 20 letters and numbers, with no spaces or symbols.'};
   if(code===current)return {status:400,error:"That's already the code. Type a different one."};
   if(codeTaken(code))return {status:409,error:'That code is already used by another challenge or team. Try a different one.'};
   return null;
@@ -661,7 +882,7 @@ function removeFromChallenge(cid,uid){
   pruneRoutes();
   return removed;
 }
-function startSession(uid,kind='web'){const t=crypto.randomBytes(32).toString('hex'),th=crypto.createHash('sha256').update(t).digest('hex');db.prepare("INSERT INTO sessions(token_hash,user_id,expires_at,kind) VALUES(?,?,datetime('now',?),?)").run(th,uid,`+${SESSION_DAYS[kind]||30} days`,kind);return t}
+function startSession(uid,kind='web',req=null){const t=crypto.randomBytes(32).toString('hex'),th=crypto.createHash('sha256').update(t).digest('hex');db.prepare("INSERT INTO sessions(token_hash,user_id,expires_at,kind,created_at,last_used_at,device) VALUES(?,?,datetime('now',?),?,datetime('now'),datetime('now'),?)").run(th,uid,`+${SESSION_DAYS[kind]||30} days`,kind,deviceLabel(req,kind));return t}
 
 function teamAccess(uid,tid){return db.prepare('SELECT team_role FROM team_members WHERE user_id=? AND team_id=?').get(uid,tid)}
 function challengeAccess(uid,cid){return db.prepare('SELECT challenge_role FROM challenge_members WHERE user_id=? AND challenge_id=?').get(uid,cid)}
@@ -721,8 +942,12 @@ function parseMinutes(v){
   if(v===null||v==='')return null;
   const n=Number(v);
   if(!Number.isFinite(n)||n<=0)throw new Error('Minutes must be a positive number');
+  if(n>MAX_MINUTES)throw new Error("That's more than 24 hours in one entry - check the minutes");
   return n;
 }
+// One entry's limits: a day of activity, and further than anyone goes in one go (1,000 km, 621 miles).
+const MAX_MINUTES=1440,MAX_DISTANCE_M=1_000_000;
+const capDistance=m=>{if(m>MAX_DISTANCE_M)throw new Error("That's further than 1,000 km (621 miles) in one entry - check the distance");return m};
 // Steps: undefined when not sent, null when sent empty, else a whole number (a day's count, so capped
 // well above anything a person walks).
 function parseSteps(v){
@@ -738,7 +963,7 @@ function parseDistance(b,fallbackUnit){
     if(b.distance_m===null||b.distance_m==='')return null;
     const n=Number(b.distance_m);
     if(!Number.isFinite(n)||n<=0)throw new Error('Distance must be a positive number');
-    return n;
+    return capDistance(n);
   }
   if(b.distance===undefined)return undefined;
   if(b.distance===null||b.distance==='')return null;
@@ -746,7 +971,7 @@ function parseDistance(b,fallbackUnit){
   if(!METERS_PER[unit])throw new Error('distance_unit must be mi or km');
   const n=Number(b.distance);
   if(!Number.isFinite(n)||n<=0)throw new Error('Distance must be a positive number');
-  return n*METERS_PER[unit];
+  return capDistance(n*METERS_PER[unit]);
 }
 // --- GPS routes ----------------------------------------------------------------------------
 // A route arrives as [[lat,lon,timeMs?,elevation?],...] from a device sync or a GPX file. It is
@@ -878,6 +1103,10 @@ function requireJourneyMode(c,activityType){
 }
 const ROUTING_BASE=(process.env.ROUTING_BASE||'https://routing.openstreetmap.de').replace(/\/$/,'');
 const GEOCODER_BASE=(process.env.GEOCODER_BASE||'https://nominatim.openstreetmap.org').replace(/\/$/,'');
+// A paid or keyed place search (LocationIQ, say, which answers like Nominatim): its key, the name of the key's
+// parameter, the reply format, and how long to leave between requests (Nominatim's own rule is one a second).
+const GEOCODER_KEY=process.env.GEOCODER_KEY||'',GEOCODER_KEY_PARAM=process.env.GEOCODER_KEY_PARAM||'key',GEOCODER_FORMAT=process.env.GEOCODER_FORMAT||'jsonv2';
+const GEOCODER_GAP_MS=Number(process.env.GEOCODER_GAP_MS||1100);
 const OUTBOUND_UA=`ActiveTogether/1.0 (${ORIGIN})`;
 const toRad=d=>d*Math.PI/180;
 function haversineM(a,b){const R=6371008.8,dLat=toRad(b[0]-a[0]),dLon=toRad(b[1]-a[1]),h=Math.sin(dLat/2)**2+Math.cos(toRad(a[0]))*Math.cos(toRad(b[0]))*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.sqrt(h))}
@@ -1016,11 +1245,12 @@ function geocoderFetch(pathAndQuery){
   const hit=placeCache.get(pathAndQuery);
   if(hit&&hit.at>Date.now()-864e5)return Promise.resolve(hit.data);
   const job=geocoderQueue.then(async()=>{
-    const r=await fetch(GEOCODER_BASE+pathAndQuery,{headers:{'User-Agent':OUTBOUND_UA,'Accept-Language':'en'},signal:AbortSignal.timeout(15000)});
+    const q=pathAndQuery.replace('format=jsonv2',`format=${GEOCODER_FORMAT}`)+(GEOCODER_KEY?`&${GEOCODER_KEY_PARAM}=${encodeURIComponent(GEOCODER_KEY)}`:'');
+    const r=await fetch(GEOCODER_BASE+q,{headers:{'User-Agent':OUTBOUND_UA,'Accept-Language':'en'},signal:AbortSignal.timeout(15000)});
     if(!r.ok)throw new Error('Place search is unavailable just now');
     const data=await r.json();remember(placeCache,pathAndQuery,{at:Date.now(),data},2000);return data;
   });
-  geocoderQueue=job.catch(()=>{}).then(()=>new Promise(r=>setTimeout(r,1100)));
+  geocoderQueue=job.catch(()=>{}).then(()=>new Promise(r=>setTimeout(r,GEOCODER_GAP_MS)));
   return job;
 }
 function journeyInfo(c){
@@ -1120,7 +1350,9 @@ async function api(req,res,url){
  if(m==='GET'&&url.pathname==='/api/health'){db.prepare('SELECT 1').get();return send(res,200,{ok:true})}
  if(u&&u.renewCookie)res.setHeader('Set-Cookie',setSessionCookie(u.renewCookie)['Set-Cookie']);
  if(m==='GET'&&url.pathname==='/api/config'){const cap=captchaConfig();return send(res,200,{captcha:cap,recaptchaSiteKey:cap&&cap.provider==='recaptcha'?cap.siteKey:null,shortcutUrl:SHORTCUT_URL||null,inviteOnly:inviteOnly(),passwordResetEmail:emailEnabled(),
-   google:GOOGLE_WEB_CLIENT_ID?{clientId:GOOGLE_WEB_CLIENT_ID,iosClientId:GOOGLE_IOS_CLIENT_ID||null}:null,apple:{servicesId:APPLE_SERVICES_ID||null}})}
+   google:GOOGLE_WEB_CLIENT_ID?{clientId:GOOGLE_WEB_CLIENT_ID,iosClientId:GOOGLE_IOS_CLIENT_ID||null}:null,apple:{servicesId:APPLE_SERVICES_ID||null},
+   stores:STORES,tiles:{url:TILE_URL,attribution:TILE_ATTRIBUTION,maxZoom:TILE_MAX_ZOOM},
+   push:{android:pushEnabled.android?{appId:FCM.appId,apiKey:FCM.apiKey,projectId:FCM_SA.project_id,senderId:FCM.senderId}:null,ios:pushEnabled.ios}})}
  // Forgotten password: always the same answer, so it never says whether an email has an account. The email
  // goes out in the background so the reply takes as long either way.
  if(m==='POST'&&url.pathname==='/api/password/forgot'){
@@ -1142,9 +1374,12 @@ async function api(req,res,url){
    const b=m==='POST'?await body(req):{},r=findReset(m==='POST'?b.token:url.searchParams.get('token'));
    if(!r)return send(res,400,{error:'This reset link has expired or has already been used. Ask for a new one.'});
    if(m==='GET')return send(res,200,{ok:true,name:r.name});
-   if(String(b.password||'').length<8)return send(res,400,{error:'Choose a password of at least 8 characters'});
+   const pwErr=passwordProblem(b.password,{email:r.email,name:r.name});if(pwErr)return send(res,400,{error:pwErr});
    const h=await hash(b.password);
    db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(h,r.user_id);
+   // A link that came by email shows the address is theirs.
+   if(!r.created_by)db.prepare("UPDATE users SET email_verified_at=COALESCE(email_verified_at,datetime('now')) WHERE id=?").run(r.user_id);
+   securityMail(r.user_id,'Your password was reset');
    db.prepare("UPDATE password_resets SET used_at=datetime('now') WHERE token_hash=?").run(r.token_hash);
    db.prepare('DELETE FROM password_resets WHERE user_id=? AND used_at IS NULL').run(r.user_id);
    audit(r.user_id,'password reset',{user:r.user_id});
@@ -1166,21 +1401,26 @@ async function api(req,res,url){
    const app=url.pathname==='/api/mobile/register';
    if(hitRateLimit('register:'+ip,REGISTER_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many registration attempts from this network. Please try again later.'});
    const b=await body(req),email=String(b.email||'').toLowerCase().trim(),name=String(b.name||'').trim();
-   if(!name||!email||!b.password||String(b.password).length<8)return send(res,400,{error:'Name, email and a password of at least 8 characters are required'});
+   if(!name||!email||!b.password)return send(res,400,{error:'Name, email and a password of at least 8 characters are required'});
+   const fieldErr=tooLong(name,MAX_LEN.person,'your name')||(!validEmail(email)&&'Enter a valid email address')||passwordProblem(b.password,{email,name});
+   if(fieldErr)return send(res,400,{error:fieldErr});
+   if(b.invite_code&&codeGuessBlocked(ip))return send(res,429,CODE_BLOCKED);
    // Invite only: a new account needs the invite code (or emailed invite) someone shared.
-   if(inviteOnly()&&!validInvite(b.invite_code,b.invite_token))return send(res,403,{error:b.invite_code?"That invite code wasn't recognised. Check it, or ask for a new invite link.":'Active Together is invite only. Use the invite link or code someone sent you to create an account.',inviteRequired:true});
+   if(inviteOnly()&&!validInvite(b.invite_code,b.invite_token)){if(b.invite_code)noteBadCode(ip);return send(res,403,{error:b.invite_code?"That invite code wasn't recognised. Check it, or ask for a new invite link.":'Active Together is invite only. Use the invite link or code someone sent you to create an account.',inviteRequired:true})}
    if(!app&&!(await verifyCaptcha(b.captchaToken||b.recaptchaToken,ip)))return send(res,400,{error:'Bot check failed. Please try again.'});
    // On the website the session is only ever in the cookie (HttpOnly): page scripts never see it.
-   try{const r=db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'member')").run(email,name,await hash(b.password));const uid=Number(r.lastInsertRowid),t=startSession(uid,app?'app':'web'),user={id:uid,email,name,role:'member'};
+   try{const r=db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'member')").run(email,name,await hash(b.password));const uid=Number(r.lastInsertRowid),t=startSession(uid,app?'app':'web',req),user={id:uid,email,name,role:'member',email_verified:false};
+     sendEmailCheck(uid,email);
      // An invite code given when signing up (typed, or from the invite link) joins that challenge straight away.
      const joined=joinWithCode(uid,b.invite_code);
+     if(b.invite_code&&!joined)noteBadCode(ip,uid);
      return app?send(res,201,{ok:true,sessionToken:t,user,joined}):send(res,201,{ok:true,user,joined},setSessionCookie(t))}catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
  }
  if(m==='POST'&&url.pathname==='/api/login'){
    const b=await body(req);
    if(loginLimited('login',ip,b.email))return send(res,429,{error:'Too many sign-in attempts. Please wait a few minutes and try again.'});
    if(!(await verifyCaptcha(b.captchaToken||b.recaptchaToken,ip)))return send(res,400,{error:'Bot check failed. Please try again.'});
-   const result=await attemptLogin(b.email,b.password);
+   const result=await attemptLogin(b.email,b.password,'web',req);
    if(!result)return send(res,401,{error:'Invalid email or password'});
    if(result.deactivated)return send(res,403,{error:DEACTIVATED_MSG});
    if(result.twoFactor)return send(res,200,{twoFactor:true,ticket:result.ticket});
@@ -1199,26 +1439,42 @@ async function api(req,res,url){
    let claims;
    try{claims=await verifyIdToken(provider,b.credential)}catch(e){return send(res,401,{error:`Signing in with ${label} didn't work. Please try again.`})}
    const verified=claims.email_verified===true||claims.email_verified==='true',email=verified&&claims.email?String(claims.email).toLowerCase().trim():null;
-   let user=db.prepare('SELECT u.* FROM identities i JOIN users u ON u.id=i.user_id WHERE i.provider=? AND i.sub=?').get(provider,String(claims.sub)),linked=false,created=false;
+   let user=db.prepare('SELECT u.* FROM identities i JOIN users u ON u.id=i.user_id WHERE i.provider=? AND i.sub=?').get(provider,String(claims.sub)),linked=false,created=false,takenOver=false;
    if(!user&&email){
      user=db.prepare('SELECT * FROM users WHERE email=?').get(email);
-     if(user){db.prepare('INSERT OR IGNORE INTO identities(provider,sub,user_id,email) VALUES(?,?,?,?)').run(provider,String(claims.sub),user.id,email);linked=true}
+     if(user){
+       db.prepare('INSERT OR IGNORE INTO identities(provider,sub,user_id,email) VALUES(?,?,?,?)').run(provider,String(claims.sub),user.id,email);linked=true;
+       // Nobody had shown this address was theirs, and the provider just has: whoever made the account may not own it,
+       // so its password, two-step sign-in and phone sync keys go (the owner can set a password again in My account).
+       if(!user.email_verified_at){
+         db.prepare("UPDATE users SET password_hash=?,totp_secret=NULL,totp_pending=NULL,totp_last_step=NULL,email_verified_at=datetime('now'),pending_email=NULL WHERE id=?").run(NO_PASSWORD,user.id);
+         db.prepare('DELETE FROM totp_backup_codes WHERE user_id=?').run(user.id);db.prepare('DELETE FROM sync_keys WHERE user_id=?').run(user.id);
+         audit(user.id,`${label} sign-in took over an unconfirmed account`,{user:user.id,detail:'password and two-step sign-in removed'});
+         user=db.prepare('SELECT * FROM users WHERE id=?').get(user.id);takenOver=true;
+       }
+       securityMail(user.id,`Signing in with ${label} was linked to your account`);
+     }
    }
    if(!user){
      if(!email)return send(res,400,{error:`${label} didn't share an email address, which an account needs. Try again and allow it, or create an account with your email.`});
-     if(inviteOnly()&&!validInvite(b.invite_code,b.invite_token))return send(res,403,{error:b.invite_code?"That invite code wasn't recognised. Check it, or ask for a new invite link.":'Active Together is invite only. Enter the invite code someone sent you to create your account.',inviteRequired:true});
+     if(b.invite_code&&codeGuessBlocked(ip))return send(res,429,CODE_BLOCKED);
+     const invited=!inviteOnly()||validInvite(b.invite_code,b.invite_token);
+     if(!invited&&b.invite_code)noteBadCode(ip);
+     if(!invited)return send(res,403,{error:b.invite_code?"That invite code wasn't recognised. Check it, or ask for a new invite link.":'Active Together is invite only. Enter the invite code someone sent you to create your account.',inviteRequired:true});
      if(hitRateLimit('register:'+ip,REGISTER_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many new accounts from this network. Please try again later.'});
      const name=String(b.name||claims.name||[claims.given_name,claims.family_name].filter(Boolean).join(' ')||email.split('@')[0]).trim().slice(0,80);
-     const r=db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'member')").run(email,name,NO_PASSWORD);
+     const r=db.prepare("INSERT INTO users(email,name,password_hash,role,email_verified_at) VALUES(?,?,?,'member',datetime('now'))").run(email,name,NO_PASSWORD);
      db.prepare('INSERT INTO identities(provider,sub,user_id,email) VALUES(?,?,?,?)').run(provider,String(claims.sub),Number(r.lastInsertRowid),email);
      user=db.prepare('SELECT * FROM users WHERE id=?').get(Number(r.lastInsertRowid));created=true;
    }
-   // An invite code that came with it (typed, or from the invite link) joins that challenge.
-   const joined=b.invite_code?joinWithCode(user.id,b.invite_code):null;
    if(user.deactivated_at)return send(res,403,{error:DEACTIVATED_MSG});
    if(linked){db.prepare('DELETE FROM sessions WHERE user_id=?').run(user.id);audit(user.id,`${label} sign-in linked`,{user:user.id,detail:'other sessions signed out'})}
+   // Two-step sign-in first: the invite code is sent again with the code, and only used once that's done.
    if(user.totp_secret)return send(res,200,{twoFactor:true,ticket:makeLoginTicket(user.id,app?'app':'web')});
-   const t=startSession(user.id,app?'app':'web'),out={ok:true,created,linked,joined,user:{id:user.id,email:user.email,name:user.name,role:user.role,avatarUrl:user.avatar_url}};
+   // An invite code that came with it (typed, or from the invite link) joins that challenge.
+   const joined=b.invite_code?joinWithCode(user.id,b.invite_code):null;
+   if(b.invite_code&&!joined)noteBadCode(ip,user.id);
+   const t=startSession(user.id,app?'app':'web',req),out={ok:true,created,linked,takenOver,joined,user:{id:user.id,email:user.email,name:user.name,role:user.role,avatarUrl:user.avatar_url}};
    return app?send(res,created?201:200,{...out,sessionToken:t}):send(res,created?201:200,out,setSessionCookie(t));
  }
  // My Google / Apple sign-ins: listed in My account; one can be removed while there's still a way in (a
@@ -1231,7 +1487,56 @@ async function api(req,res,url){
    if(!mine.some(i=>i.provider===provider))return send(res,404,{error:'Not linked'});
    if(!u.has_password&&mine.length<2)return send(res,400,{error:'Set a password first, so you can still sign in'});
    db.prepare('DELETE FROM identities WHERE user_id=? AND provider=?').run(u.id,provider);
+   securityMail(u.id,`Signing in with ${SOCIAL[provider].label} was removed from your account`);
    return send(res,200,{ok:true,identities:list()});
+ }
+ // Confirming an email address with the link we sent (signed in or not: having the link is what counts). The link
+ // for a new address also makes the change.
+ if(m==='POST'&&url.pathname==='/api/email/verify'){
+   if(hitRateLimit('verify:'+ip,AUTH_RATE_LIMIT_MAX*3,AUTH_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many attempts. Please wait a few minutes and try again.'});
+   const b=await body(req),row=db.prepare("SELECT c.user_id,c.email,us.email current FROM email_checks c JOIN users us ON us.id=c.user_id WHERE c.token_hash=? AND c.expires_at>datetime('now')").get(sha256hex(String(b.token||'')));
+   if(!row)return send(res,400,{error:'This link has expired or has already been used. You can ask for a new one in My account.'});
+   if(row.email!==row.current){
+     if(db.prepare('SELECT 1 FROM users WHERE email=? AND id!=?').get(row.email,row.user_id))return send(res,409,{error:'Another account uses that email address now, so it can’t be changed to it.'});
+     db.prepare("UPDATE users SET email=?,pending_email=NULL,email_verified_at=datetime('now') WHERE id=?").run(row.email,row.user_id);
+     audit(row.user_id,'email changed',{user:row.user_id});
+     securityMail(row.user_id,`The email address was changed to ${row.email}`,{to:row.current});
+   }else db.prepare("UPDATE users SET email_verified_at=COALESCE(email_verified_at,datetime('now')) WHERE id=?").run(row.user_id);
+   db.prepare('DELETE FROM email_checks WHERE user_id=?').run(row.user_id);
+   return send(res,200,{ok:true,email:row.email,changed:row.email!==row.current});
+ }
+ // Send the confirming link again (to the new address, while a change is waiting).
+ if(m==='POST'&&url.pathname==='/api/me/email/resend'){
+   if(!need(res,u))return;
+   if(!emailEnabled())return send(res,400,{error:"This site can't send email at the moment"});
+   if(u.email_verified&&!u.pending_email)return send(res,400,{error:'Your email address is already confirmed'});
+   if(hitRateLimit('resend:'+u.id,3,60*60_000))return send(res,429,{error:'We’ve sent a few already - check your spam folder, or try again in an hour.'});
+   sendEmailCheck(u.id,u.pending_email||u.email,{change:!!u.pending_email});
+   return send(res,200,{ok:true,to:u.pending_email||u.email});
+ }
+ // Phone notifications: an app registers its push token (tied to this session, so signing it out stops them), or
+ // removes it on signing out.
+ if(url.pathname==='/api/me/push'&&(m==='POST'||m==='DELETE')){
+   if(!need(res,u))return;
+   const b=await body(req),token=String(b.token||'').trim(),platform=b.platform==='ios'?'ios':b.platform==='android'?'android':null;
+   if(!token||token.length>4096)return send(res,400,{error:'token required'});
+   if(m==='DELETE'){db.prepare('DELETE FROM push_devices WHERE token=? AND user_id=?').run(token,u.id);return send(res,200,{ok:true})}
+   if(!platform)return send(res,400,{error:'platform must be android or ios'});
+   db.prepare('INSERT INTO push_devices(token,user_id,platform,session_hash) VALUES(?,?,?,?) ON CONFLICT(token) DO UPDATE SET user_id=excluded.user_id,platform=excluded.platform,session_hash=excluded.session_hash').run(token,u.id,platform,u.sessionHash);
+   return send(res,200,{ok:true,enabled:pushEnabled[platform]});
+ }
+ // My signed-in devices: each website or app session, with sign-out for any one, or for all but this one.
+ if(url.pathname.match(/^\/api\/me\/sessions(\/[a-f0-9]{16}|\/others)?$/)&&(m==='GET'||m==='DELETE')){
+   if(!need(res,u))return;
+   const id=url.pathname.split('/')[4];
+   if(m==='GET')return send(res,200,{sessions:db.prepare("SELECT substr(token_hash,1,16) id,kind,device,created_at,last_used_at FROM sessions WHERE user_id=? AND expires_at>datetime('now') ORDER BY COALESCE(last_used_at,created_at) DESC").all(u.id)
+     .map(x=>({...x,device:x.device||(x.kind==='app'?'Phone app':'A web browser'),current:u.sessionHash.startsWith(x.id)}))});
+   if(!id)return send(res,400,{error:'Which session?'});
+   const n=id==='others'?db.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash!=?').run(u.id,u.sessionHash).changes
+     :db.prepare("DELETE FROM sessions WHERE user_id=? AND substr(token_hash,1,16)=?").run(u.id,id).changes;
+   if(id==='others'&&n)securityMail(u.id,`${n} other device${n===1?' was':'s were'} signed out`);
+   const self=id!=='others'&&u.sessionHash.startsWith(id);
+   return send(res,200,{ok:true,signedOut:n},self&&!/^Bearer /i.test(req.headers.authorization||'')?clearSessionCookie:{});
  }
  // The second step of signing in: the code from the authenticator app (or a backup code), with the ticket the
  // password step gave. A few tries per account, then a wait.
@@ -1242,8 +1547,11 @@ async function api(req,res,url){
    const x=db.prepare('SELECT * FROM users WHERE id=?').get(uid);
    if(!x||x.deactivated_at||!x.totp_secret)return send(res,400,{error:'That sign-in has expired. Please enter your email and password again.',restart:true});
    if(!checkSecondFactor(x,b.code))return send(res,401,{error:"That code didn't work. Use the newest code from your authenticator app, or a backup code."});
-   const t=startSession(uid,app?'app':'web'),user={id:x.id,email:x.email,name:x.name,role:x.role,avatarUrl:x.avatar_url};
-   return app?send(res,200,{ok:true,sessionToken:t,user}):send(res,200,{ok:true,user},setSessionCookie(t));
+   const t=startSession(uid,app?'app':'web',req),user={id:x.id,email:x.email,name:x.name,role:x.role,avatarUrl:x.avatar_url};
+   // Signing in from an invite link: join now that the sign-in is complete.
+   const joined=b.invite_code&&!codeGuessBlocked(ip,uid)?joinWithCode(uid,b.invite_code):null;
+   if(b.invite_code&&!joined)noteBadCode(ip,uid);
+   return app?send(res,200,{ok:true,sessionToken:t,user,joined}):send(res,200,{ok:true,user,joined},setSessionCookie(t));
  }
  // Bearer-token login for the Android/iOS companion apps, which have no web page to render a
  // captcha widget in. Deliberately not recaptcha-gated; relies on the same per-IP rate limit
@@ -1251,7 +1559,7 @@ async function api(req,res,url){
  if(m==='POST'&&url.pathname==='/api/mobile/login'){
    const b=await body(req);
    if(loginLimited('mobilelogin',ip,b.email))return send(res,429,{error:'Too many sign-in attempts. Please wait a few minutes and try again.'});
-   const result=await attemptLogin(b.email,b.password,'app');
+   const result=await attemptLogin(b.email,b.password,'app',req);
    if(!result)return send(res,401,{error:'Invalid email or password'});
    if(result.deactivated)return send(res,403,{error:DEACTIVATED_MSG});
    if(result.twoFactor)return send(res,200,{twoFactor:true,ticket:result.ticket});
@@ -1264,8 +1572,14 @@ async function api(req,res,url){
    const b=await body(req);
    const name=b.name!==undefined?String(b.name).trim():undefined;
    if(name!==undefined&&!name)return send(res,400,{error:'Name cannot be empty'});
-   const email=b.email!==undefined?String(b.email).toLowerCase().trim():undefined;
+   if(name!==undefined&&name.length>MAX_LEN.person)return send(res,400,{error:tooLong(name,MAX_LEN.person,'your name')});
+   let email=b.email!==undefined?String(b.email).toLowerCase().trim():undefined;
    if(email!==undefined&&!email)return send(res,400,{error:'Email cannot be empty'});
+   // Sending the address it already has cancels a change waiting to be confirmed.
+   if(email===u.email){if(u.pending_email){db.prepare('UPDATE users SET pending_email=NULL WHERE id=?').run(u.id);db.prepare('DELETE FROM email_checks WHERE user_id=?').run(u.id)}email=undefined}
+   if(email!==undefined&&!validEmail(email))return send(res,400,{error:'Enter a valid email address'});
+   if(email!==undefined&&db.prepare('SELECT 1 FROM users WHERE email=? AND id!=?').get(email,u.id))return send(res,409,{error:'An account with that email already exists'});
+   if(b.newPassword){const pwErr=passwordProblem(b.newPassword,{email:u.email,name:name||u.name});if(pwErr)return send(res,400,{error:pwErr})}
    const changingSensitive=email!==undefined||!!b.newPassword;
    if(changingSensitive){
      const current=db.prepare('SELECT password_hash FROM users WHERE id=?').get(u.id);
@@ -1274,7 +1588,10 @@ async function api(req,res,url){
      else if(!b.currentPassword||!(await verify(b.currentPassword,current.password_hash)))return send(res,400,{error:'Current password is required and must be correct to change your email or password'});
    }
    let passwordHash;
-   if(b.newPassword){if(String(b.newPassword).length<8)return send(res,400,{error:'New password must be at least 8 characters'});passwordHash=await hash(b.newPassword)}
+   if(b.newPassword)passwordHash=await hash(b.newPassword);
+   // A new address is used once it's confirmed (where email can be sent); the old one hears about it either way.
+   let pendingEmail=null;
+   if(email!==undefined&&emailEnabled()){pendingEmail=email;email=undefined}
    let avatarUrl;
    try{avatarUrl=validateImageUrl(b.avatarUrl)}catch(e){return send(res,400,{error:e.message})}
    const bio=b.bio!==undefined?(String(b.bio).trim().slice(0,280)||null):undefined;
@@ -1282,14 +1599,22 @@ async function api(req,res,url){
    if(sharing!==undefined&&!PROFILE_SHARING.includes(sharing))return send(res,400,{error:'profileSharing must be private, summary or full'});
    if(b.notifyEmail!==undefined)db.prepare('UPDATE users SET notify_email=? WHERE id=?').run(b.notifyEmail?1:0,u.id);
    if(b.notifyAdmin!==undefined)db.prepare('UPDATE users SET notify_admin=? WHERE id=?').run(b.notifyAdmin?1:0,u.id);
+   if(b.notifyPush!==undefined)db.prepare('UPDATE users SET notify_push=? WHERE id=?').run(b.notifyPush?1:0,u.id);
+   if(pendingEmail){
+     db.prepare('UPDATE users SET pending_email=? WHERE id=?').run(pendingEmail,u.id);
+     sendEmailCheck(u.id,pendingEmail,{change:true});
+     securityMail(u.id,`Someone asked to change the email address to ${pendingEmail} (it changes once the new address is confirmed)`);
+   }
+   if(email!==undefined)db.prepare('UPDATE users SET email_verified_at=NULL WHERE id=?').run(u.id);
    try{
-     const profileChanged=bio!==undefined||sharing!==undefined||b.notifyEmail!==undefined||b.notifyAdmin!==undefined;
+     const profileChanged=bio!==undefined||sharing!==undefined||b.notifyEmail!==undefined||b.notifyAdmin!==undefined||b.notifyPush!==undefined||!!pendingEmail;
      if(bio!==undefined)db.prepare('UPDATE users SET bio=? WHERE id=?').run(bio,u.id);
      if(sharing!==undefined)db.prepare('UPDATE users SET profile_sharing=? WHERE id=?').run(sharing,u.id);
      if(!updateUserFields(u.id,{name,email,passwordHash,avatarUrl})&&!profileChanged)return send(res,400,{error:'Nothing to update'});
    }catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
-   if(passwordHash){const t=sessionToken(req);db.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash!=?').run(u.id,crypto.createHash('sha256').update(t).digest('hex'))}
-   return send(res,200,{ok:true,user:db.prepare("SELECT id,email,name,role,avatar_url,bio,profile_sharing,(totp_secret IS NOT NULL) two_factor,(instr(password_hash,':')>0) has_password,notify_email,notify_admin FROM users WHERE id=?").get(u.id)});
+   if(passwordHash){const t=sessionToken(req);db.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash!=?').run(u.id,crypto.createHash('sha256').update(t).digest('hex'));securityMail(u.id,u.has_password?'Your password was changed':'A password was set')}
+   if(email!==undefined)securityMail(u.id,`The email address was changed to ${email}`,{to:u.email});
+   return send(res,200,{ok:true,user:meRow(u.id)});
  }
  // Two-step sign-in for my account: set up (a new secret to scan), switch on with a first code (which returns
  // the backup codes), new backup codes, or switch off (password needed for both of those).
@@ -1299,36 +1624,38 @@ async function api(req,res,url){
    if(step==='setup'){
      if(x.totp_secret)return send(res,400,{error:'Two-step sign-in is already on'});
      const secret=b32encode(crypto.randomBytes(20));
-     db.prepare('UPDATE users SET totp_pending=? WHERE id=?').run(secret,u.id);
+     db.prepare('UPDATE users SET totp_pending=? WHERE id=?').run(sealSecret(secret),u.id);
      const label=encodeURIComponent(`Active Together:${x.email}`);
      return send(res,200,{secret,uri:`otpauth://totp/${label}?secret=${secret}&issuer=Active%20Together&digits=6&period=30`});
    }
    if(step==='enable'){
      if(x.totp_secret)return send(res,400,{error:'Two-step sign-in is already on'});
-     const at=x.totp_pending&&totpStep(x.totp_pending,b.code,0);
+     const pending=openSecret(x.totp_pending),at=pending&&totpStep(pending,b.code,0);
      if(!at)return send(res,400,{error:"That code didn't match. Check the time on your phone is right, and use the newest code."});
      db.prepare('UPDATE users SET totp_secret=totp_pending,totp_pending=NULL,totp_last_step=? WHERE id=?').run(at,u.id);
      audit(u,'two-step sign-in on',{user:u.id});
+     securityMail(u.id,'Two-step sign-in was turned on');
      return send(res,200,{ok:true,backupCodes:newBackupCodes(u.id)});
    }
    if(!hasPassword(x.password_hash))return send(res,400,{error:'Set a password in My account first'});
    if(!b.password||!(await verify(String(b.password),x.password_hash)))return send(res,400,{error:'Enter your current password'});
    if(!x.totp_secret)return send(res,400,{error:'Two-step sign-in is off'});
-   if(step==='backup-codes')return send(res,200,{ok:true,backupCodes:newBackupCodes(u.id)});
+   if(step==='backup-codes'){securityMail(u.id,'New two-step sign-in backup codes were made (the old ones no longer work)');return send(res,200,{ok:true,backupCodes:newBackupCodes(u.id)})}
    db.prepare('UPDATE users SET totp_secret=NULL,totp_pending=NULL,totp_last_step=NULL WHERE id=?').run(u.id);
    db.prepare('DELETE FROM totp_backup_codes WHERE user_id=?').run(u.id);
    audit(u,'two-step sign-in off',{user:u.id});
+   securityMail(u.id,'Two-step sign-in was turned off');
    return send(res,200,{ok:true});
  }
  if(m==='POST'&&url.pathname==='/api/uploads'){
    if(hitRateLimit('upload:'+ip,UPLOAD_RATE_LIMIT_MAX,UPLOAD_RATE_LIMIT_WINDOW_MS))return send(res,429,{error:'Too many uploads. Please slow down.'});
    if(!need(res,u))return;
    let b;
-   try{b=await body(req,Math.ceil(UPLOAD_MAX_BYTES*4/3)+2048)}catch(e){return send(res,413,{error:'Image is too large (max 10MB).'})}
+   try{b=await body(req,Math.ceil(UPLOAD_MAX_BYTES*4/3)+2048)}catch(e){return send(res,413,{error:'Image is too large (max 3MB).'})}
    const dm=String(b.dataUrl||'').match(/^data:image\/[a-z]+;base64,(.+)$/i);
    if(!dm)return send(res,400,{error:'A valid image data URL is required'});
    const buf=Buffer.from(dm[1],'base64');
-   if(buf.length>UPLOAD_MAX_BYTES)return send(res,413,{error:'Image is too large (max 10MB).'});
+   if(buf.length>UPLOAD_MAX_BYTES)return send(res,413,{error:'Image is too large (max 3MB).'});
    const detected=detectImageType(buf);
    if(!detected)return send(res,400,{error:'Unrecognised image format. Use PNG, JPEG, GIF or WEBP.'});
    const filename=`${crypto.randomBytes(16).toString('hex')}.${detected.ext}`;
@@ -1346,6 +1673,10 @@ async function api(req,res,url){
    if(!b.name||!b.start_date||!b.end_date)return send(res,400,{error:'name, start_date and end_date are required'});
    const datesErr=challengeDatesError(b.start_date,b.end_date);if(datesErr)return send(res,400,{error:datesErr});
    const description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):null;
+   const lenErr=tooLong(String(b.name).trim(),MAX_LEN.challenge,'the name')||tooLong(description,MAX_LEN.description,'the description');
+   if(lenErr)return send(res,400,{error:lenErr});
+   // Planning a journey asks the public route planner, so it shares the route preview's limit.
+   if(b.kind==='journey'&&hitRateLimit('routes:'+u.id,40,60_000))return send(res,429,{error:'Too many routes planned - wait a minute and try again'});
    let measure,journey=null,route=null;
    try{
      measure=parseChallengeMeasure(b);
@@ -1356,7 +1687,7 @@ async function api(req,res,url){
    return send(res,201,{id,invite_code});
  }
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),ca=challengeAccess(u.id,cid)||(isAdmin(u)?{challenge_role:'admin'}:null);if(!ca)return send(res,403,{error:'You need an invite code to view this challenge'});const c=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!c)return send(res,404,{error:'Challenge not found'});const teams=db.prepare(`SELECT t.id,t.name,t.image_url,t.invite_code,(SELECT COUNT(*) FROM team_members z WHERE z.team_id=t.id) members,tm.team_role FROM teams t LEFT JOIN team_members tm ON tm.team_id=t.id AND tm.user_id=? WHERE t.challenge_id=? ORDER BY t.name`).all(u.id,cid).map(t=>{const mine=t.team_role!=null,canManage=u.role==='global_admin'||t.team_role==='team_admin'||ca.challenge_role==='owner';return {id:t.id,name:t.name,image_url:t.image_url,members:t.members,mine,canManage,invite_code:(mine||canManage)?t.invite_code:undefined}});return send(res,200,{...publicChallenge(c),role:ca.challenge_role,canManage:canManageChallenge(u,cid),teams})}
- if(m==='PATCH'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner can edit this challenge'});const b=await body(req),name=b.name!==undefined?String(b.name).trim():challenge.name,start_date=b.start_date!==undefined?b.start_date:challenge.start_date,end_date=b.end_date!==undefined?b.end_date:challenge.end_date,description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):challenge.description;if(!name||!start_date||!end_date)return send(res,400,{error:'name, start_date and end_date are required'});const datesErr=challengeDatesError(start_date,end_date);if(datesErr)return send(res,400,{error:datesErr});let measure,journey=null,route=null;try{measure=parseChallengeMeasure(b);if(b.journey!==undefined||isJourney(challenge)){journey=b.journey!==undefined?parseJourney(b):{mode:challenge.journey_mode};checkJourneyMeasure(measure.metric||challenge.metric,journey.mode);if(b.journey!==undefined){if(isJourney(challenge)&&sameWay(challenge,journey))saveJourneyNames(challenge,journey);else route=await buildRoute(journey)}}}catch(e){return send(res,400,{error:e.message})}if(route)saveJourney(cid,journey,route);db.prepare('UPDATE challenges SET name=?,start_date=?,end_date=?,description=?,metric=?,distance_unit=?,participation=? WHERE id=?').run(name,start_date,end_date,description,measure.metric||challenge.metric,measure.distance_unit||challenge.distance_unit,measure.participation||challenge.participation,cid);return send(res,200,{ok:true})}
+ if(m==='PATCH'&&url.pathname.match(/^\/api\/challenges\/\d+$/)){if(!need(res,u))return;const cid=Number(url.pathname.split('/')[3]),challenge=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!challenge)return send(res,404,{error:'Challenge not found'});if(!canManageChallenge(u,cid))return send(res,403,{error:'Only the challenge owner can edit this challenge'});const b=await body(req),name=b.name!==undefined?String(b.name).trim():challenge.name,start_date=b.start_date!==undefined?b.start_date:challenge.start_date,end_date=b.end_date!==undefined?b.end_date:challenge.end_date,description=b.description!==undefined?(sanitizeHtml(String(b.description).trim())||null):challenge.description;if(!name||!start_date||!end_date)return send(res,400,{error:'name, start_date and end_date are required'});const datesErr=challengeDatesError(start_date,end_date);if(datesErr)return send(res,400,{error:datesErr});const lenErr=tooLong(name,MAX_LEN.challenge,'the name')||tooLong(description,MAX_LEN.description,'the description');if(lenErr)return send(res,400,{error:lenErr});if(b.journey!==undefined&&hitRateLimit('routes:'+u.id,40,60_000))return send(res,429,{error:'Too many routes planned - wait a minute and try again'});let measure,journey=null,route=null;try{measure=parseChallengeMeasure(b);if(b.journey!==undefined||isJourney(challenge)){journey=b.journey!==undefined?parseJourney(b):{mode:challenge.journey_mode};checkJourneyMeasure(measure.metric||challenge.metric,journey.mode);if(b.journey!==undefined){if(isJourney(challenge)&&sameWay(challenge,journey))saveJourneyNames(challenge,journey);else route=await buildRoute(journey)}}}catch(e){return send(res,400,{error:e.message})}if(route)saveJourney(cid,journey,route);db.prepare('UPDATE challenges SET name=?,start_date=?,end_date=?,description=?,metric=?,distance_unit=?,participation=? WHERE id=?').run(name,start_date,end_date,description,measure.metric||challenge.metric,measure.distance_unit||challenge.distance_unit,measure.participation||challenge.participation,cid);return send(res,200,{ok:true})}
  // Owners and global admins can delete a challenge outright: its activities first (they reference
  // teams with no cascade), then the challenge, which cascades to members, teams, team members and
  // invites. Same order the 60-day retention purge uses.
@@ -1480,8 +1811,21 @@ async function api(req,res,url){
    // ?top=N: the first N, plus my own row (and my teams) wherever they are, and how many there are in all.
    const top=Math.max(0,Number(url.searchParams.get('top'))||0),mineTeams=top?new Set(db.prepare('SELECT tm.team_id FROM team_members tm JOIN teams t ON t.id=tm.team_id WHERE tm.user_id=? AND t.challenge_id=?').all(u.id,cid).map(r=>r.team_id)):null;
    const cut=(rows,mine)=>{const all=rows.map(strip);return top?all.filter((r,i)=>i<top||mine(r)):all};
+   // Where I stand: my place (level totals share one), who's just ahead and by how much, my last 7 days, my team's place.
+   const metric=challengeMetric(challenge),val=r=>metric==='distance'?r.distance:metric==='steps'?r.steps:r.minutes;
+   const place=(rows,i)=>rows.findIndex(r=>val(r)===val(rows[i]))+1;
+   const mi=lb.users.findIndex(r=>r.id===u.id);let me=null;
+   if(mi>=0){
+     const mine=lb.users[mi],ahead=lb.users.slice(0,mi).reverse().find(r=>val(r)>val(mine));
+     const wk=db.prepare("SELECT COALESCE(SUM(minutes),0) m,COALESCE(SUM(distance_m),0) d,COALESCE(SUM(steps),0) s FROM activities WHERE user_id=? AND challenge_id=? AND activity_date>=date('now','-6 days')").get(u.id,cid);
+     const myTeam=!isIndividual(challenge)&&db.prepare('SELECT tm.team_id FROM team_members tm JOIN teams t ON t.id=tm.team_id WHERE tm.user_id=? AND t.challenge_id=? ORDER BY t.name LIMIT 1').get(u.id,cid);
+     const ti=myTeam?lb.teams.findIndex(t=>t.id===myTeam.team_id):-1;
+     me={rank:place(lb.users,mi),of:lb.users.length,total:val(mine),ahead:ahead?{name:ahead.name,gap:+(val(ahead)-val(mine)).toFixed(2)}:null,
+       week:metric==='distance'?metersToUnit(wk.d,challengeUnit(challenge)):metric==='steps'?wk.s:wk.m,
+       team:ti>=0?{name:lb.teams[ti].name,rank:place(lb.teams,ti),of:lb.teams.length}:null};
+   }
    return send(res,200,{metric:challengeMetric(challenge),distance_unit:challengeUnit(challenge),participation:isIndividual(challenge)?'individual':'teams',journey:journeyInfo(challenge),
-     teams:cut(lb.teams,r=>mineTeams&&mineTeams.has(r.id)),users:cut(lb.users,r=>r.id===u.id),teams_total:lb.teams.length,users_total:lb.users.length})}
+     teams:cut(lb.teams,r=>mineTeams&&mineTeams.has(r.id)),users:cut(lb.users,r=>r.id===u.id),teams_total:lb.teams.length,users_total:lb.users.length,me})}
  // The journey map: the route, and where each team (or, in an individuals challenge, each person) has
  // got to along it - a virtual position worked out from their total, never anyone's real location.
  if(m==='GET'&&url.pathname.match(/^\/api\/challenges\/\d+\/journey$/)){
@@ -1533,19 +1877,20 @@ async function api(req,res,url){
  // anyone holding the code could join anyway, so naming the challenge reveals nothing more.
  if(m==='GET'&&url.pathname==='/api/join/preview'){
    const code=String(url.searchParams.get('code')||'').trim().toUpperCase();
+   if(codeGuessBlocked(ip,u?.id))return send(res,429,CODE_BLOCKED);
    const team=code&&db.prepare('SELECT id,name,challenge_id,image_url,(SELECT COUNT(*) FROM team_members z WHERE z.team_id=teams.id) members FROM teams WHERE invite_code=?').get(code);
    const c=code&&db.prepare(`SELECT id,name,start_date,end_date,metric,distance_unit,participation,(SELECT COUNT(*) FROM challenge_members m WHERE m.challenge_id=challenges.id) members
      FROM challenges WHERE ${team?'id=?':'invite_code=?'}`).get(team?team.challenge_id:code);
-   if(!c)return send(res,404,{error:'That invite link has expired or the code was not recognised'});
+   if(!c){noteBadCode(ip,u?.id);return send(res,404,{error:'That invite link has expired or the code was not recognised'})}
    const out={code,type:team?'team':'challenge',challenge:c,team:team?{id:team.id,name:team.name,image_url:team.image_url,members:team.members}:null};
    if(u){out.member=!!challengeAccess(u.id,c.id);out.inTeam=team?!!db.prepare('SELECT 1 FROM team_members WHERE team_id=? AND user_id=?').get(team.id,u.id):null}
    return send(res,200,out);
  }
- if(m==='POST'&&url.pathname==='/api/join'){if(!need(res,u))return;const b=await body(req),code=String(b.code||'').trim().toUpperCase();if(!code)return send(res,400,{error:'Invite code required'});const j=joinWithCode(u.id,code);return j?send(res,200,{ok:true,...j}):send(res,400,{error:'That invite code was not recognised'})}
+ if(m==='POST'&&url.pathname==='/api/join'){if(!need(res,u))return;const b=await body(req),code=String(b.code||'').trim().toUpperCase();if(!code)return send(res,400,{error:'Invite code required'});if(codeGuessBlocked(ip,u.id))return send(res,429,CODE_BLOCKED);const j=joinWithCode(u.id,code);if(!j)noteBadCode(ip,u.id);return j?send(res,200,{ok:true,...j}):send(res,400,{error:'That invite code was not recognised'})}
 
- if(m==='POST'&&url.pathname==='/api/teams'){if(!need(res,u))return;const b=await body(req),cid=Number(b.challenge_id);if(!b.name||!cid)return send(res,400,{error:'challenge_id and name are required'});if(!challengeAccess(u.id,cid))return send(res,403,{error:'Join the challenge before creating a team in it'});if(isIndividual(db.prepare('SELECT participation FROM challenges WHERE id=?').get(cid)))return send(res,400,{error:'This challenge is for individuals - it has no teams'});let imageUrl;try{imageUrl=validateImageUrl(b.image_url)}catch(e){return send(res,400,{error:e.message})}const {id,invite_code}=insertTeam(cid,String(b.name).trim(),u.id,imageUrl||null);return send(res,201,{id,invite_code})}
+ if(m==='POST'&&url.pathname==='/api/teams'){if(!need(res,u))return;const b=await body(req),cid=Number(b.challenge_id);if(!b.name||!cid)return send(res,400,{error:'challenge_id and name are required'});if(String(b.name).trim().length>MAX_LEN.team)return send(res,400,{error:tooLong(String(b.name).trim(),MAX_LEN.team,'the team name')});if(!challengeAccess(u.id,cid))return send(res,403,{error:'Join the challenge before creating a team in it'});if(isIndividual(db.prepare('SELECT participation FROM challenges WHERE id=?').get(cid)))return send(res,400,{error:'This challenge is for individuals - it has no teams'});let imageUrl;try{imageUrl=validateImageUrl(b.image_url)}catch(e){return send(res,400,{error:e.message})}const {id,invite_code}=insertTeam(cid,String(b.name).trim(),u.id,imageUrl||null);return send(res,201,{id,invite_code})}
  if(m==='POST'&&url.pathname.match(/^\/api\/teams\/\d+\/join$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!challengeAccess(u.id,team.challenge_id))return send(res,403,{error:'Join the challenge before joining one of its teams'});db.prepare("INSERT OR IGNORE INTO team_members(team_id,user_id,team_role) VALUES(?,?,'member')").run(tid,u.id);return send(res,200,{ok:true})}
- if(m==='PATCH'&&url.pathname.match(/^\/api\/teams\/\d+$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can rename this team'});const b=await body(req),name=String(b.name||'').trim();if(!name)return send(res,400,{error:'Name is required'});let imageUrl;try{imageUrl=validateImageUrl(b.image_url)}catch(e){return send(res,400,{error:e.message})}if(imageUrl!==undefined)db.prepare('UPDATE teams SET name=?,image_url=? WHERE id=?').run(name,imageUrl,tid);else db.prepare('UPDATE teams SET name=? WHERE id=?').run(name,tid);return send(res,200,{ok:true})}
+ if(m==='PATCH'&&url.pathname.match(/^\/api\/teams\/\d+$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can rename this team'});const b=await body(req),name=String(b.name||'').trim();if(!name)return send(res,400,{error:'Name is required'});if(name.length>MAX_LEN.team)return send(res,400,{error:tooLong(name,MAX_LEN.team,'the team name')});let imageUrl;try{imageUrl=validateImageUrl(b.image_url)}catch(e){return send(res,400,{error:e.message})}if(imageUrl!==undefined)db.prepare('UPDATE teams SET name=?,image_url=? WHERE id=?').run(name,imageUrl,tid);else db.prepare('UPDATE teams SET name=? WHERE id=?').run(name,tid);return send(res,200,{ok:true})}
  if(m==='DELETE'&&url.pathname.match(/^\/api\/teams\/\d+$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can delete this team'});try{db.exec('BEGIN');db.prepare('DELETE FROM activities WHERE team_id=?').run(tid);db.prepare('DELETE FROM teams WHERE id=?').run(tid);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}pruneRoutes();return send(res,200,{ok:true})}
  // Leave a team you're in. What you logged under it stays on its total, as when a team admin removes someone.
  if(m==='POST'&&url.pathname.match(/^\/api\/teams\/\d+\/leave$/)){
@@ -1624,6 +1969,9 @@ async function api(req,res,url){
    if(!need(res,u))return;
    let b;
    try{b=await body(req,ROUTE_BODY_MAX)}catch(e){return send(res,413,{error:'That route is too large to upload'})}
+   const activityType=String(b.activity_type||'').trim();
+   if(!activityType)return send(res,400,{error:'Say what the activity was (walking, cycling...)'});
+   if(activityType.length>MAX_LEN.activity)return send(res,400,{error:tooLong(activityType,MAX_LEN.activity,'the activity')});
    const rawTargets=Array.isArray(b.targets)&&b.targets.length?b.targets:[{challenge_id:b.challenge_id,team_id:b.team_id}];
    if(rawTargets.length>50)return send(res,400,{error:'Too many challenges at once'});
    const rows=[];
@@ -1632,7 +1980,7 @@ async function api(req,res,url){
      const target=activityTarget(u,challenge,t.team_id);
      if(target.error)return send(res,target.status,{error:rawTargets.length>1&&challenge?`${challenge.name}: ${target.error}`:target.error});
      let times,minutes,distance_m,steps;
-     try{requireInWindow(challenge,b.activity_date);times=validateTimes(b.start_time,b.end_time);minutes=parseMinutes(b.minutes)??null;distance_m=parseDistance(b,challengeUnit(challenge))??null;steps=parseSteps(b.steps)??null;requireMeasure(challenge,minutes,distance_m,steps,b.activity_type)}
+     try{requireInWindow(challenge,b.activity_date);times=validateTimes(b.start_time,b.end_time);minutes=parseMinutes(b.minutes)??null;distance_m=parseDistance(b,challengeUnit(challenge))??null;steps=parseSteps(b.steps)??null;requireMeasure(challenge,minutes,distance_m,steps,activityType)}
      catch(e){return send(res,400,{error:rawTargets.length>1?`${challenge.name}: ${e.message}`:e.message})}
      rows.push({challengeId,teamId:target.teamId,times,minutes,distance_m,steps});
    }
@@ -1646,7 +1994,7 @@ async function api(req,res,url){
      db.exec('BEGIN');
      const routeId=route?saveRoute(u.id,source,sourceRef,route):null;
      const ins=db.prepare('INSERT INTO activities(user_id,team_id,challenge_id,activity_type,minutes,distance_m,steps,activity_date,source,source_ref,start_time,end_time,comment,route_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
-     for(const r of rows)ins.run(u.id,r.teamId,r.challengeId,b.activity_type,r.minutes,r.distance_m,r.steps,b.activity_date,source,sourceRef,r.times.start_time,r.times.end_time,comment,routeId);
+     for(const r of rows)ins.run(u.id,r.teamId,r.challengeId,activityType,r.minutes,r.distance_m,r.steps,b.activity_date,source,sourceRef,r.times.start_time,r.times.end_time,comment,routeId);
      db.exec('COMMIT');
    }catch(e){db.exec('ROLLBACK');return send(res,400,{error:'Invalid or duplicate activity'})}
    return send(res,201,{ok:true,created:rows.length});
@@ -1691,6 +2039,7 @@ async function api(req,res,url){
    const end_time=b.end_time!==undefined?b.end_time:existing.end_time;
    const comment=b.comment!==undefined?(String(b.comment).trim().slice(0,500)||null):existing.comment;
    if(!activity_type||!activity_date)return send(res,400,{error:'Invalid activity fields'});
+   if(activity_type.length>MAX_LEN.activity)return send(res,400,{error:tooLong(activity_type,MAX_LEN.activity,'the activity')});
    let times;
    try{if(b.activity_date!==undefined)requireInWindow(challenge,activity_date);times=validateTimes(start_time,end_time);requireMeasure(challenge,minutes,distance_m,steps,activity_type)}catch(e){return send(res,400,{error:e.message})}
    db.prepare('UPDATE activities SET activity_type=?,minutes=?,distance_m=?,steps=?,activity_date=?,start_time=?,end_time=?,comment=? WHERE id=?').run(activity_type,minutes,distance_m,steps,activity_date,times.start_time,times.end_time,comment,id);
@@ -1891,7 +2240,7 @@ async function api(req,res,url){
    audit(u,'made a password reset link',{user:id});
    return send(res,201,makeResetLink(id,24*60,u.id));
  }
- if(m==='POST'&&url.pathname==='/api/admin/users'){if(!need(res,u,['global_admin']))return;const b=await body(req);if(!String(b.name||'').trim()||!String(b.email||'').trim()||String(b.password||'').length<8||!['member','global_admin',undefined,''].includes(b.role))return send(res,400,{error:'Name, email, a password of at least 8 characters and a valid role are required'});try{const r=db.prepare('INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,?)').run(String(b.email).toLowerCase(),b.name,await hash(b.password),b.role||'member');audit(u,'created account',{user:Number(r.lastInsertRowid),detail:b.role==='global_admin'?'global admin':null});return send(res,201,{id:Number(r.lastInsertRowid)})}catch(e){return send(res,400,{error:'Email already exists or fields are invalid'})}}
+ if(m==='POST'&&url.pathname==='/api/admin/users'){if(!need(res,u,['global_admin']))return;const b=await body(req);if(!String(b.name||'').trim()||!String(b.email||'').trim()||String(b.password||'').length<8||!['member','global_admin',undefined,''].includes(b.role))return send(res,400,{error:'Name, email, a password of at least 8 characters and a valid role are required'});const nm=String(b.name).trim(),em=String(b.email).toLowerCase().trim(),fieldErr=tooLong(nm,MAX_LEN.person,'the name')||(!validEmail(em)&&'Enter a valid email address')||passwordProblem(b.password,{email:em,name:nm});if(fieldErr)return send(res,400,{error:fieldErr});try{const r=db.prepare('INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,?)').run(em,nm,await hash(b.password),b.role||'member');audit(u,'created account',{user:Number(r.lastInsertRowid),detail:b.role==='global_admin'?'global admin':null});sendEmailCheck(Number(r.lastInsertRowid),em);return send(res,201,{id:Number(r.lastInsertRowid)})}catch(e){return send(res,400,{error:'Email already exists or fields are invalid'})}}
  if(m==='PATCH'&&url.pathname.match(/^\/api\/admin\/users\/\d+$/)){
    if(!need(res,u,['global_admin']))return;
    const id=Number(url.pathname.split('/').pop()),b=await body(req),target=db.prepare('SELECT id,name,email,role,deactivated_at,totp_secret FROM users WHERE id=?').get(id);
@@ -1901,10 +2250,12 @@ async function api(req,res,url){
    if(b.role!==undefined&&!['member','global_admin'].includes(b.role))return send(res,400,{error:'Unknown role'});
    const name=b.name!==undefined?String(b.name).trim():undefined;
    if(name!==undefined&&!name)return send(res,400,{error:'Name cannot be empty'});
+   if(name!==undefined&&name.length>MAX_LEN.person)return send(res,400,{error:tooLong(name,MAX_LEN.person,'the name')});
    const email=b.email!==undefined?String(b.email).toLowerCase().trim():undefined;
    if(email!==undefined&&!email)return send(res,400,{error:'Email cannot be empty'});
+   if(email!==undefined&&email!==target.email&&!validEmail(email))return send(res,400,{error:'Enter a valid email address'});
    let passwordHash;
-   if(b.password){if(String(b.password).length<8)return send(res,400,{error:'Password must be at least 8 characters'});passwordHash=await hash(b.password)}
+   if(b.password){const pwErr=passwordProblem(b.password,{email:email||target.email,name:name||target.name});if(pwErr)return send(res,400,{error:pwErr});passwordHash=await hash(b.password)}
    try{
      updateUserFields(id,{name,email,passwordHash});
      if(b.role!==undefined)db.prepare('UPDATE users SET role=? WHERE id=?').run(b.role,id);
@@ -1915,6 +2266,10 @@ async function api(req,res,url){
    if(clear2fa){db.prepare('UPDATE users SET totp_secret=NULL,totp_pending=NULL,totp_last_step=NULL WHERE id=?').run(id);db.prepare('DELETE FROM totp_backup_codes WHERE user_id=?').run(id)}
    // A new password or deactivation ends every session that account has open.
    if(passwordHash||deactivating)db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+   // An address an admin typed hasn't been confirmed by its owner.
+   if(email!==undefined&&email!==target.email){db.prepare('UPDATE users SET email_verified_at=NULL,pending_email=NULL WHERE id=?').run(id);sendEmailCheck(id,email)}
+   if(passwordHash)securityMail(id,'An administrator set a new password');
+   if(clear2fa)securityMail(id,'An administrator turned off two-step sign-in');
    const changes=[name!==undefined&&name!==target.name&&'name',email!==undefined&&email!==target.email&&'email',passwordHash&&'password',
      b.role!==undefined&&b.role!==target.role&&`role: ${b.role==='global_admin'?'global admin':'member'}`,deactivating&&'deactivated',b.active===true&&target.deactivated_at&&'reactivated',clear2fa&&'two-step sign-in off'].filter(Boolean);
    if(changes.length)audit(u,'changed account',{user:id,detail:changes.join(', ')});
@@ -2137,11 +2492,17 @@ function androidRelease(){
   catch(e){return null}
 }
 const UPLOAD_MIME={png:'image/png',jpg:'image/jpeg',gif:'image/gif',webp:'image/webp'};
+// Map pictures (the website's maps and the Android app's): OpenStreetMap's own tiles unless TILE_URL names a provider
+// ({z}/{x}/{y}, and {s} for its subdomains, as Leaflet takes them), whose key is then part of the address.
+const TILE_URL=process.env.TILE_URL||'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const TILE_ATTRIBUTION=process.env.TILE_ATTRIBUTION||'&copy; OpenStreetMap contributors';
+const TILE_MAX_ZOOM=Number(process.env.TILE_MAX_ZOOM||19);
+const TILE_ORIGIN=(()=>{try{const sub=TILE_URL.includes('{s}'),o=new URL(TILE_URL.replace('{s}','a').replace(/\{[a-z]+\}/gi,'0')).origin;return sub?o.replace('://a.','://*.'):o}catch(e){return 'https://tile.openstreetmap.org'}})();
 // Sent with every response. Scripts only from this site (plus the bot check: Cloudflare Turnstile, or Google's
 // reCAPTCHA); no framing by other sites; images only from this site and the OpenStreetMap tiles.
 const SECURITY_HEADERS={
   'Content-Security-Policy':["default-src 'self'","script-src 'self' https://challenges.cloudflare.com https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/ https://accounts.google.com/gsi/client https://appleid.cdn-apple.com",
-    "style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style","img-src 'self' data: blob: https://tile.openstreetmap.org","connect-src 'self' https://accounts.google.com/gsi/","font-src 'self' data:",
+    "style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style",`img-src 'self' data: blob: ${TILE_ORIGIN}`,"connect-src 'self' https://accounts.google.com/gsi/","font-src 'self' data:",
     "frame-src https://challenges.cloudflare.com https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/ https://accounts.google.com/gsi/ https://appleid.apple.com","object-src 'none'","base-uri 'self'","form-action 'self'","frame-ancestors 'none'"].join('; '),
   'X-Frame-Options':'DENY','X-Content-Type-Options':'nosniff','Referrer-Policy':'strict-origin-when-cross-origin',
   'Permissions-Policy':'camera=(), microphone=(), geolocation=(), payment=()',
@@ -2155,13 +2516,13 @@ const VERSIONED=['app.js','style.css','theme.js'];
 const ASSET_V=crypto.createHash('sha256').update(VERSIONED.map(f=>{try{return fs.readFileSync(path.join(__dirname,'public',f))}catch(e){return ''}}).join('|')).digest('hex').slice(0,10);
 const attr=v=>String(v).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 // Link previews (WhatsApp, Messages, Slack...): absolute image addresses, and an invite link names what it's for.
-function previewTags(html,pathname){
-  html=html.replace(/content="\/icon-512\.png"/g,`content="${ORIGIN}/icon-512.png"`).replace('content="summary_large_image"','content="summary"');
+const absolutePreview=html=>html.replace(/content="\/icon-512\.png"/g,`content="${ORIGIN}/icon-512.png"`).replace('content="summary_large_image"','content="summary"');
+function previewTags(html,pathname,ip){
   const m=pathname.match(/^\/join\/([A-Za-z0-9]+)\/?$/);
-  if(!m)return html;
+  if(!m||codeGuessBlocked(ip))return html;
   const code=m[1].toUpperCase(),team=db.prepare('SELECT name,challenge_id FROM teams WHERE invite_code=?').get(code);
   const c=db.prepare(`SELECT name,start_date,end_date FROM challenges WHERE ${team?'id=?':'invite_code=?'}`).get(team?team.challenge_id:code);
-  if(!c)return html;
+  if(!c){noteBadCode(ip);return html}
   const title=team?`Join ${team.name} in ${c.name}`:`Join ${c.name}`;
   const desc=`You're invited to ${team?`the team ${team.name} in `:''}${c.name}, an activity challenge on Active Together (${c.start_date} to ${c.end_date}).`;
   return html.replace(/<meta property="og:title" content="[^"]*">/,`<meta property="og:title" content="${attr(title)}"><meta property="og:url" content="${attr(ORIGIN+'/join/'+code)}">`)
@@ -2169,6 +2530,13 @@ function previewTags(html,pathname){
     .replace(/<title>[^<]*<\/title>/,`<title>${attr(title)} - Active Together</title>`);
 }
 const versionAssets=html=>html.replace(/(src|href)="(\/?)(app\.js|style\.css|theme\.js)"/g,`$1="$2$3?v=${ASSET_V}"`);
+// Pages with their asset versions and preview addresses filled in, kept in memory: they only change with a deploy.
+const pageCache=new Map();
+function pageHtml(f,st){
+  const key=`${f}:${st.mtimeMs}:${st.size}`;let h=pageCache.get(key);
+  if(h===undefined){h=absolutePreview(versionAssets(fs.readFileSync(f,'utf8')));remember(pageCache,key,h,30)}
+  return h;
+}
 const server=http.createServer(async(req,res)=>{try{for(const [k,v] of Object.entries(SECURITY_HEADERS))res.setHeader(k,v);const url=new URL(req.url,ORIGIN);if(url.pathname.startsWith('/api/'))return await api(req,res,url);
  if(url.pathname.startsWith('/uploads/')){
    const rel=path.normalize(url.pathname.slice('/uploads/'.length)).replace(/^\.\.(\/|\\|$)/,'');
@@ -2192,7 +2560,7 @@ const server=http.createServer(async(req,res)=>{try{for(const [k,v] of Object.en
  // A proxy that compresses may weaken the tag to W/"..."; it still names the same file.
  if(!invitePage&&String(req.headers['if-none-match']||'').split(',').some(t=>t.trim().replace(/^W\//,'')===etag)){res.writeHead(304,headers);return res.end()}
  res.writeHead(200,headers);
- if(html)return res.end(previewTags(versionAssets(fs.readFileSync(f,'utf8')),url.pathname));
+ if(html)return res.end(invitePage?previewTags(pageHtml(f,st),url.pathname,clientIp(req)):pageHtml(f,st));
  fs.createReadStream(f).pipe(res)}catch(e){if(e.status){if(!res.headersSent)send(res,e.status,{error:e.message});return}console.error(e);if(!res.headersSent)send(res,500,{error:'Server error'})}});// Node's default keepAliveTimeout is 5s, which races a client that reuses a pooled keep-alive
 // connection right as the server decides to close it - the client's write lands on a socket the
 // server is already tearing down, seen as a bare ECONNRESET with no HTTP response at all.

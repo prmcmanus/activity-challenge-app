@@ -17,12 +17,24 @@ private func progressText(_ s: Standing) -> String {
 }
 
 private func myTotal(_ c: Challenge) -> String { fmtMeasure(c.measure, minutes: c.myMinutes, distance: c.myDistance, steps: c.mySteps, unit: c.distanceUnit) }
+/// "3rd of 7 · 14 min behind Priya", my team's place, and my last 7 days - as on the website.
+private func standingText(_ c: Challenge, _ s: MyStanding) -> String {
+    func amt(_ v: Double) -> String { fmtMeasure(c.measure, minutes: v, distance: v, steps: v, unit: c.distanceUnit) }
+    func nth(_ n: Int) -> String { "\(n)" + ((11...13).contains(n % 100) ? "th" : [1: "st", 2: "nd", 3: "rd"][n % 10] ?? "th") }
+    let first: String
+    if s.total == 0 && s.aheadName == nil { first = s.of > 1 ? "Nobody's logged anything yet - be the first!" : "Log something to get going." }
+    else if let name = s.aheadName { first = "\(nth(s.rank)) of \(s.of) · \(amt(s.aheadGap ?? 0)) behind \(name)" }
+    else { first = s.rank == 1 && s.of > 1 ? "You're in the lead!" : "\(nth(s.rank)) of \(s.of)" }
+    return ([first] + [s.teamRank.map { "Your team: \(nth($0)) of \(s.teamOf ?? 0)" }, "\(amt(s.week)) in the last 7 days"].compactMap { $0 }).joined(separator: "\n")
+}
+
 private func measureIcon(_ m: Measure) -> String { switch m { case .steps: "shoeprints.fill"; case .distance: "ruler"; case .minutes: "timer" } }
 
 struct ChallengesView: View {
     @Environment(AppModel.self) private var model
     @Environment(Router.self) private var router
     @State private var leaving: Challenge?
+    @State private var sentTo: String?
 
     var body: some View {
         Page(refresh: { await model.refreshTop() }) {
@@ -31,6 +43,18 @@ struct ChallengesView: View {
                 Text("\(active) active challenge\(active == 1 ? "" : "s")").foregroundStyle(.white.opacity(0.9))
             }
             if model.update != nil { UpdateBanner() }
+            // An email address to confirm (or a new one waiting to be), with the link sent again on request.
+            if let m = model.me, model.config?.emailEnabled == true, !m.emailVerified || m.pendingEmail != nil {
+                SectionCard {
+                    Text("Confirm your \(m.pendingEmail != nil ? "new " : "")email address").font(.headline)
+                    Text("We sent a link to \(m.pendingEmail ?? m.email)\(m.pendingEmail != nil ? "; until you open it we'll keep using \(m.email)" : ""). Nothing there? Check your spam folder.").font(.subheadline)
+                    if let sentTo { Text("Sent to \(sentTo).").font(.caption).foregroundStyle(Color.brandRed) }
+                    HStack {
+                        Button("Send it again") { Task { sentTo = await model.resendEmailCheck() } }.buttonStyle(.bordered)
+                        if m.pendingEmail != nil { Button("Keep my current address") { Task { await model.keepEmail() } } }
+                    }
+                }
+            }
             HStack(spacing: 8) {
                 Button { router.push(.newChallenge) } label: { Label("New challenge", systemImage: "plus").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent)
                 Button { router.push(.join) } label: { Label("Join with code", systemImage: "person.badge.plus").frame(maxWidth: .infinity) }.buttonStyle(.bordered)
@@ -116,6 +140,7 @@ struct ChallengeDetailView: View {
                     Text([measureLabel(c.measure, unit: c.distanceUnit), c.individual ? "Individuals" : c.myTeams.map(\.name).joined(separator: ", "), "Role: \(c.role)"]
                         .filter { !$0.isEmpty }.joined(separator: " · ")).font(.subheadline).foregroundStyle(.white.opacity(0.9))
                     if let j = c.journey { Text("🗺 " + journeyLine(j)).font(.subheadline.weight(.semibold)).foregroundStyle(.white) }
+                    if let s = board?.me { Text(standingText(c, s)).font(.subheadline).foregroundStyle(.white).padding(.top, 2) }
                 }
             })
             if c.journey != nil { JourneyCard(challenge: c) }
@@ -471,6 +496,9 @@ struct JourneyCard: View {
     @State private var selected: Int?
 
     @State private var full = false
+    /// What the map shows, which decides who shares a pin; and everyone in the tapped pin.
+    @State private var region: MKCoordinateRegion?
+    @State private var group: [Int] = []
 
     var body: some View {
         SectionCard(title: "Journey map", action: {
@@ -478,7 +506,7 @@ struct JourneyCard: View {
         }, content: {
             if let m = map {
                 Text("\(m.markers.filter { $0.finishedOn != nil }.count) of \(m.markers.count) finished").font(.caption).foregroundStyle(.secondary)
-                mapView(m).frame(height: 300).clipShape(RoundedRectangle(cornerRadius: 12))
+                mapView(m, share: 0.12).frame(height: 300).clipShape(RoundedRectangle(cornerRadius: 12))
                 selection(m)
                 Text(m.journey.cycling ? "A cycling journey: only rides count. Positions are virtual, never anyone's real location."
                      : "A journey on foot: rides don't count. Positions are virtual, never anyone's real location.").font(.caption).foregroundStyle(.secondary)
@@ -490,7 +518,7 @@ struct JourneyCard: View {
         .fullScreenCover(isPresented: $full) {
             if let m = map {
                 ZStack(alignment: .topTrailing) {
-                    mapView(m).ignoresSafeArea()
+                    mapView(m, share: 0.05).ignoresSafeArea()
                     Button { full = false } label: { Label("Close", systemImage: "xmark") }
                         .buttonStyle(.borderedProminent).tint(Color(.systemBackground)).foregroundStyle(.primary).shadow(radius: 3).padding()
                 }
@@ -504,8 +532,21 @@ struct JourneyCard: View {
         .task(id: challenge) { if let m = await model.call({ try await $0.journey(challenge.id) }) { map = m } }
     }
 
-    private func mapView(_ m: JourneyMap) -> some View {
-        let offsets = fanOut(m.markers)
+    /// People closer together than about a pin's width (a share of what the map shows) share one pin: whoever's
+    /// furthest along, with "+N"; tapping it lists them all.
+    private func groups(_ m: JourneyMap, share: Double) -> [[JourneyMarker]] {
+        let sorted = m.markers.sorted { $0.progress > $1.progress }
+        guard let r = region else { return sorted.map { [$0] } }
+        let dLat = r.span.latitudeDelta * share, dLon = r.span.longitudeDelta * share
+        var out: [[JourneyMarker]] = []
+        for mk in sorted {
+            if let i = out.firstIndex(where: { abs($0[0].lat - mk.lat) < dLat && abs($0[0].lon - mk.lon) < dLon }) { out[i].append(mk) } else { out.append([mk]) }
+        }
+        return out
+    }
+
+    private func mapView(_ m: JourneyMap, share: Double) -> some View {
+        let grouped = groups(m, share: share)
         return Map(initialPosition: .automatic) {
             MapPolyline(coordinates: m.route.map { CLLocationCoordinate2D(latitude: $0[0], longitude: $0[1]) }).stroke(Color.brandRed, lineWidth: 4)
             Annotation("Start: \(m.journey.fromName)", coordinate: CLLocationCoordinate2D(latitude: m.journey.fromLat, longitude: m.journey.fromLon)) {
@@ -523,22 +564,35 @@ struct JourneyCard: View {
                 Text("🏁").font(.title2)
             }
             .annotationTitles(.hidden)
-            ForEach(m.markers) { mk in
+            ForEach(grouped, id: \.first!.id) { g in
+                let mk = g[0]
                 Annotation(mk.name, coordinate: CLLocationCoordinate2D(latitude: mk.lat, longitude: mk.lon)) {
                     Avatar(url: mk.imageURL, name: mk.name, size: 36)
                         .overlay(Circle().stroke(mk.finishedOn != nil ? Color.brandYellow : .white, lineWidth: 3))
+                        .overlay(alignment: .topTrailing) {
+                            if g.count > 1 {
+                                Text("+\(g.count - 1)").font(.caption2.bold()).foregroundStyle(.white).padding(.horizontal, 5).padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.brandRed)).overlay(Capsule().stroke(.white, lineWidth: 1.5)).offset(x: 8, y: -8)
+                            }
+                        }
                         .shadow(radius: 2)
-                        .offset(offsets[mk.id] ?? .zero)
-                        .onTapGesture { selected = mk.id }
+                        .onTapGesture { selected = mk.id; group = g.map(\.id) }
                 }
                 .annotationTitles(.hidden)
             }
         }
         .mapStyle(.standard(pointsOfInterest: .excludingAll))
+        .onMapCameraChange(frequency: .onEnd) { ctx in region = ctx.region }
     }
 
     @ViewBuilder private func selection(_ m: JourneyMap) -> some View {
-        if let s = m.markers.first(where: { $0.id == selected }) {
+        let shared = m.markers.filter { group.contains($0.id) }
+        if shared.count > 1 {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(shared) { s in Text("**\(s.name)** · \(describe(s))").font(.caption) }
+                Text("Zoom in to see them apart.").font(.caption2).foregroundStyle(.secondary)
+            }
+        } else if let s = m.markers.first(where: { $0.id == selected }) {
             HStack {
                 Avatar(url: s.imageURL, name: s.name)
                 VStack(alignment: .leading) {

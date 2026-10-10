@@ -81,6 +81,18 @@ private fun progressText(s: com.activetogether.companion.Standing) = when {
     else -> ""
 }
 
+/** "3rd of 7 · 14 min behind Priya", my team's place, and my last 7 days - as on the website. */
+private fun standingText(c: Challenge, s: com.activetogether.companion.MyStanding): String {
+    fun amt(v: Double) = fmtMeasure(c.measuresDistance, v, v, c.distanceUnit, c.measuresSteps, v)
+    fun nth(n: Int) = n.toString() + when { n % 100 in 11..13 -> "th"; n % 10 == 1 -> "st"; n % 10 == 2 -> "nd"; n % 10 == 3 -> "rd"; else -> "th" }
+    val first = when {
+        s.total == 0.0 && s.aheadName == null -> if (s.of > 1) "Nobody's logged anything yet - be the first!" else "Log something to get going."
+        s.aheadName == null -> if (s.rank == 1 && s.of > 1) "You're in the lead!" else "${nth(s.rank)} of ${s.of}"
+        else -> "${nth(s.rank)} of ${s.of} · ${amt(s.aheadGap ?: 0.0)} behind ${s.aheadName}"
+    }
+    return listOfNotNull(first, s.teamRank?.let { "Your team: ${nth(it)} of ${s.teamOf}" }, "${amt(s.week)} in the last 7 days").joinToString("\n")
+}
+
 private fun measureLabel(c: Challenge) = if (c.measuresSteps) "Steps" else if (c.measuresDistance) (if (c.distanceUnit == "km") "Kilometres" else "Miles") else "Active minutes"
 private fun myTotal(c: Challenge) = fmtMeasure(c.measuresDistance, c.myMinutes, c.myDistance, c.distanceUnit, c.measuresSteps, c.mySteps)
 
@@ -109,6 +121,21 @@ fun ChallengesScreen(vm: AppViewModel, newChallenge: () -> Unit, join: () -> Uni
                 })
             }
             if (vm.update != null) item { UpdateBanner(vm) }
+            // An email address to confirm (or a new one waiting to be), with the link sent again on request.
+            val m = vm.me
+            if (m != null && vm.config?.emailEnabled == true && (!m.emailVerified || m.pendingEmail != null)) item {
+                var sentTo by remember { mutableStateOf<String?>(null) }
+                SectionCard {
+                    Text("Confirm your ${if (m.pendingEmail != null) "new " else ""}email address", style = MaterialTheme.typography.titleMedium)
+                    Text("We sent a link to ${m.pendingEmail ?: m.email}${m.pendingEmail?.let { "; until you open it we'll keep using ${m.email}" } ?: ""}. Nothing there? Check your spam folder.",
+                        style = MaterialTheme.typography.bodyMedium)
+                    sentTo?.let { Text("Sent to $it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { scope.launch { vm.resendEmailCheck()?.let { sentTo = it } } }) { Text("Send it again") }
+                        if (m.pendingEmail != null) TextButton(onClick = { scope.launch { vm.keepEmail() } }) { Text("Keep my current address") }
+                    }
+                }
+            }
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = newChallenge, modifier = Modifier.weight(1f)) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("New challenge") }
@@ -192,6 +219,7 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                     Text(listOfNotNull(measureLabel(c), if (c.individual) "Individuals" else c.myTeams.joinToString { it.name }.ifBlank { null }, "Role: ${c.role}").joinToString(" · "),
                         color = Color.White.copy(alpha = 0.9f), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
                     c.journey?.let { Text("🗺 " + journeyLine(it), color = Color.White, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp)) }
+                    board?.me?.let { s -> Text(standingText(c, s), color = Color.White, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp)) }
                 })
         }
         // A virtual journey: the map of where everyone has got to. Reloaded with the leaderboard.

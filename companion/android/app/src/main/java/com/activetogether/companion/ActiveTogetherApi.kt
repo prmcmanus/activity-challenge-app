@@ -12,9 +12,25 @@ const val SERVER_URL = BuildConfig.SERVER_URL
 
 /** Who can see what on my profile: "private" (name, photo), "summary" (+ totals, rank), "full" (+ recent activity). */
 data class Me(val id: Int, val name: String, val email: String, val avatarUrl: String?, val bio: String? = null, val sharing: String = "summary",
-              val role: String = "member", val hasPassword: Boolean = true) {
+              val role: String = "member", val hasPassword: Boolean = true,
+              /** The email address has been confirmed (by the link we emailed); pendingEmail is a new one waiting to be. */
+              val emailVerified: Boolean = true, val pendingEmail: String? = null,
+              /** A global admin whose powers wait for two-step sign-in to be turned on (on the website). */
+              val adminNeedsTwoFactor: Boolean = false, val notifyPush: Boolean = true) {
     val isAdmin: Boolean get() = role == "global_admin"
 }
+
+/** A signed-in browser or app, for the signed-in devices list. */
+data class DeviceSession(val id: String, val device: String, val createdAt: String, val lastUsedAt: String?, val current: Boolean)
+
+/** Where I stand in a challenge: my place, who's just ahead and by how much, my last 7 days, and my team's place.
+ *  Amounts are in what the challenge counts. */
+data class MyStanding(val rank: Int, val of: Int, val total: Double, val aheadName: String?, val aheadGap: Double?, val week: Double,
+                      val teamRank: Int?, val teamOf: Int?)
+
+/** The server's settings the app needs: map tiles, phone notifications (Firebase, when set up), whether email works. */
+data class SiteConfig(val tileUrl: String?, val tileAttribution: String?, val tileMaxZoom: Int, val push: PushConfig?, val emailEnabled: Boolean)
+data class PushConfig(val appId: String, val apiKey: String, val projectId: String, val senderId: String)
 
 /** Help & support. type: bug | feature | question; status: new | in_progress | planned | done | declined. */
 data class Ticket(val id: Int, val type: String, val title: String, val description: String, val status: String, val resolution: String?,
@@ -177,7 +193,7 @@ data class JourneyPreview(val points: List<RoutePoint>, val miles: Double, val k
 data class Standing(val name: String, val minutes: Double, val distance: Double, val imageUrl: String?, val userId: Int? = null, val steps: Double = 0.0,
     /** Journeys only: the share of the route covered (0..1), and the day they reached the finish. */
     val progress: Double? = null, val finishedOn: String? = null)
-data class Leaderboard(val teams: List<Standing>, val users: List<Standing>, val journey: Journey? = null)
+data class Leaderboard(val teams: List<Standing>, val users: List<Standing>, val journey: Journey? = null, val me: MyStanding? = null)
 
 data class MyActivity(
     val id: Int,
@@ -373,6 +389,29 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
             r.optDouble("miles"), r.optDouble("km"), r.optLong("steps"))
     }
 
+    // --- My account: confirming my email, signed-in devices, phone notifications ---
+    /** Sends the confirming link again; returns the address it went to. */
+    fun resendEmailCheck(): String = request("/api/me/email/resend", "POST", JSONObject()).optString("to")
+    /** Keep my current address: cancels a change that's waiting to be confirmed. */
+    fun keepEmail(current: String): Me = parseMe(request("/api/me", "PATCH", JSONObject().put("email", current)).getJSONObject("user"))
+    fun setNotifyPush(on: Boolean): Me = parseMe(request("/api/me", "PATCH", JSONObject().put("notifyPush", on)).getJSONObject("user"))
+    fun sessions(): List<DeviceSession> {
+        val a = request("/api/me/sessions").getJSONArray("sessions")
+        return (0 until a.length()).map { i -> a.getJSONObject(i).let { x ->
+            DeviceSession(x.getString("id"), x.optString("device", "A device"), x.optString("created_at"), if (x.isNull("last_used_at")) null else x.optString("last_used_at"), x.optBoolean("current"))
+        } }
+    }
+    fun signOutSession(id: String) { request("/api/me/sessions/$id", "DELETE") }
+    /** Signs out every other browser and phone; returns how many. */
+    fun signOutOthers(): Int = request("/api/me/sessions/others", "DELETE").optInt("signedOut")
+    fun registerPush(token: String) { request("/api/me/push", "POST", JSONObject().put("platform", "android").put("token", token)) }
+    fun config(): SiteConfig {
+        val r = request("/api/config"); val t = r.optJSONObject("tiles"); val p = r.optJSONObject("push")?.optJSONObject("android")
+        return SiteConfig(t?.optString("url")?.takeIf { it.isNotBlank() }, t?.optString("attribution"), t?.optInt("maxZoom", 19) ?: 19,
+            p?.let { PushConfig(it.optString("appId"), it.optString("apiKey"), it.optString("projectId"), it.optString("senderId")) },
+            r.optBoolean("passwordResetEmail"))
+    }
+
     /** I've seen that someone added me: stop showing the notice. */
     fun ackAdded(challengeId: Int) { request("/api/challenges/$challengeId/ack", "POST", JSONObject()) }
 
@@ -484,7 +523,12 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
                 if (x.has("progress") && !x.isNull("progress")) x.getDouble("progress") else null,
                 if (x.has("finished_on") && !x.isNull("finished_on")) x.optString("finished_on") else null)
         }
-        return Leaderboard(list(r.getJSONArray("teams"), false), list(r.getJSONArray("users"), true), parseJourney(r.optJSONObject("journey")))
+        val me = r.optJSONObject("me")?.let { m ->
+            val ahead = m.optJSONObject("ahead"); val team = m.optJSONObject("team")
+            MyStanding(m.optInt("rank"), m.optInt("of"), m.optDouble("total", 0.0), ahead?.optString("name"), ahead?.optDouble("gap"), m.optDouble("week", 0.0),
+                team?.optInt("rank"), team?.optInt("of"))
+        }
+        return Leaderboard(list(r.getJSONArray("teams"), false), list(r.getJSONArray("users"), true), parseJourney(r.optJSONObject("journey")), me)
     }
 
     fun profile(userId: Int): Profile {
@@ -571,7 +615,15 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
     fun logActivity(
         targets: List<Target>, type: String, date: LocalDate, minutes: Int?, distance: Double?, unit: String,
         startTime: String?, endTime: String?, comment: String?, steps: Int? = null,
-    ): Int {
+    ): Int = postActivity(activityBody(targets, type, date, minutes, distance, unit, startTime, endTime, comment, steps), targets.size)
+
+    /** Sends a manual log (one made now, or one kept on the phone while it was offline). */
+    fun postActivity(body: JSONObject, expected: Int = 1): Int = request("/api/activities", "POST", body).optInt("created", expected)
+
+    fun activityBody(
+        targets: List<Target>, type: String, date: LocalDate, minutes: Int?, distance: Double?, unit: String,
+        startTime: String?, endTime: String?, comment: String?, steps: Int? = null,
+    ): JSONObject {
         val body = JSONObject()
             .put("targets", JSONArray(targets.map { t -> JSONObject().put("challenge_id", t.challengeId).apply { t.teamId?.let { put("team_id", it) } } }))
             .put("activity_type", type)
@@ -581,7 +633,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         if (distance != null) body.put("distance", distance).put("distance_unit", unit)
         if (steps != null) body.put("steps", steps)
         if (!startTime.isNullOrBlank() && !endTime.isNullOrBlank()) body.put("start_time", startTime).put("end_time", endTime)
-        return request("/api/activities", "POST", body).optInt("created", targets.size)
+        return body
     }
 
     /** Which challenges each of these device records is already in. */
@@ -681,29 +733,55 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
     private fun parseMe(u: JSONObject) = Me(u.getInt("id"), u.getString("name"), u.getString("email"),
         u.optString("avatar_url").ifBlank { u.optString("avatarUrl") }.takeIf { it.isNotBlank() && it != "null" },
         if (u.isNull("bio")) null else u.optString("bio").takeIf { it.isNotBlank() },
-        u.optString("profile_sharing").ifBlank { "summary" }, u.optString("role").ifBlank { "member" }, u.optInt("has_password", 1) == 1)
+        u.optString("profile_sharing").ifBlank { "summary" }, u.optString("role").ifBlank { "member" }, u.optInt("has_password", 1) == 1,
+        emailVerified = u.optInt("email_verified", 1) == 1, pendingEmail = if (u.isNull("pending_email")) null else u.optString("pending_email").takeIf { it.isNotBlank() },
+        adminNeedsTwoFactor = u.optBoolean("admin_needs_two_factor"), notifyPush = u.optInt("notify_push", 1) == 1)
 
     private fun request(path: String, method: String = "GET", body: JSONObject? = null): JSONObject {
-        val connection = URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection
-        connection.requestMethod = method
-        connection.connectTimeout = 15_000
-        connection.readTimeout = 60_000
-        connection.setRequestProperty("Accept", "application/json")
-        token?.let { connection.setRequestProperty("Authorization", "Bearer $it") }
-        if (body != null) {
-            connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.outputStream.use { it.write(body.toString().toByteArray()) }
+        // Signed-in reads are kept, so without a connection the app shows what it last saw instead of nothing.
+        val cacheable = method == "GET" && token != null
+        val status: Int
+        val text: String
+        try {
+            val connection = URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection
+            connection.requestMethod = method
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 60_000
+            connection.setRequestProperty("Accept", "application/json")
+            token?.let { connection.setRequestProperty("Authorization", "Bearer $it") }
+            if (body != null) {
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", "application/json")
+                connection.outputStream.use { it.write(body.toString().toByteArray()) }
+            }
+            status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        } catch (e: IOException) {
+            if (cacheable) ApiCache.get(token, path)?.let { ApiCache.offline.value = true; return JSONObject(it) }
+            throw e
         }
-        val status = connection.responseCode
-        val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-        val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        ApiCache.offline.value = false
+        if (cacheable && status in 200..299) ApiCache.put(token, path, text)
         if (status !in 200..299) {
             val reply = runCatching { JSONObject(text) }.getOrNull()
             throw ApiException(status, reply?.optString("error").orEmpty().ifBlank { "Request failed with HTTP $status" }, reply)
         }
         return JSONObject(text.ifBlank { "{}" })
     }
+}
+
+/** The last answer to each signed-in read, kept in the app's cache folder (per account), and whether the app is
+ *  showing kept answers because there's no connection. */
+object ApiCache {
+    private var dir: java.io.File? = null
+    val offline = kotlinx.coroutines.flow.MutableStateFlow(false)
+    fun init(context: android.content.Context) { if (dir == null) dir = java.io.File(context.cacheDir, "api").apply { mkdirs() } }
+    private fun key(token: String?, path: String) = java.security.MessageDigest.getInstance("SHA-256")
+        .digest("${token.orEmpty()}|$path".toByteArray()).joinToString("") { "%02x".format(it) }
+    fun put(token: String?, path: String, text: String) { dir?.let { runCatching { java.io.File(it, key(token, path)).writeText(text) } } }
+    fun get(token: String?, path: String): String? = dir?.let { runCatching { java.io.File(it, key(token, path)).takeIf { f -> f.exists() }?.readText() }.getOrNull() }
+    fun clear() { dir?.listFiles()?.forEach { it.delete() }; offline.value = false }
 }
 
 /** Absolute URL for a server path such as /uploads/abc.png. */

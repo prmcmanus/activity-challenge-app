@@ -1,6 +1,8 @@
 package com.activetogether.companion.ui
 
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -60,6 +62,21 @@ fun AppRoot(vm: AppViewModel) {
     // An invite link (opened now, or before signing in) goes to its confirm screen.
     LaunchedEffect(vm.pendingInvite) { vm.pendingInvite?.let { nav.navigate("invite/$it") { launchSingleTop = true } } }
     LaunchedEffect(vm.message) { vm.message?.let { snackbar.showSnackbar(it); vm.message = null } }
+    // A tapped notification opens its challenge or ticket.
+    LaunchedEffect(vm.pendingRoute) {
+        val url = vm.pendingRoute ?: return@LaunchedEffect
+        vm.pendingRoute = null
+        Regex("^/challenges/(\\d+)").find(url)?.let { nav.navigate("challenge/${it.groupValues[1]}") { launchSingleTop = true } }
+        Regex("^/help/tickets/(\\d+)").find(url)?.let { nav.navigate("ticket/${it.groupValues[1]}") { launchSingleTop = true } }
+    }
+    // Android 13 and later ask before an app shows notifications: once, when the server can send them.
+    val notifyPermission = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(vm.pushAvailable) {
+        if (vm.pushAvailable && android.os.Build.VERSION.SDK_INT >= 33 && !vm.prefs.askedPushPermission) {
+            vm.prefs.askedPushPermission = true
+            notifyPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     val title = when {
         route == "challenge/new" -> "New challenge"
@@ -116,7 +133,14 @@ fun AppRoot(vm: AppViewModel) {
         snackbarHost = { SnackbarHost(snackbar) },
         containerColor = MaterialTheme.colorScheme.background,
     ) { pad ->
-        NavHost(nav, startDestination = "challenges", modifier = Modifier.padding(pad)) {
+        androidx.compose.foundation.layout.Column(Modifier.padding(pad)) {
+        // Without a connection the app shows what it last loaded, and says so.
+        if (vm.offline || vm.pendingLogs > 0) androidx.compose.material3.Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
+            Text(listOfNotNull(if (vm.offline) "Offline: showing what was last loaded." else null,
+                if (vm.pendingLogs > 0) "${vm.pendingLogs} activit${if (vm.pendingLogs == 1) "y" else "ies"} waiting to be sent." else null).joinToString(" "),
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+        }
+        NavHost(nav, startDestination = "challenges", modifier = Modifier.weight(1f)) {
             composable("challenges") {
                 ChallengesScreen(vm, newChallenge = { nav.navigate("challenge/new") }, join = { nav.navigate("join") }) { c -> nav.navigate("challenge/${c.id}") }
             }
@@ -168,6 +192,7 @@ fun AppRoot(vm: AppViewModel) {
             composable("ticket/{id}", arguments = listOf(navArgument("id") { type = NavType.IntType })) { TicketScreen(vm, it.arguments!!.getInt("id")) }
             composable("support") { SupportDashboardScreen(vm) { id -> nav.navigate("ticket/$id") } }
             composable("editProfile") { EditProfileScreen(vm) { nav.popBackStack() } }
+        }
         }
     }
 }

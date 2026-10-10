@@ -51,7 +51,7 @@ struct NewInviteCodeSheet: View {
                     Section {
                         TextField("Code", text: $code).textInputAutocapitalization(.characters).autocorrectionDisabled()
                             .onChange(of: code) { _, v in let f = String(v.uppercased().filter { $0.isLetter || $0.isNumber }.prefix(20)); if f != v { code = f }; error = nil }
-                    } footer: { Text("Keep this one or type your own: 4 to 20 letters and numbers.") }
+                    } footer: { Text("Keep this one or type your own: 6 to 20 letters and numbers.") }
                 }
                 if let error { Section { Text(error).foregroundStyle(.red) } }
             }
@@ -65,7 +65,7 @@ struct NewInviteCodeSheet: View {
                             if let c = await model.tryInline({ error = $0 }, { try await $0.newInviteCode(team: team, id: id, code: admin ? code : nil) }) { done(c); dismiss() }
                             busy = false
                         }
-                    }.disabled(busy || (admin && code.count < 4))
+                    }.disabled(busy || (admin && code.count < 6))
                 }
             }
             .task { if admin, code.isEmpty, let s = await model.tryInline({ error = $0 }, { try await $0.suggestInviteCode() }) { code = s } }

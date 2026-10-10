@@ -27,9 +27,15 @@ import com.activetogether.companion.SyncPlanner
 import com.activetogether.companion.SyncWorker
 import com.activetogether.companion.unitMeters
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.LocalDateTime
+import com.activetogether.companion.ApiCache
+import com.activetogether.companion.DeviceSession
+import com.activetogether.companion.Push
+import com.activetogether.companion.SiteConfig
 
 /** One workout in the sync review, with what the person has chosen for it. */
 class ReviewItem(val candidate: Candidate, defaultUnit: String) {
@@ -116,19 +122,105 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         message = "Couldn't reach Active Together: ${e.message ?: e.javaClass.simpleName}"; null
     }
 
-    init { if (signedIn) refreshAll() }
+    /** Showing what was last loaded, because there's no connection. */
+    var offline by mutableStateOf(false); private set
+    /** The server's settings (map tiles, phone notifications, whether email works). */
+    var config by mutableStateOf<SiteConfig?>(null); private set
+    /** Manual logs made without a connection, waiting to be sent. */
+    var pendingLogs by mutableStateOf(prefs.pendingLogs.size); private set
+    /** A screen to open from a tapped notification ("/challenges/12", "/help/tickets/3"). */
+    var pendingRoute by mutableStateOf<String?>(null)
+    /** Notifications can be shown (the server is set up for them): the app may ask permission to show them. */
+    var pushAvailable by mutableStateOf(false); private set
 
+    init {
+        ApiCache.init(app)
+        Push.ensureChannel(app)
+        viewModelScope.launch { ApiCache.offline.collect { offline = it } }
+        // Back online: send anything logged while offline.
+        runCatching {
+            app.getSystemService(android.net.ConnectivityManager::class.java).registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) { viewModelScope.launch { if (signedIn) flushPendingLogs() } }
+            })
+        }
+        if (signedIn) refreshAll()
+    }
+
+    /** Everything at once rather than one after another: the first screen is ready sooner. */
     fun refreshAll() = viewModelScope.launch {
         loadingChallenges = true
-        call { it.me() }?.let { me = it }
-        call { it.challenges() }?.let { challenges = it }
+        coroutineScope {
+            val m = async { call { it.me() } }
+            val c = async { call { it.challenges() } }
+            val cfg = async { runCatching { withContext(Dispatchers.IO) { api().config() } }.getOrNull() }
+            m.await()?.let { me = it }
+            c.await()?.let { challenges = it }
+            cfg.await()?.let { applyConfig(it) }
+        }
         loadingChallenges = false
         loadActivities(reset = true)
-        refreshHelpBadge()
-        checkForUpdate()
+        launch { refreshHelpBadge() }
+        launch { checkForUpdate() }
+        launch { flushPendingLogs() }
+        registerForPush()
         // "Sync when the app opens" half of automatic sync, for phones without background access.
         if (prefs.autoSync && challenges.isNotEmpty()) autoSyncNow(quiet = true)
     }
+
+    private fun applyConfig(c: SiteConfig) {
+        config = c
+        prefs.tileUrl = c.tileUrl; c.tileAttribution?.let { prefs.tileAttribution = androidx.core.text.HtmlCompat.fromHtml(it, 0).toString() }; prefs.tileMaxZoom = c.tileMaxZoom
+        pushAvailable = c.push != null
+    }
+
+    /** Phone notifications: once the server is set up for them, this phone's token goes to it (tied to this sign-in). */
+    private fun registerForPush() {
+        val cfg = config?.push ?: return
+        Push.token(getApplication(), cfg) { token ->
+            if (token == null) return@token
+            prefs.pushToken = token
+            viewModelScope.launch { runCatching { withContext(Dispatchers.IO) { api().registerPush(token) } } }
+        }
+    }
+
+    /** A tapped notification's address, opened once the app is showing. */
+    fun openPushUrl(url: String?) { if (!url.isNullOrBlank() && url != "/") pendingRoute = url }
+
+    /**
+     * Log an activity. Without a connection it's kept on the phone and sent when the connection is back (returns -1);
+     * anything the server turns down is said at once (null).
+     */
+    suspend fun logActivity(body: org.json.JSONObject, expected: Int): Int? = try {
+        withContext(Dispatchers.IO) { api().postActivity(body, expected) }
+    } catch (e: ApiException) {
+        if (e.status == 401) forceSignOut("Your session has expired. Please sign in again.") else message = e.message; null
+    } catch (e: java.io.IOException) {
+        prefs.pendingLogs = prefs.pendingLogs + body.toString(); pendingLogs = prefs.pendingLogs.size; -1
+    }
+
+    /** Send what was logged offline. One the server turns down (say, a date the challenge has since moved past) is dropped,
+     *  with a message; without a connection they all wait for the next try. */
+    suspend fun flushPendingLogs() {
+        var waiting = prefs.pendingLogs
+        if (waiting.isEmpty()) return
+        var sent = 0
+        while (waiting.isNotEmpty()) {
+            val body = waiting.first()
+            try { withContext(Dispatchers.IO) { api().postActivity(org.json.JSONObject(body)) }; sent++ }
+            catch (e: ApiException) { if (e.status == 401) return; message = "One activity saved offline couldn't be logged: ${e.message}" }
+            catch (e: java.io.IOException) { break }
+            waiting = waiting.drop(1); prefs.pendingLogs = waiting; pendingLogs = waiting.size
+        }
+        if (sent > 0) { message = "Sent $sent activit${if (sent == 1) "y" else "ies"} logged while offline"; afterChange() }
+    }
+
+    // --- my account: confirming my email, signed-in devices, notifications --------------------
+    suspend fun resendEmailCheck(): String? = call { it.resendEmailCheck() }
+    suspend fun keepEmail() { val m = me ?: return; call { it.keepEmail(m.email) }?.let { me = it } }
+    suspend fun setNotifyPush(on: Boolean) { call { it.setNotifyPush(on) }?.let { me = it } }
+    suspend fun sessions(): List<DeviceSession>? = call { it.sessions() }
+    suspend fun signOutSession(id: String): Boolean = call { it.signOutSession(id) } != null
+    suspend fun signOutOthers(): Int? = call { it.signOutOthers() }
 
     /** Sign in with a password: [done] gets an error, or (two-step sign-in) the ticket to send with the code. */
     fun signIn(email: String, password: String, done: (error: String?, ticket: String?) -> Unit) = viewModelScope.launch {
@@ -201,6 +293,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun forceSignOut(msg: String?) {
         prefs.signOut()
+        ApiCache.clear()
+        pendingLogs = 0
         SyncWorker.cancel(getApplication())
         signedIn = false
         me = null; challenges = emptyList(); activities = emptyList(); review = null; details = emptyMap()
@@ -247,12 +341,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * this: the shared loading flags flip at the wrong moments (or are gated on an empty list), which
      * left the indicator stuck or never shown.
      */
-    suspend fun refreshTopLevel() {
-        call { it.me() }?.let { me = it }
-        call { it.challenges() }?.let { challenges = it }
-        refreshActivities()
-        refreshHelpBadge()
-        checkForUpdate()
+    suspend fun refreshTopLevel() = coroutineScope {
+        val m = async { call { it.me() } }
+        val c = async { call { it.challenges() } }
+        m.await()?.let { me = it }
+        c.await()?.let { challenges = it }
+        launch { refreshActivities() }
+        launch { refreshHelpBadge() }
+        launch { checkForUpdate() }
+        launch { flushPendingLogs() }
     }
 
     /** Pull-to-refresh / refresh button on the tab screens. Says when it's done, so a refresh that changed nothing still visibly happened. */

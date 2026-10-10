@@ -201,11 +201,12 @@ struct LogActivityView: View {
         let stepCount = Int(steps).flatMap { $0 > 0 ? $0 : nil }
         let hhmm = DeviceWorkout.hhmm
         Task {
-            let n = await model.call { try await $0.logActivity(targets: targets, type: type, date: Day(date), minutes: mins, distance: dist, unit: unit,
-                                                                 start: useTimes ? hhmm.string(from: start) : nil, end: useTimes ? hhmm.string(from: end) : nil,
-                                                                 comment: comment, steps: stepCount) }
+            let body = model.api.activityBody(targets: targets, type: type, date: Day(date), minutes: mins, distance: dist, unit: unit,
+                                              start: useTimes ? hhmm.string(from: start) : nil, end: useTimes ? hhmm.string(from: end) : nil, comment: comment, steps: stepCount)
+            let n = await model.logActivity(body, expected: targets.count)
             busy = false
-            if let n { model.message = "Logged in \(n) challenge\(n == 1 ? "" : "s")"; await model.afterChange(); router.pop() }
+            if n == -1 { model.message = "No connection: saved on this phone, and it'll be sent when you're back online"; router.pop() }
+            else if let n { model.message = "Logged in \(n) challenge\(n == 1 ? "" : "s")"; await model.afterChange(); router.pop() }
             else { error = model.message; model.message = nil }
         }
     }

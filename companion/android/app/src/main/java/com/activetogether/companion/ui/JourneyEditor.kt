@@ -254,7 +254,7 @@ private fun JourneyPickerMap(draft: JourneyDraft, onTap: (Double, Double) -> Uni
     val map = remember {
         configureOsm(context)
         MapView(context).apply {
-            setTileSource(TileSourceFactory.MAPNIK)
+            setTileSource(tileSource(context))
             setMultiTouchControls(true)
             zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
             controller.setZoom(5.0); controller.setCenter(GeoPoint(54.0, -2.5))

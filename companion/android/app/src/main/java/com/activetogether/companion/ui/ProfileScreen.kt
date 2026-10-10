@@ -246,6 +246,13 @@ fun MeScreen(vm: AppViewModel, edit: () -> Unit, help: () -> Unit, admin: () -> 
                 }
             }
             if (vm.update != null) item { UpdateBanner(vm) }
+            if (vm.me?.adminNeedsTwoFactor == true) item {
+                SectionCard {
+                    Text("Turn on two-step sign-in to use the admin tools", style = MaterialTheme.typography.titleMedium)
+                    Text("Global admins can see and change everything, so signing in needs a code from your phone as well as your password. Set it up on the website: My account, Two-step sign-in.",
+                        style = MaterialTheme.typography.bodyMedium)
+                }
+            }
             item { SyncSettingsCard(vm) }
             if (vm.me?.isAdmin == true) item {
                 Button(onClick = admin, modifier = Modifier.fillMaxWidth()) {
@@ -367,6 +374,12 @@ fun EditProfileScreen(vm: AppViewModel, done: () -> Unit) {
             OutlinedTextField(newPassword, { newPassword = it }, label = { Text("New password (leave blank to keep)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
         }
+        me?.pendingEmail?.let { Text("Changing to $it: open the link we sent there to finish.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        SectionCard("Notifications") {
+            SettingRow("Phone notifications", "Replies to your tickets, being added to a challenge, challenges starting and ending, and a weekly summary.",
+                checked = me?.notifyPush != false) { on -> scope.launch { vm.setNotifyPush(on) } }
+        }
+        DevicesCard(vm)
         val sensitive = newPassword.isNotEmpty() || (me != null && email.trim().lowercase() != me.email)
         if (sensitive) {
             OutlinedTextField(currentPassword, { currentPassword = it }, label = { Text("Current password") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -383,7 +396,7 @@ fun EditProfileScreen(vm: AppViewModel, done: () -> Unit) {
                 busy = false
                 if (updated != null) {
                     vm.updateMe(updated); vm.prefs.email = updated.email
-                    vm.message = "Profile saved"; done()
+                    vm.message = if (updated.pendingEmail != null && email.trim().lowercase() != me?.email) "Saved. Open the link we sent to ${updated.pendingEmail} to change your email" else "Profile saved"; done()
                 } else { note = vm.message; vm.message = null }
             }
         }) { Text("Save") }
@@ -419,6 +432,37 @@ fun EditProfileScreen(vm: AppViewModel, done: () -> Unit) {
             dismissButton = { TextButton(enabled = !working, onClick = { deleting = false }) { Text("Cancel") } },
         )
     }
+}
+
+/** Signed-in devices: each browser and phone signed in to my account, signing out any one, or all but this phone. */
+@Composable
+private fun DevicesCard(vm: AppViewModel) {
+    val scope = rememberCoroutineScope()
+    var list by remember { mutableStateOf<List<com.activetogether.companion.DeviceSession>?>(null) }
+    var confirmAll by remember { mutableStateOf(false) }
+    suspend fun load() { list = vm.sessions() }
+    LaunchedEffect(Unit) { load() }
+    SectionCard("Signed-in devices") {
+        val l = list
+        if (l == null) Loading(Modifier.padding(4.dp))
+        else l.forEach { d ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(d.device + if (d.current) " (this phone)" else "", style = MaterialTheme.typography.titleSmall)
+                    Text("Signed in ${d.createdAt.take(10)}" + (d.lastUsedAt?.let { " · last used ${it.take(10)}" } ?: ""), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (!d.current) TextButton(onClick = { scope.launch { if (vm.signOutSession(d.id)) load() } }) { Text("Sign out") }
+            }
+        }
+        if ((l?.size ?: 0) > 1) OutlinedButton(onClick = { confirmAll = true }) { Text("Sign out of all other devices") }
+    }
+    if (confirmAll) AlertDialog(
+        onDismissRequest = { confirmAll = false },
+        title = { Text("Sign out everywhere else?") },
+        text = { Text("Other phones and browsers are signed out. This phone stays signed in.") },
+        confirmButton = { TextButton(onClick = { confirmAll = false; scope.launch { vm.signOutOthers()?.let { n -> vm.message = "Signed out of $n other device${if (n == 1) "" else "s"}"; load() } } }) { Text("Sign out others") } },
+        dismissButton = { TextButton(onClick = { confirmAll = false }) { Text("Cancel") } },
+    )
 }
 
 /** Automatic sync, routes and typing unit - on the Me page under the profile. */

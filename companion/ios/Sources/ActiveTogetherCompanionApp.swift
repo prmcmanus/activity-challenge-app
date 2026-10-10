@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct ActiveTogetherCompanionApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model = AppModel()
     @Environment(\.scenePhase) private var phase
 
@@ -14,6 +15,7 @@ struct ActiveTogetherCompanionApp: App {
                 .tint(.brandRed)
                 // Invite links: activetogether://join/CODE (and https://activetogether.team/join/CODE where the system routes it here).
                 .onOpenURL { model.openLink($0) }
+                .onAppear { AppDelegate.model = model }
                 .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { a in if let u = a.webpageURL { model.openLink(u) } }
         }
         .onChange(of: phase) { _, p in if p == .background { BackgroundSync.schedule() } }
@@ -52,6 +54,21 @@ struct RootView: View {
                     stack(.activity) { ActivityListView() }.tabItem { Label("Activity", systemImage: "figure.run") }.tag(Tab.activity)
                     stack(.sync) { SyncView() }.tabItem { Label("Sync", systemImage: "arrow.triangle.2.circlepath") }.tag(Tab.sync)
                     stack(.me) { MeView() }.tabItem { Label("Me", systemImage: "person.crop.circle") }.tag(Tab.me)
+                }
+                // A tapped notification opens its challenge or ticket.
+                .task(id: model.pendingRoute) {
+                    guard let url = model.pendingRoute else { return }
+                    model.pendingRoute = nil
+                    let parts = url.split(separator: "/").map(String.init)
+                    if parts.count == 2, parts[0] == "challenges", let id = Int(parts[1]) { router.tab = .challenges; router.paths[.challenges] = [.challenge(id)] }
+                    else if parts.count == 3, parts[0] == "help", parts[1] == "tickets", let id = Int(parts[2]) { router.tab = .me; router.paths[.me] = [.ticket(id)] }
+                }
+                // Without a connection the app shows what it last loaded, and says so.
+                .safeAreaInset(edge: .top) {
+                    if model.offline || model.pendingLogs > 0 {
+                        Text([model.offline ? "Offline: showing what was last loaded." : nil, model.pendingLogs > 0 ? "\(model.pendingLogs) activit\(model.pendingLogs == 1 ? "y" : "ies") waiting to be sent." : nil]
+                            .compactMap { $0 }.joined(separator: " ")).font(.caption).frame(maxWidth: .infinity).padding(6).background(Color.brandYellow.opacity(0.35))
+                    }
                 }
                 // An invite link (opened now, or before signing in) goes to its confirm screen.
                 .task(id: model.pendingInvite) {

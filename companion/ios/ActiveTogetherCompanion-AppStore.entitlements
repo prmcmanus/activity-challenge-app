@@ -4,6 +4,8 @@
      Apple ID, can't have). The workflow in .github/workflows/ios-appstore.yml picks this file. -->
 <plist version="1.0">
 <dict>
+	<key>aps-environment</key>
+	<string>production</string>
 	<key>com.apple.developer.healthkit</key>
 	<true/>
 	<key>com.apple.developer.applesignin</key>

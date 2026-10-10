@@ -84,14 +84,14 @@ fun NewInviteCodeDialog(vm: AppViewModel, team: Boolean, id: Int, what: String, 
                 Text("The current link and code for $what stop working straight away; people already in aren't affected.")
                 if (admin) {
                     OutlinedTextField(code, { code = it.uppercase().filter { c -> c.isLetterOrDigit() }.take(20); error = null }, label = { Text("Code") },
-                        supportingText = { Text("Keep this one or type your own: 4 to 20 letters and numbers.") }, singleLine = true,
+                        supportingText = { Text("Keep this one or type your own: 6 to 20 letters and numbers.") }, singleLine = true,
                         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, autoCorrectEnabled = false), modifier = Modifier.fillMaxWidth())
                 }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
         },
         confirmButton = {
-            TextButton(enabled = !busy && (!admin || code.length >= 4), onClick = {
+            TextButton(enabled = !busy && (!admin || code.length >= 6), onClick = {
                 busy = true
                 scope.launch {
                     vm.tryInline({ error = it }) { it.newInviteCode(team, id, if (admin) code else null) }?.let { done(it) }

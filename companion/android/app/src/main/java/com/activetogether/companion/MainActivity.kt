@@ -19,7 +19,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         // Keep the background schedule in step with the setting (e.g. after an app update).
         if (vm.prefs.autoSync && vm.prefs.token != null) SyncWorker.schedule(this, vm.prefs.autoSyncHours)
-        if (savedInstanceState == null) vm.openLink(intent?.data)
+        if (savedInstanceState == null) { vm.openLink(intent?.data); vm.openPushUrl(intent?.getStringExtra("url")) }
         setContent { ActiveTogetherTheme { AppRoot(vm) } }
     }
 
@@ -28,5 +28,6 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         vm.openLink(intent.data)
+        vm.openPushUrl(intent.getStringExtra("url"))
     }
 }

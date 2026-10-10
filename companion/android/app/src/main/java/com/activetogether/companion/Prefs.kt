@@ -61,7 +61,30 @@ class Prefs(context: Context) {
         get() = p.getString("pendingInvite", null)?.takeIf { it.isNotBlank() }
         set(v) = p.edit().putString("pendingInvite", v).apply()
 
-    fun signOut() = p.edit().remove("token").remove("tokenEnc").apply()
+    /** This phone's push token from Firebase, sent to the server once signed in. */
+    var pushToken: String?
+        get() = p.getString("pushToken", null)?.takeIf { it.isNotBlank() }
+        set(v) = p.edit().putString("pushToken", v).apply()
+    /** Asked once (Android 13 and later) whether the app may show notifications for challenge news. */
+    var askedPushPermission: Boolean
+        get() = p.getBoolean("askedPushPermission", false)
+        set(v) = p.edit().putBoolean("askedPushPermission", v).apply()
+    /** Manual logs made without a connection, as the request bodies to send once back online. */
+    var pendingLogs: List<String>
+        get() = runCatching { org.json.JSONArray(p.getString("pendingLogs", "[]")).let { a -> (0 until a.length()).map { a.getString(it) } } }.getOrDefault(emptyList())
+        set(v) = p.edit().putString("pendingLogs", org.json.JSONArray(v).toString()).apply()
+    /** The map tiles the server names (null: OpenStreetMap's), kept so maps draw before the server answers. */
+    var tileUrl: String?
+        get() = p.getString("tileUrl", null)?.takeIf { it.isNotBlank() }
+        set(v) = p.edit().putString("tileUrl", v).apply()
+    var tileAttribution: String
+        get() = p.getString("tileAttribution", "© OpenStreetMap contributors").orEmpty()
+        set(v) = p.edit().putString("tileAttribution", v).apply()
+    var tileMaxZoom: Int
+        get() = p.getInt("tileMaxZoom", 19)
+        set(v) = p.edit().putInt("tileMaxZoom", v).apply()
+
+    fun signOut() = p.edit().remove("token").remove("tokenEnc").remove("pendingLogs").apply()
 }
 
 /** AES-GCM with a key generated inside the Android Keystore. Null when the key is unusable (say, after a

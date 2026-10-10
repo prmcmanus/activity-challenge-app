@@ -6,23 +6,45 @@
 <p>Count your workouts and steps without typing them in. You set it up once. Got a watch? It works through your phone, see the tips below.</p>
 
 <h2 id="android">Android</h2>
+<div data-store="play-live" hidden>
+<p><a data-href="play" href="https://play.google.com/store/apps/details?id=com.activetogether.companion" target="_blank" rel="noopener"><img src="/badges/google-play.png" alt="Get it on Google Play" class="store-badge play"></a></p>
+<ol>
+<li>Install <b>Active Together</b> from Google Play.</li>
+<li>Open it, sign in, tap <b>Sync</b> and allow Health Connect.</li>
+<li>Under <b>Me</b>, turn on <b>Sync automatically</b>.</li>
+</ol>
+<p class="muted">No Google Play? Sign in at activetogether.team on your phone and download the app under "Sync from your phone" instead.</p>
+</div>
+<div data-store="apk">
 <ol>
 <li>On your phone, sign in at activetogether.team and tap <b>Get the app</b> under "Sync from your phone".</li>
 <li>Open the download. If Android asks, allow your browser to install apps, then tap <b>Install</b>.</li>
 <li>Open Active Together, sign in, tap <b>Sync</b> and allow Health Connect.</li>
 <li>Under <b>Me</b>, turn on <b>Sync automatically</b>.</li>
 </ol>
-<p class="muted">Testing the Google Play version? <a href="https://play.google.com/store/apps/details?id=com.activetogether.companion" target="_blank" rel="noopener">Get it on Google Play</a> instead (uninstall the downloaded app first).</p>
+<p class="muted">Testing the Google Play version? <a data-href="play" href="https://play.google.com/store/apps/details?id=com.activetogether.companion" target="_blank" rel="noopener">Get it on Google Play</a> instead (uninstall the downloaded app first).</p>
+</div>
 <div class="tip"><b>Fitbit, Garmin, Samsung or another watch?</b> In its app's settings, turn on sharing with <b>Health Connect</b>.</div>
 
 <h2 id="iphone">iPhone</h2>
+<div data-store="appstore" hidden>
+<h3 id="app">The app</h3>
+<p>The iPhone app syncs each workout and your daily steps from Apple Health.</p>
+<p><a data-href="appStore" href="#" target="_blank" rel="noopener"><img src="/badges/app-store.svg" alt="Download on the App Store" class="store-badge apple"></a></p>
+<ol>
+<li>Install <b>Active Together</b> from the App Store.</li>
+<li>Open it, sign in, tap <b>Sync</b> and allow Apple Health.</li>
+</ol>
+</div>
+<div data-store="testflight">
 <h3 id="testflight">The app (beta)</h3>
 <p>The iPhone app is in beta through Apple's TestFlight. It syncs each workout and your daily steps from Apple Health.</p>
 <ol>
-<li>On your iPhone, open <a href="https://testflight.apple.com/join/cFAwqWKT" target="_blank" rel="noopener">the beta invite</a>. If asked, install <b>TestFlight</b> from the App Store, then open the invite again.</li>
+<li>On your iPhone, open <a data-href="testFlight" href="https://testflight.apple.com/join/cFAwqWKT" target="_blank" rel="noopener">the beta invite</a>. If asked, install <b>TestFlight</b> from the App Store, then open the invite again.</li>
 <li>Tap <b>Accept</b>, then <b>Install</b>.</li>
 <li>Open Active Together, sign in, tap <b>Sync</b> and allow Apple Health.</li>
 </ol>
+</div>
 <h3 id="shortcut">No app: Apple Shortcuts</h3>
 <p>Shortcuts is free, already on your iPhone, and sends your day's steps, exercise minutes and distance twice a day.</p>
 <ol>
@@ -32,7 +54,7 @@
 <li id="automate">Make it automatic: in Shortcuts, tap <b>Automation</b>, <b>+</b>, <b>Time of Day</b>. Choose <b>21:00</b>, <b>Daily</b> and <b>Run Immediately</b>, then pick <b>Active Together sync</b>. Add a second one for <b>08:00</b>.</li>
 </ol>
 <div class="tip"><b>Garmin?</b> In Garmin Connect, turn on sharing with <b>Apple Health</b>. <b>Fitbit?</b> Fitbit doesn't share with Apple Health, so log your activity by hand.</div>
-<details id="iphone-app" class="install-help"><summary>Can't use TestFlight?</summary>
+<details id="iphone-app" class="install-help" data-store="testflight"><summary>Can't use TestFlight?</summary>
 <p>The iPhone app can also be installed from a computer with the free tool <a href="https://sideloadly.io" target="_blank" rel="noopener">Sideloadly</a>:</p>
 <ol>
 <li><a href="/api/app/ios/download">Download the app</a> on a Windows PC or Mac (signed in), and install Sideloadly (on Windows, also iTunes).</li>
@@ -52,4 +74,4 @@
 </section>
 </main>
 <footer><a href="/privacy.html">Privacy Policy</a> · <a href="/support.html">Support</a></footer>
-</body></html>
+<script src="/sync.js"></script></body></html>

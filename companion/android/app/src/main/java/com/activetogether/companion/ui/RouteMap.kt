@@ -32,6 +32,20 @@ internal fun configureOsm(context: Context) {
     c.osmdroidTileCache = context.cacheDir.resolve("osmdroid/tiles")
 }
 
+/** The map tiles the server names (OpenStreetMap's own unless it says otherwise: a provider's address with {z}/{x}/{y}
+ *  and its key), with that provider's credit line. */
+internal fun tileSource(context: Context): org.osmdroid.tileprovider.tilesource.ITileSource {
+    val prefs = com.activetogether.companion.Prefs(context)
+    val url = prefs.tileUrl ?: return TileSourceFactory.MAPNIK
+    if (url.startsWith("https://tile.openstreetmap.org/")) return TileSourceFactory.MAPNIK
+    return object : org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase("tiles-${url.hashCode()}", 0, prefs.tileMaxZoom, 256, "", arrayOf(url), prefs.tileAttribution) {
+        override fun getTileURLString(index: Long): String {
+            val z = org.osmdroid.util.MapTileIndex.getZoom(index); val x = org.osmdroid.util.MapTileIndex.getX(index); val y = org.osmdroid.util.MapTileIndex.getY(index)
+            return url.replace("{z}", "$z").replace("{x}", "$x").replace("{y}", "$y").replace("{s}", "abc"[(x + y) % 3].toString()).replace("{r}", "")
+        }
+    }
+}
+
 /** "© OpenStreetMap contributors" in the map's bottom corner, as its licence asks. */
 internal fun osmCredit(view: MapView) = org.osmdroid.views.overlay.CopyrightOverlay(view.context).apply {
     setAlignBottom(true); setAlignRight(true); setTextSize(10)
@@ -44,7 +58,7 @@ fun RouteMap(points: List<RoutePoint>, modifier: Modifier = Modifier) {
     val map = remember {
         configureOsm(context)
         MapView(context).apply {
-            setTileSource(TileSourceFactory.MAPNIK)
+            setTileSource(tileSource(context))
             setMultiTouchControls(true)
             zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
         }
@@ -80,7 +94,7 @@ fun RouteMap(points: List<RoutePoint>, modifier: Modifier = Modifier) {
 }
 
 /** A round marker face: the photo (or team logo) cropped to a circle, or the name's initial on yellow. */
-private fun faceBitmap(name: String, photo: android.graphics.Bitmap?, sizePx: Int, finished: Boolean): android.graphics.Bitmap {
+private fun faceBitmap(name: String, photo: android.graphics.Bitmap?, sizePx: Int, finished: Boolean, more: Int = 0): android.graphics.Bitmap {
     val out = android.graphics.Bitmap.createBitmap(sizePx, sizePx, android.graphics.Bitmap.Config.ARGB_8888)
     val canvas = android.graphics.Canvas(out)
     val r = sizePx / 2f
@@ -103,6 +117,15 @@ private fun faceBitmap(name: String, photo: android.graphics.Bitmap?, sizePx: In
         paint.isFakeBoldText = true
         canvas.drawText(name.take(1).uppercase(), r, r - (paint.descent() + paint.ascent()) / 2, paint)
     }
+    // Others sharing the spot: a red "+N" in the corner.
+    if (more > 0) {
+        val br = sizePx * 0.26f
+        val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        p.color = AColor.WHITE; canvas.drawCircle(sizePx - br, br, br, p)
+        p.color = AColor.rgb(0xD4, 0x05, 0x11); canvas.drawCircle(sizePx - br, br, br - sizePx * 0.04f, p)
+        p.color = AColor.WHITE; p.textSize = br * 1.05f; p.textAlign = android.graphics.Paint.Align.CENTER; p.isFakeBoldText = true
+        canvas.drawText("+$more", sizePx - br, br - (p.descent() + p.ascent()) / 2, p)
+    }
     return out
 }
 
@@ -114,14 +137,21 @@ private fun faceBitmap(name: String, photo: android.graphics.Bitmap?, sizePx: In
 @Composable
 fun JourneyMapView(journey: com.activetogether.companion.JourneyMap, describe: (com.activetogether.companion.JourneyMarker) -> String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    // The zoom (to the half step) decides who shares a pin, so a change of zoom regroups them.
+    var zoom by remember { androidx.compose.runtime.mutableStateOf(-1.0) }
     val map = remember {
         configureOsm(context)
         MapView(context).apply {
-            setTileSource(TileSourceFactory.MAPNIK)
+            setTileSource(tileSource(context))
             setMultiTouchControls(true)
             zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
+            addMapListener(object : org.osmdroid.events.MapListener {
+                override fun onScroll(event: org.osmdroid.events.ScrollEvent?) = false
+                override fun onZoom(event: org.osmdroid.events.ZoomEvent?): Boolean { zoom = Math.round(zoomLevelDouble * 2) / 2.0; return false }
+            })
         }
     }
+    var framed by remember(journey) { androidx.compose.runtime.mutableStateOf(false) }
     DisposableEffect(map) {
         map.onResume()
         onDispose { map.onPause(); map.onDetach() }
@@ -179,21 +209,30 @@ fun JourneyMapView(journey: com.activetogether.companion.JourneyMap, describe: (
                 icon = android.graphics.drawable.BitmapDrawable(context.resources, dot); setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
             })
         }
+        // People closer together than a pin's width at this zoom share one pin: whoever's furthest along, with "+N", and
+        // tapping it lists them all.
         val face = (40 * density).toInt()
-        journey.markers.groupBy { "%.3f,%.3f".format(it.lat, it.lon) }.values.forEach { group ->
-            group.forEachIndexed { i, m ->
-                val spread = if (group.size > 1) (20 + group.size * 2) * density else 0f
-                val a = 2 * Math.PI * i / group.size
-                val dx = (spread * Math.cos(a)).toFloat() / face; val dy = (spread * Math.sin(a)).toFloat() / face
-                view.overlays.add(Marker(view).apply {
-                    position = GeoPoint(m.lat, m.lon); title = m.name; snippet = describe(m)
-                    icon = android.graphics.drawable.BitmapDrawable(context.resources, faceBitmap(m.name, photos[m.id], face, m.finishedOn != null))
-                    setAnchor(0.5f - dx, 0.5f - dy)
-                })
-            }
+        val scale = 256.0 * Math.pow(2.0, if (zoom >= 0) zoom else view.zoomLevelDouble)
+        fun px(lat: Double, lon: Double): Pair<Double, Double> {
+            val sn = Math.sin(Math.toRadians(lat))
+            return (lon + 180) / 360 * scale to (0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * scale
         }
-        val box = BoundingBox.fromGeoPoints(geo)
-        view.post { view.zoomToBoundingBox(box.increaseByScale(1.3f), false) }
+        val groups = mutableListOf<Pair<Pair<Double, Double>, MutableList<com.activetogether.companion.JourneyMarker>>>()
+        for (m in journey.markers.sortedByDescending { it.progress }) {
+            val p = px(m.lat, m.lon)
+            groups.firstOrNull { (q, _) -> Math.hypot(q.first - p.first, q.second - p.second) < face }?.second?.add(m) ?: groups.add(p to mutableListOf(m))
+        }
+        for ((_, items) in groups) {
+            val lead = items.first(); val more = items.size - 1
+            view.overlays.add(Marker(view).apply {
+                position = GeoPoint(lead.lat, lead.lon)
+                title = if (more > 0) "${lead.name} and $more more" else lead.name
+                snippet = if (more > 0) items.joinToString("<br>") { "${it.name}: ${describe(it)}" } else describe(lead)
+                icon = android.graphics.drawable.BitmapDrawable(context.resources, faceBitmap(lead.name, photos[lead.id], face, lead.finishedOn != null, more))
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+            })
+        }
+        if (!framed) { framed = true; val box = BoundingBox.fromGeoPoints(geo); view.post { view.zoomToBoundingBox(box.increaseByScale(1.3f), false) } }
         view.invalidate()
     })
 }

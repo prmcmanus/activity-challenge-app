@@ -243,10 +243,14 @@ fun LogActivityScreen(vm: AppViewModel, done: () -> Unit) {
                 val mins = minutes.toIntOrNull()?.takeIf { it > 0 }
                 val stepCount = steps.toIntOrNull()?.takeIf { it > 0 }
                 scope.launch {
-                    val n = vm.call { it.logActivity(targets.mapNotNull { c -> c.target }, type, date, mins, dist, unit, start?.format(hhmm), end?.format(hhmm), comment, stepCount) }
+                    val ts = targets.mapNotNull { c -> c.target }
+                    val n = vm.logActivity(vm.api().activityBody(ts, type, date, mins, dist, unit, start?.format(hhmm), end?.format(hhmm), comment, stepCount), ts.size)
                     busy = false
-                    if (n != null) { vm.message = "Logged in $n challenge${if (n == 1) "" else "s"}"; vm.afterChange(); done() }
-                    else { error = vm.message; vm.message = null }
+                    when {
+                        n == -1 -> { vm.message = "No connection: saved on this phone, and it'll be sent when you're back online"; done() }
+                        n != null -> { vm.message = "Logged in $n challenge${if (n == 1) "" else "s"}"; vm.afterChange(); done() }
+                        else -> { error = vm.message; vm.message = null }
+                    }
                 }
             },
         ) { Text(if (chosen.size > 1) "Log in ${chosen.size} challenges" else "Log activity") }

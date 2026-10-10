@@ -14,8 +14,8 @@ android {
         applicationId = "com.activetogether.companion"
         minSdk = 28
         targetSdk = 36
-        versionCode = 24
-        versionName = "1.17.0"
+        versionCode = 25
+        versionName = "1.18.0"
         buildConfigField("String", "SERVER_URL", "\"https://activetogether.team\"")
         manifestPlaceholders["cleartext"] = "false"
         // Whether the app offers its own updates from the website. Off in the Play Store build.
@@ -111,4 +111,6 @@ dependencies {
     implementation("androidx.credentials:credentials:1.5.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
+    // Phone notifications: Firebase Cloud Messaging, started with the server's settings (no google-services.json).
+    implementation("com.google.firebase:firebase-messaging:24.1.0")
 }

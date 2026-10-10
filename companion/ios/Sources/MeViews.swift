@@ -152,6 +152,12 @@ struct MeView: View {
                 }
             } else { ProgressView().frame(maxWidth: .infinity) }
             if model.update != nil { UpdateBanner() }
+            if model.me?.adminNeedsTwoFactor == true {
+                SectionCard {
+                    Text("Turn on two-step sign-in to use the admin tools").font(.headline)
+                    Text("Global admins can see and change everything, so signing in needs a code from your phone as well as your password. Set it up on the website: My account, Two-step sign-in.").font(.subheadline)
+                }
+            }
             SyncSettingsCard()
             if model.me?.isAdmin == true {
                 Button { router.push(.admin) } label: { Label("Admin: users and challenges", systemImage: "person.badge.key").frame(maxWidth: .infinity) }
@@ -249,7 +255,12 @@ struct EditProfileView: View {
                     ForEach(sharingLevels, id: \.code) { l in VStack(alignment: .leading) { Text(l.label); Text(l.detail).font(.caption) }.tag(l.code) }
                 }.pickerStyle(.inline).labelsHidden()
             }
+            Section(footer: Text("Replies to your tickets, being added to a challenge, challenges starting and ending, and a weekly summary.")) {
+                Toggle("Phone notifications", isOn: Binding(get: { model.me?.notifyPush ?? true }, set: { v in Task { await model.setNotifyPush(v) } }))
+            }
+            DevicesSection()
             Section("Sign-in details") {
+                if let p = model.me?.pendingEmail { Text("Changing to \(p): open the link we sent there to finish.").font(.caption).foregroundStyle(.secondary) }
                 TextField("Email", text: $email).keyboardType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
                 SecureField("New password (leave blank to keep)", text: $newPassword)
                 if sensitive { SecureField("Current password (needed to change email or password)", text: $currentPassword) }
@@ -294,8 +305,38 @@ struct EditProfileView: View {
                                            currentPassword: currentPassword, newPassword: newPassword, bio: bio.trimmingCharacters(in: .whitespaces), sharing: sharing)
             }
             busy = false
-            if let updated { model.me = updated; Prefs.email = updated.email; model.message = "Profile saved"; router.pop() }
+            if let updated { model.me = updated; Prefs.email = updated.email; model.message = updated.pendingEmail != nil && changedEmail.lowercased() != me?.email.lowercased() ? "Saved. Open the link we sent to \(updated.pendingEmail ?? "") to change your email" : "Profile saved"; router.pop() }
             else { note = model.message; model.message = nil }
         }
     }
+}
+
+/// Signed-in devices: each browser and phone signed in to my account, signing out any one, or all but this phone.
+private struct DevicesSection: View {
+    @Environment(AppModel.self) private var model
+    @State private var list: [DeviceSession]?
+    @State private var confirmAll = false
+    var body: some View {
+        Section("Signed-in devices") {
+            if let list {
+                ForEach(list) { d in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(d.device + (d.current ? " (this phone)" : "")).font(.subheadline.weight(.semibold))
+                            Text("Signed in \(d.createdAt.prefix(10))" + (d.lastUsedAt.map { " · last used \($0.prefix(10))" } ?? "")).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if !d.current { Button("Sign out") { Task { if await model.call({ try await $0.signOutSession(d.id) }) != nil { await load() } } }.buttonStyle(.borderless) }
+                    }
+                }
+                if list.count > 1 { Button("Sign out of all other devices", role: .destructive) { confirmAll = true } }
+            } else { ProgressView() }
+        }
+        .task { await load() }
+        .alert("Sign out everywhere else?", isPresented: $confirmAll) {
+            Button("Sign out others", role: .destructive) { Task { if let n = await model.call({ try await $0.signOutOthers() }) { model.message = "Signed out of \(n) other device\(n == 1 ? "" : "s")"; await load() } } }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Other phones and browsers are signed out. This phone stays signed in.") }
+    }
+    private func load() async { list = await model.call { try await $0.sessions() } }
 }

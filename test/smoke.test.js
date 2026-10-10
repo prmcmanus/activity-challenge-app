@@ -23,6 +23,8 @@ async function spawnServer(extraEnv = {}) {
       APP_ORIGIN: o,
       SEED_ADMIN_EMAIL: 'admin@example.com',
       SEED_ADMIN_PASSWORD: 'ChangeMe123!',
+      // Most tests act as the seeded admin without two-step sign-in; one test below turns the rule back on.
+      ADMIN_TWO_FACTOR: 'optional',
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -42,6 +44,7 @@ async function spawnServer(extraEnv = {}) {
 
   return {
     origin: o,
+    dir,
     async stop() {
       if (!proc.killed) {
         proc.kill();
@@ -68,6 +71,8 @@ before(async () => {
       APP_ORIGIN: origin,
       SEED_ADMIN_EMAIL: 'admin@example.com',
       SEED_ADMIN_PASSWORD: 'ChangeMe123!',
+      // Most tests act as the seeded admin without two-step sign-in; one test below turns the rule back on.
+      ADMIN_TWO_FACTOR: 'optional',
       // High enough that this suite's normal traffic (many register() calls from one IP) never
       // trips it; the rate-limit behaviour itself is exercised against dedicated servers below
       // with tiny explicit limits instead.
@@ -2629,7 +2634,7 @@ test('owners can see members and their entries, delete an entry, and remove some
   const c = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Moderated', start_date: '2026-01-01', end_date: '2026-12-31', participation: 'individual' });
   const cid = c.body.id;
   for (const p of [cheat, other]) await jsonFetch(`${origin}/api/join`, p.cookie, 'POST', { code: c.body.invite_code });
-  await jsonFetch(`${origin}/api/activities`, cheat.cookie, 'POST', { challenge_id: cid, activity_type: 'Run', minutes: 9000, activity_date: '2026-03-01' });
+  await jsonFetch(`${origin}/api/activities`, cheat.cookie, 'POST', { challenge_id: cid, activity_type: 'Run', minutes: 1440, activity_date: '2026-03-01' });
   await jsonFetch(`${origin}/api/activities`, cheat.cookie, 'POST', { challenge_id: cid, activity_type: 'Walk', minutes: 30, activity_date: '2026-03-02' });
 
   assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}/members`, other.cookie)).status, 403);
@@ -2637,10 +2642,10 @@ test('owners can see members and their entries, delete an entry, and remove some
   assert.equal(list.body.members.find(m => m.id === cheat.user.id).entries, 2);
   assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}/members/${cheat.user.id}/activities`, other.cookie)).status, 403);
   const entries = await jsonFetch(`${origin}/api/challenges/${cid}/members/${cheat.user.id}/activities`, owner.cookie);
-  const bogus = entries.body.activities.find(a => a.minutes === 9000);
+  const bogus = entries.body.activities.find(a => a.minutes === 1440);
   assert.equal((await jsonFetch(`${origin}/api/activities/${bogus.id}`, other.cookie, 'DELETE')).status, 403, 'members cannot delete other people\'s entries');
   // The leaderboard is cached between writes, and a deletion shows straight away.
-  assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}/leaderboard`, owner.cookie)).body.users.find(x => x.id === cheat.user.id).minutes, 9030);
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}/leaderboard`, owner.cookie)).body.users.find(x => x.id === cheat.user.id).minutes, 1470);
   assert.equal((await jsonFetch(`${origin}/api/activities/${bogus.id}`, owner.cookie, 'DELETE')).status, 200);
   assert.equal((await jsonFetch(`${origin}/api/challenges/${cid}/leaderboard`, owner.cookie)).body.users.find(x => x.id === cheat.user.id).minutes, 30);
 
@@ -2740,7 +2745,7 @@ test('email: password resets (two an hour, nameless), people added to a challeng
     const pat = await reg('<b>Spam</b> http://evil.example', 'pat@example.com');
     for (let i = 0; i < 4; i++) await j('/api/password/forgot', undefined, 'POST', { email: 'pat@example.com' });
     await settle();
-    const resets = sent.filter(m => m.to[0] === 'pat@example.com');
+    const resets = sent.filter(m => m.to[0] === 'pat@example.com' && /Reset your/.test(m.subject));
     assert.equal(resets.length, 2, 'two reset emails an hour for one account');
     assert.ok(!resets[0].text.includes('Spam'), 'the email never includes the account name');
     assert.equal(resets[0].reply_to, 'support@activetogether.team');
@@ -2748,6 +2753,11 @@ test('email: password resets (two an hour, nameless), people added to a challeng
     const first = resets[0].text.match(/\/reset\/([A-Za-z0-9_-]+)/)[1];
     assert.equal((await j(`/api/password/reset?token=${first}`)).status, 200);
 
+    // Notices only go to a confirmed address: pat confirms with the link from the sign-up email.
+    for (const who of ['pat@example.com', 'ola@example.com']) {
+      const check = sent.find(m => m.to[0] === who && /Confirm your email/.test(m.subject));
+      assert.equal((await j('/api/email/verify', undefined, 'POST', { token: check.text.match(/\/verify\/([A-Za-z0-9_-]+)/)[1] })).status, 200);
+    }
     const c = await j('/api/challenges', owner.cookie, 'POST', { name: 'Step Up', start_date: '2026-01-01', end_date: '2026-12-31', participation: 'individual' });
     assert.equal((await j(`/api/challenges/${c.body.id}/members`, owner.cookie, 'POST', { email: 'nobody@example.com' })).status, 404);
     const added = await j(`/api/challenges/${c.body.id}/members`, owner.cookie, 'POST', { email: 'pat@example.com' });
@@ -2902,9 +2912,16 @@ test('sign in with Google: new accounts, linking an existing email (signing othe
     const reg = await fetch(`${srv.origin}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Pat Password', email: 'pat@example.com', password: 'SuperSecret123!' }) });
     const patCookie = reg.headers.get('set-cookie').split(';')[0];
     const linked = await google(idToken({ sub: 'g-2', email: 'pat@example.com' }));
-    assert.deepEqual([linked.status, linked.body.linked, linked.body.user.name], [200, true, 'Pat Password']);
+    assert.deepEqual([linked.status, linked.body.linked, linked.body.takenOver, linked.body.user.name], [200, true, true, 'Pat Password']);
     assert.equal((await me(patCookie)).user, null, 'the earlier session was signed out');
-    assert.equal((await me(linked.cookie)).user.has_password, 1);
+    // Nobody had confirmed that address, so whoever registered it can't keep a way in: the password is gone.
+    assert.deepEqual([(await me(linked.cookie)).user.has_password, (await me(linked.cookie)).user.email_verified], [0, 1]);
+    const oldPw = await fetch(`${srv.origin}/api/mobile/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'pat@example.com', password: 'SuperSecret123!' }) });
+    assert.equal(oldPw.status, 401);
+    // A confirmed account (the seeded admin) keeps its password when linked.
+    const adminLinked = await google(idToken({ sub: 'g-9', email: 'admin@example.com' }));
+    assert.deepEqual([adminLinked.body.linked, adminLinked.body.takenOver], [true, false]);
+    assert.equal((await me(adminLinked.cookie)).user.has_password, 1);
     // An unverified email never links.
     const unverified = await google(idToken({ sub: 'g-3', email: 'pat@example.com', email_verified: false }));
     assert.equal(unverified.status, 400);
@@ -2959,6 +2976,204 @@ test('global admins can choose an invite code; it must be free across challenges
   assert.equal((await jsonFetch(`${origin}/api/challenges/${a.body.id}/invite-code`, admin, 'POST', { code: t.body.invite_code })).status, 409);
   assert.equal((await jsonFetch(`${origin}/api/teams/${t.body.id}/invite-code`, admin, 'POST', { code: 'walk2026' })).status, 409);
   assert.equal((await jsonFetch(`${origin}/api/challenges/${a.body.id}/invite-code`, admin, 'POST', { code: 'WALK2026' })).status, 400);
-  for (const code of ['AB1', 'has space', 'x/y', 'A'.repeat(21)])
+  for (const code of ['AB1', 'WALK', 'RUN26', 'has space', 'x/y', 'A'.repeat(21)])
     assert.equal((await jsonFetch(`${origin}/api/challenges/${a.body.id}/invite-code`, admin, 'POST', { code })).status, 400, code);
+});
+
+test('limits: entries over a day or 1,000 km, long names, common passwords', async () => {
+  const u = await register('Lima Limits');
+  const c = await jsonFetch(`${origin}/api/challenges`, u.cookie, 'POST', { name: 'Limits', start_date: '2026-01-01', end_date: '2026-12-31', participation: 'individual', metric: 'distance', distance_unit: 'km' });
+  const log = extra => jsonFetch(`${origin}/api/activities`, u.cookie, 'POST', { challenge_id: c.body.id, activity_type: 'Ride', activity_date: '2026-03-01', ...extra });
+  assert.equal((await log({ distance: 1000.5, distance_unit: 'km' })).status, 400);
+  assert.equal((await log({ distance: 1000, distance_unit: 'km', minutes: 1441 })).status, 400);
+  assert.equal((await log({ distance: 999, distance_unit: 'km', minutes: 1440 })).status, 201);
+  assert.equal((await log({ distance: 5, activity_type: 'x'.repeat(61) })).status, 400);
+  assert.equal((await log({ distance: 5, activity_type: '  ' })).status, 400);
+  assert.equal((await jsonFetch(`${origin}/api/challenges`, u.cookie, 'POST', { name: 'N'.repeat(101), start_date: '2026-01-01', end_date: '2026-12-31' })).status, 400);
+  assert.equal((await jsonFetch(`${origin}/api/teams`, u.cookie, 'POST', { challenge_id: c.body.id, name: 'T'.repeat(61) })).status, 400);
+  const reg = body => fetch(`${origin}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(async r => ({ status: r.status, body: await r.json() }));
+  const common = await reg({ name: 'Common Pw', email: 'common.pw@example.com', password: 'password1' });
+  assert.deepEqual([common.status, /most common/.test(common.body.error)], [400, true]);
+  assert.equal((await reg({ name: 'Own Mail', email: 'own.mail.addr@example.com', password: 'own.mail.addr2026' })).status, 400);
+  assert.equal((await reg({ name: 'N'.repeat(81), email: 'long.name@example.com', password: 'SuperSecret123!' })).status, 400);
+  assert.equal((await reg({ name: 'Bad Email', email: 'not-an-email', password: 'SuperSecret123!' })).status, 400);
+  assert.equal((await jsonFetch(`${origin}/api/me`, u.cookie, 'PATCH', { currentPassword: 'SuperSecret123!', newPassword: 'qwertyuiop' })).status, 400);
+});
+
+test('invite codes: a few wrong ones, then a wait; right codes always count', async () => {
+  const srv = await spawnServer({ CODE_FAIL_MAX: '3', CODE_FAIL_NET_MAX: '5' });
+  const reg = async name => { const r = await fetch(`${srv.origin}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email: `${name.toLowerCase()}@example.com`, password: 'SuperSecret123!' }) }); return r.headers.get('set-cookie').split(';')[0]; };
+  const j = async (path, cookie, method = 'GET', payload) => { const r = await fetch(`${srv.origin}${path}`, { method, headers: { ...(cookie ? { cookie } : {}), ...(payload ? { 'Content-Type': 'application/json' } : {}) }, body: payload ? JSON.stringify(payload) : undefined }); return { status: r.status, body: await r.json().catch(() => ({})) }; };
+  try {
+    const owner = await reg('Owner'), guesser = await reg('Guesser');
+    const c = await j('/api/challenges', owner, 'POST', { name: 'Private', start_date: '2026-01-01', end_date: '2026-12-31' });
+    for (let i = 0; i < 3; i++) assert.equal((await j('/api/join', guesser, 'POST', { code: `WRONG${i}X` })).status, 400);
+    const blocked = await j('/api/join', guesser, 'POST', { code: c.body.invite_code });
+    assert.deepEqual([blocked.status, blocked.body.codeBlocked], [429, true], 'even a right code waits once an account has guessed too often');
+    // Others on the same network still get a couple more tries, then the network waits too.
+    assert.equal((await j(`/api/join/preview?code=${c.body.invite_code}`)).status, 200);
+    assert.equal((await j('/api/join/preview?code=NOPE12')).status, 404);
+    assert.equal((await j('/api/join/preview?code=NOPE34')).status, 404);
+    assert.equal((await j(`/api/join/preview?code=${c.body.invite_code}`)).status, 429);
+    const page = await (await fetch(`${srv.origin}/join/${c.body.invite_code}`)).text();
+    assert.ok(!page.includes('Join Private'), 'nor does the invite page name the challenge');
+  } finally { await srv.stop(); }
+});
+
+test('confirming an email address, and changing it once the new one is confirmed', async () => {
+  const http = require('node:http');
+  const sent = [];
+  const mock = http.createServer((req, res) => { let b = ''; req.on('data', c => b += c); req.on('end', () => { sent.push(JSON.parse(b)); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"id":"x"}'); }); });
+  await new Promise(r => mock.listen(0, '127.0.0.1', r));
+  const srv = await spawnServer({ RESEND_API_KEY: 're_test', RESEND_API_URL: `http://127.0.0.1:${mock.address().port}/emails` });
+  const settle = () => new Promise(r => setTimeout(r, 300));
+  const j = async (path, cookie, method = 'GET', payload) => { const r = await fetch(`${srv.origin}${path}`, { method, headers: { ...(cookie ? { cookie } : {}), ...(payload ? { 'Content-Type': 'application/json' } : {}) }, body: payload ? JSON.stringify(payload) : undefined }); return { status: r.status, body: await r.json().catch(() => ({})) }; };
+  const linkIn = m => m.text.match(/\/verify\/([A-Za-z0-9_-]+)/)[1];
+  try {
+    const r = await fetch(`${srv.origin}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Vera Verify', email: 'vera@example.com', password: 'SuperSecret123!' }) });
+    const cookie = r.headers.get('set-cookie').split(';')[0];
+    assert.equal((await r.json()).user.email_verified, false);
+    await settle();
+    const first = sent.filter(m => m.to[0] === 'vera@example.com' && /Confirm your email/.test(m.subject));
+    assert.equal(first.length, 1);
+    assert.equal((await j('/api/me/email/resend', cookie, 'POST')).status, 200);
+    await settle();
+    // Only the newest link works.
+    const second = sent.filter(m => /Confirm your email/.test(m.subject)).pop();
+    assert.equal((await j('/api/email/verify', undefined, 'POST', { token: linkIn(first[0]) })).status, 400);
+    assert.equal((await j('/api/email/verify', undefined, 'POST', { token: linkIn(second) })).status, 200);
+    assert.equal((await j('/api/me', cookie)).body.user.email_verified, 1);
+    assert.equal((await j('/api/me/email/resend', cookie, 'POST')).status, 400, 'nothing to confirm');
+    // A new address waits for its link; the old address hears about it.
+    const change = await j('/api/me', cookie, 'PATCH', { email: 'vera.new@example.com', currentPassword: 'SuperSecret123!' });
+    assert.deepEqual([change.status, change.body.user.email, change.body.user.pending_email], [200, 'vera@example.com', 'vera.new@example.com']);
+    await settle();
+    assert.ok(sent.some(m => m.to[0] === 'vera@example.com' && /Security notice/.test(m.subject) && /vera.new@example.com/.test(m.text)));
+    const newLink = sent.find(m => m.to[0] === 'vera.new@example.com' && /Confirm your new email/.test(m.subject));
+    assert.deepEqual((await j('/api/email/verify', undefined, 'POST', { token: linkIn(newLink) })).body, { ok: true, email: 'vera.new@example.com', changed: true });
+    const after = (await j('/api/me', cookie)).body.user;
+    assert.deepEqual([after.email, after.pending_email, after.email_verified], ['vera.new@example.com', null, 1]);
+    // Changing the password sends a notice to the (confirmed) address.
+    assert.equal((await j('/api/me', cookie, 'PATCH', { currentPassword: 'SuperSecret123!', newPassword: 'AnotherGoodOne99' })).status, 200);
+    await settle();
+    assert.ok(sent.some(m => m.to[0] === 'vera.new@example.com' && /Your password was changed/.test(m.text)));
+  } finally { await srv.stop(); mock.close(); }
+});
+
+test('signed-in devices: listed, and signed out one at a time or all but this one', async () => {
+  const u = await register('Devi Devices');
+  const web2 = await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0' }, body: JSON.stringify({ email: u.email, password: 'SuperSecret123!' }) });
+  const cookie2 = web2.headers.get('set-cookie').split(';')[0];
+  const list = (await jsonFetch(`${origin}/api/me/sessions`, u.cookie)).body.sessions;
+  assert.equal(list.length, 3, 'the registration, the app sign-in and the second browser');
+  assert.ok(list.some(x => x.device === 'Firefox on Windows'));
+  assert.equal(list.filter(x => x.current).length, 1);
+  const firefox = list.find(x => x.device === 'Firefox on Windows');
+  assert.equal((await jsonFetch(`${origin}/api/me/sessions/${firefox.id}`, u.cookie, 'DELETE')).status, 200);
+  assert.equal((await (await fetch(`${origin}/api/me`, { headers: { cookie: cookie2 } })).json()).user, null);
+  assert.equal((await jsonFetch(`${origin}/api/me/sessions/others`, u.cookie, 'DELETE')).body.signedOut, 1);
+  assert.equal((await (await fetch(`${origin}/api/me`, { headers: { Authorization: `Bearer ${u.token}` } })).json()).user, null, 'the app was signed out too');
+  assert.equal((await jsonFetch(`${origin}/api/me/sessions`, u.cookie)).body.sessions.length, 1);
+});
+
+test('global admins need two-step sign-in for their powers; secrets are encrypted at rest; an invite waits for the code', async () => {
+  const crypto = require('node:crypto'), { DatabaseSync } = require('node:sqlite');
+  const key = crypto.randomBytes(32).toString('base64');
+  const srv = await spawnServer({ ADMIN_TWO_FACTOR: 'required', TOTP_ENCRYPTION_KEY: key });
+  const j = async (path, cookie, method = 'GET', payload) => { const r = await fetch(`${srv.origin}${path}`, { method, headers: { ...(cookie ? { cookie } : {}), ...(payload ? { 'Content-Type': 'application/json' } : {}) }, body: payload ? JSON.stringify(payload) : undefined }); return { status: r.status, body: await r.json().catch(() => ({})), cookie: (r.headers.get('set-cookie') || '').split(';')[0] }; };
+  const totp = (secret, step) => { const B = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'; let bits = 0, val = 0; const out = []; for (const ch of secret) { val = (val << 5) | B.indexOf(ch); bits += 5; if (bits >= 8) { out.push((val >>> (bits - 8)) & 255); bits -= 8; val &= (1 << bits) - 1; } } const msg = Buffer.alloc(8); msg.writeBigUInt64BE(BigInt(step)); const h = crypto.createHmac('sha1', Buffer.from(out)).update(msg).digest(), o = h[h.length - 1] & 15; return String((((h[o] & 127) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3]) % 1e6).padStart(6, '0'); };
+  try {
+    const admin = await j('/api/login', undefined, 'POST', { email: 'admin@example.com', password: 'ChangeMe123!' });
+    const me = (await j('/api/me', admin.cookie)).body.user;
+    assert.deepEqual([me.role, me.admin_needs_two_factor], ['member', true]);
+    assert.equal((await j('/api/admin/users', admin.cookie)).status, 403);
+    const setup = await j('/api/me/2fa/setup', admin.cookie, 'POST', {});
+    const step = Math.floor(Date.now() / 30000);
+    assert.equal((await j('/api/me/2fa/enable', admin.cookie, 'POST', { code: totp(setup.body.secret, step) })).status, 200);
+    assert.equal((await j('/api/me', admin.cookie)).body.user.role, 'global_admin');
+    assert.equal((await j('/api/admin/users', admin.cookie)).status, 200);
+    // The secret is stored encrypted.
+    const db = new DatabaseSync(require('node:path').join(srv.dir, 'activity.sqlite'));
+    const stored = db.prepare("SELECT totp_secret FROM users WHERE email='admin@example.com'").get().totp_secret;
+    db.close();
+    assert.match(stored, /^enc:v1:/);
+    assert.ok(!stored.includes(setup.body.secret));
+    // Signing in from an invite: the code step joins the challenge, not the password step.
+    const c = await j('/api/challenges', admin.cookie, 'POST', { name: 'Admin Run', start_date: '2026-01-01', end_date: '2026-12-31' });
+    const reg = await j('/api/register', undefined, 'POST', { name: 'Ty Twostep', email: 'ty@example.com', password: 'SuperSecret123!' });
+    const s2 = await j('/api/me/2fa/setup', reg.cookie, 'POST', {});
+    await j('/api/me/2fa/enable', reg.cookie, 'POST', { code: totp(s2.body.secret, step) });
+    const pw = await j('/api/login', undefined, 'POST', { email: 'ty@example.com', password: 'SuperSecret123!' });
+    const done = await j('/api/login/2fa', undefined, 'POST', { ticket: pw.body.ticket, code: totp(s2.body.secret, step + 1), invite_code: c.body.invite_code });
+    assert.equal(done.body.joined.challengeId, c.body.id);
+  } finally { await srv.stop(); }
+});
+
+test('phone notifications: tokens per session, sent through Firebase and Apple, forgotten when gone or signed out', async () => {
+  const http = require('node:http'), http2 = require('node:http2'), crypto = require('node:crypto');
+  const fcmSent = [], apnsSent = [];
+  const fcm = http.createServer((req, res) => { let b = ''; req.on('data', c => b += c); req.on('end', () => {
+    if (req.url === '/token') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ access_token: 'at-1', expires_in: 3600 })); }
+    const m = JSON.parse(b).message; fcmSent.push({ auth: req.headers.authorization, path: req.url, ...m });
+    if (m.token === 'gone-token') { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end('{"error":{"status":"NOT_FOUND","details":[{"errorCode":"UNREGISTERED"}]}}'); }
+    res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"name":"projects/demo/messages/1"}'); }); });
+  await new Promise(r => fcm.listen(0, '127.0.0.1', r));
+  const apns = http2.createServer();
+  apns.on('stream', (stream, headers) => { let b = ''; stream.on('data', c => b += c); stream.on('end', () => { apnsSent.push({ path: headers[':path'], topic: headers['apns-topic'], auth: headers.authorization, body: JSON.parse(b) }); stream.respond({ ':status': 200 }); stream.end(); }); });
+  await new Promise(r => apns.listen(0, '127.0.0.1', r));
+  const sa = { project_id: 'demo-proj', client_email: 'push@demo-proj.iam.gserviceaccount.com', private_key: crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }) };
+  const p8 = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ type: 'pkcs8', format: 'pem' });
+  const srv = await spawnServer({ FCM_SERVICE_ACCOUNT: JSON.stringify(sa), FCM_ANDROID_APP_ID: '1:123:android:abc', FCM_API_KEY: 'AIza-test', FCM_SENDER_ID: '123',
+    FCM_TOKEN_URL: `http://127.0.0.1:${fcm.address().port}/token`, FCM_SEND_BASE: `http://127.0.0.1:${fcm.address().port}`,
+    APNS_KEY: Buffer.from(p8).toString('base64'), APNS_KEY_ID: 'KEY123', APNS_TEAM_ID: 'TEAM123', APNS_HOST: `http://127.0.0.1:${apns.address().port}` });
+  const settle = () => new Promise(r => setTimeout(r, 500));
+  const j = async (path, auth, method = 'GET', payload) => { const r = await fetch(`${srv.origin}${path}`, { method, headers: { ...(auth ? (auth.startsWith('session=') ? { cookie: auth } : { Authorization: `Bearer ${auth}` }) : {}), ...(payload ? { 'Content-Type': 'application/json' } : {}) }, body: payload ? JSON.stringify(payload) : undefined }); return { status: r.status, body: await r.json().catch(() => ({})) }; };
+  const appUser = async (name, email) => { await j('/api/register', undefined, 'POST', { name, email, password: 'SuperSecret123!' }); return (await j('/api/mobile/login', undefined, 'POST', { email, password: 'SuperSecret123!' })).body.sessionToken; };
+  try {
+    const cfg = (await j('/api/config')).body;
+    assert.deepEqual([cfg.push.android.projectId, cfg.push.android.senderId, cfg.push.ios], ['demo-proj', '123', true]);
+    const owner = await appUser('Paula Push', 'paula@example.com'), member = await appUser('Max Member', 'max@example.com');
+    for (const [platform, token] of [['android', 'tok-a'], ['ios', 'tok-i'], ['android', 'gone-token']])
+      assert.equal((await j('/api/me/push', member, 'POST', { platform, token })).status, 200);
+    const c = await j('/api/challenges', owner, 'POST', { name: 'Push Up', start_date: '2026-01-01', end_date: '2026-12-31', participation: 'individual' });
+    assert.equal((await j(`/api/challenges/${c.body.id}/members`, owner, 'POST', { email: 'max@example.com' })).status, 201);
+    await settle();
+    const a = fcmSent.find(m => m.token === 'tok-a');
+    assert.ok(a && /Paula Push added you to Push Up/.test(a.notification.title) && a.data.url === `/challenges/${c.body.id}`);
+    assert.equal(a.auth, 'Bearer at-1');
+    assert.equal(a.path, '/v1/projects/demo-proj/messages:send');
+    const i = apnsSent.find(m => m.path === '/3/device/tok-i');
+    assert.ok(i && i.topic === 'team.activetogether.companion' && /^bearer [\w-]+\.[\w-]+\.[\w-]+$/.test(i.auth) && i.body.url === `/challenges/${c.body.id}`);
+    // A token Firebase says is gone is forgotten.
+    const { DatabaseSync } = require('node:sqlite');
+    const tokens = () => { const db = new DatabaseSync(require('node:path').join(srv.dir, 'activity.sqlite')); const t = db.prepare('SELECT token FROM push_devices ORDER BY token').all().map(r => r.token); db.close(); return t; };
+    assert.deepEqual(tokens(), ['tok-a', 'tok-i']);
+    // Turned off: nothing more. Turned on and signed out: the tokens go with the session.
+    await j('/api/me', member, 'PATCH', { notifyPush: false });
+    const before = fcmSent.length;
+    const c2 = await j('/api/challenges', owner, 'POST', { name: 'Quiet', start_date: '2026-01-01', end_date: '2026-12-31', participation: 'individual' });
+    await j(`/api/challenges/${c2.body.id}/members`, owner, 'POST', { email: 'max@example.com' });
+    await settle();
+    assert.equal(fcmSent.length, before);
+    await j('/api/me', member, 'PATCH', { notifyPush: true });
+    await j('/api/logout', member, 'POST');
+    assert.deepEqual(tokens(), []);
+  } finally { await srv.stop(); fcm.close(); apns.close(); }
+});
+
+test('the leaderboard says where I stand; the config names the stores and map tiles', async () => {
+  const a = await register('Ann Ahead'), b = await register('Ben Behind');
+  const c = await jsonFetch(`${origin}/api/challenges`, a.cookie, 'POST', { name: 'Standing', start_date: '2026-01-01', end_date: '2027-12-31', participation: 'individual' });
+  await jsonFetch(`${origin}/api/join`, b.cookie, 'POST', { code: c.body.invite_code });
+  const today = new Date().toISOString().slice(0, 10);
+  await jsonFetch(`${origin}/api/activities`, a.cookie, 'POST', { challenge_id: c.body.id, activity_type: 'Run', minutes: 50, activity_date: today });
+  await jsonFetch(`${origin}/api/activities`, b.cookie, 'POST', { challenge_id: c.body.id, activity_type: 'Walk', minutes: 30, activity_date: today });
+  const meB = (await jsonFetch(`${origin}/api/challenges/${c.body.id}/leaderboard?top=10`, b.cookie)).body.me;
+  assert.deepEqual(meB, { rank: 2, of: 2, total: 30, ahead: { name: 'Ann Ahead', gap: 20 }, week: 30, team: null });
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${c.body.id}/leaderboard`, a.cookie)).body.me.ahead, null);
+  const cfg = (await jsonFetch(`${origin}/api/config`)).body;
+  assert.equal(cfg.tiles.url, 'https://tile.openstreetmap.org/{z}/{x}/{y}.png');
+  assert.deepEqual([cfg.stores.playLive, cfg.stores.appStore, /testflight/.test(cfg.stores.testFlight)], [false, null, true]);
+  assert.deepEqual(cfg.push, { android: null, ios: false });
+  assert.match((await fetch(origin)).headers.get('content-security-policy'), /img-src 'self' data: blob: https:\/\/tile\.openstreetmap\.org/);
 });

@@ -26,6 +26,10 @@ struct Prefs {
     static var lastSyncSummary: String { get { d.string(forKey: "lastSyncSummary") ?? "" } set { d.set(newValue, forKey: "lastSyncSummary") } }
     /// An invite link opened before signing in, kept until the person has signed in and decided.
     static var pendingInvite: String? { get { d.string(forKey: "pendingInvite") } set { d.set(newValue, forKey: "pendingInvite") } }
+    /// Manual logs made without a connection, as the JSON request bodies to send once back online.
+    static var pendingLogs: [String] { get { d.stringArray(forKey: "pendingLogs") ?? [] } set { d.set(newValue, forKey: "pendingLogs") } }
+    /// This phone's push token, sent to the server once signed in.
+    static var pushToken: String? { get { d.string(forKey: "pushToken") } set { d.set(newValue, forKey: "pushToken") } }
 }
 
 /// The session token as a generic-password Keychain item.
@@ -222,16 +226,64 @@ enum BackgroundSync {
         }
     }
 
+    /// Showing what was last loaded, because there's no connection.
+    var offline = false
+    var config: SiteConfig?
+    /// Manual logs made without a connection, waiting to be sent.
+    var pendingLogs = Prefs.pendingLogs.count
+    /// A screen to open from a tapped notification ("/challenges/12", "/help/tickets/3").
+    var pendingRoute: String?
+
+    /// Everything at once rather than one after another: the first screen is ready sooner.
     func refreshAll() async {
         loadingChallenges = true
-        if let m = await call({ try await $0.me() }) { me = m }
-        if let c = await call({ try await $0.challenges() }) { challenges = c }
+        async let m = call({ try await $0.me() })
+        async let c = call({ try await $0.challenges() })
+        let api = self.api
+        let cfg = Task { try? await api.config() }
+        if let m = await m { me = m }
+        if let c = await c { challenges = c }
+        config = await cfg.value
+        offline = APICache.offline
         loadingChallenges = false
-        await loadActivities(reset: true)
-        await refreshHelpBadge()
-        await checkForUpdate()
+        async let acts: Void = loadActivities(reset: true)
+        async let badge: Void = refreshHelpBadge()
+        async let upd: Void = checkForUpdate()
+        async let flush: Void = flushPendingLogs()
+        _ = await (acts, badge, upd, flush)
+        if config?.pushIOS == true { PushSetup.ask() }
         if Prefs.autoSync && !challenges.isEmpty { await autoSyncNow(quiet: true) }
     }
+
+    /// Log an activity. Without a connection it's kept on the phone and sent when the connection is back (returns -1);
+    /// anything the server turns down is said at once (nil).
+    func logActivity(_ body: [String: Any], expected: Int) async -> Int? {
+        do { return try await api.postActivity(body, expected: expected) }
+        catch let e as APIError { if e.status == 401 { forceSignOut("Your session has expired. Please sign in again.") } else { message = e.message }; return nil }
+        catch {
+            if let d = try? JSONSerialization.data(withJSONObject: body), let s = String(data: d, encoding: .utf8) { Prefs.pendingLogs.append(s); pendingLogs = Prefs.pendingLogs.count }
+            return -1
+        }
+    }
+    /// Send what was logged offline: one the server turns down is dropped with a message; without a connection they wait.
+    func flushPendingLogs() async {
+        var sent = 0
+        while let first = Prefs.pendingLogs.first {
+            guard let body = (try? JSONSerialization.jsonObject(with: Data(first.utf8))) as? [String: Any] else { Prefs.pendingLogs.removeFirst(); continue }
+            do { _ = try await api.postActivity(body); sent += 1 }
+            catch let e as APIError { if e.status == 401 { return }; message = "One activity saved offline couldn't be logged: \(e.message)" }
+            catch { break }
+            Prefs.pendingLogs.removeFirst(); pendingLogs = Prefs.pendingLogs.count
+        }
+        if sent > 0 { message = "Sent \(sent) activit\(sent == 1 ? "y" : "ies") logged while offline"; await afterChange() }
+    }
+
+    // My account: confirming my email, devices, notifications
+    func resendEmailCheck() async -> String? { await call { try await $0.resendEmailCheck() } }
+    func keepEmail() async { guard let m = me else { return }; if let x = await call({ try await $0.keepEmail(m.email) }) { me = x } }
+    func setNotifyPush(_ on: Bool) async { if let x = await call({ try await $0.setNotifyPush(on) }) { me = x } }
+    /// This phone's push token from Apple: sent to the server, tied to this sign-in.
+    func registerPush(_ token: String) async { Prefs.pushToken = token; guard signedIn else { return }; try? await api.registerPush(token) }
 
     /// Sign in with a password: an error, or (two-step sign-in) the ticket to send with the code.
     func signIn(email: String, password: String) async -> (error: String?, ticket: String?) {
@@ -288,6 +340,7 @@ enum BackgroundSync {
     }
     private func forceSignOut(_ msg: String?) {
         Prefs.token = nil
+        APICache.clear(); Prefs.pendingLogs = []; pendingLogs = 0; offline = false
         signedIn = false
         me = nil; challenges = []; activities = []; review = nil; details = [:]; leaderboards = [:]
         message = msg

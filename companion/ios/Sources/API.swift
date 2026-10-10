@@ -57,8 +57,18 @@ struct Me: Equatable {
     var id: Int, name: String, email: String, avatarURL: String?, bio: String?, sharing: String, role: String
     /// False for an account made with Google or Apple that hasn't set a password.
     var hasPassword = true
+    /// The email address has been confirmed (by the link we emailed); pendingEmail is a new one waiting to be.
+    var emailVerified = true, pendingEmail: String? = nil
+    /// A global admin whose powers wait for two-step sign-in to be turned on (on the website).
+    var adminNeedsTwoFactor = false, notifyPush = true
     var isAdmin: Bool { role == "global_admin" }
 }
+/// A signed-in browser or app, for the signed-in devices list.
+struct DeviceSession: Identifiable, Hashable { let id: String, device: String, createdAt: String, lastUsedAt: String?, current: Bool }
+/// Where I stand in a challenge: my place, who's just ahead and by how much, my last 7 days, my team's place.
+struct MyStanding: Hashable { let rank: Int, of: Int, total: Double, aheadName: String?, aheadGap: Double?, week: Double, teamRank: Int?, teamOf: Int? }
+/// The server's settings the app needs.
+struct SiteConfig { let emailEnabled: Bool; let pushIOS: Bool }
 
 /// "minutes", "distance" or "steps".
 enum Measure: String, CaseIterable, Identifiable {
@@ -154,7 +164,7 @@ struct Standing: Hashable {
     /// Journeys only: the share of the route covered (0...1), and the day they reached the finish.
     var progress: Double? = nil, finishedOn: String? = nil
 }
-struct Leaderboard { let teams: [Standing]; let users: [Standing]; var journey: Journey? = nil }
+struct Leaderboard { let teams: [Standing]; let users: [Standing]; var journey: Journey? = nil; var me: MyStanding? = nil }
 
 struct MyActivity: Identifiable, Hashable {
     let id: Int, challengeId: Int, challengeName: String, teamName: String?, type: String
@@ -284,7 +294,8 @@ final class API: @unchecked Sendable {
     }
     private func parseMe(_ u: J) -> Me {
         Me(id: u.int("id"), name: u.string("name"), email: u.string("email"), avatarURL: u.str("avatar_url") ?? u.str("avatarUrl"),
-           bio: u.str("bio"), sharing: u.str("profile_sharing") ?? "summary", role: u.str("role") ?? "member", hasPassword: u.int("has_password", 1) == 1)
+           bio: u.str("bio"), sharing: u.str("profile_sharing") ?? "summary", role: u.str("role") ?? "member", hasPassword: u.int("has_password", 1) == 1,
+           emailVerified: u.int("email_verified", 1) == 1, pendingEmail: u.str("pending_email"), adminNeedsTwoFactor: u.bool("admin_needs_two_factor"), notifyPush: u.int("notify_push", 1) == 1)
     }
 
     // Challenges
@@ -420,7 +431,9 @@ final class API: @unchecked Sendable {
                                   imageURL: x.str("image_url") ?? x.str("avatar_url"), userId: people ? x.int("id") : nil,
                                   progress: x.has("progress") ? x.double("progress") : nil, finishedOn: x.str("finished_on")) }
         }
-        return Leaderboard(teams: rows(r.arr("teams"), people: false), users: rows(r.arr("users"), people: true), journey: Journey(r.obj("journey")))
+        let me = r.obj("me").map { m in MyStanding(rank: m.int("rank"), of: m.int("of"), total: m.double("total"), aheadName: m.obj("ahead")?.str("name"),
+                                                   aheadGap: m.obj("ahead").map { $0.double("gap") }, week: m.double("week"), teamRank: m.obj("team").map { $0.int("rank") }, teamOf: m.obj("team").map { $0.int("of") }) }
+        return Leaderboard(teams: rows(r.arr("teams"), people: false), users: rows(r.arr("users"), people: true), journey: Journey(r.obj("journey")), me: me)
     }
 
     // Activity
@@ -450,15 +463,34 @@ final class API: @unchecked Sendable {
     func editSteps(_ id: Int, date: Day, steps: Int, comment: String) async throws {
         _ = try await request("/api/activities/\(id)", "PATCH", ["steps": steps, "activity_date": date.description, "comment": comment])
     }
+    // My account: confirming my email, signed-in devices, phone notifications, the site's settings
+    /// Sends the confirming link again; returns the address it went to.
+    func resendEmailCheck() async throws -> String { try await request("/api/me/email/resend", "POST", [:]).string("to") }
+    /// Keep my current address: cancels a change waiting to be confirmed.
+    func keepEmail(_ current: String) async throws -> Me { parseMe(try await request("/api/me", "PATCH", ["email": current]).obj("user") ?? J([:])) }
+    func setNotifyPush(_ on: Bool) async throws -> Me { parseMe(try await request("/api/me", "PATCH", ["notifyPush": on]).obj("user") ?? J([:])) }
+    func sessions() async throws -> [DeviceSession] {
+        try await request("/api/me/sessions").arr("sessions").map { DeviceSession(id: $0.string("id"), device: $0.string("device", "A device"), createdAt: $0.string("created_at"), lastUsedAt: $0.str("last_used_at"), current: $0.bool("current")) }
+    }
+    func signOutSession(_ id: String) async throws { _ = try await request("/api/me/sessions/\(id)", "DELETE") }
+    /// Signs out every other browser and phone; returns how many.
+    func signOutOthers() async throws -> Int { try await request("/api/me/sessions/others", "DELETE").int("signedOut") }
+    func registerPush(_ token: String) async throws { _ = try await request("/api/me/push", "POST", ["platform": "ios", "token": token]) }
+    func config() async throws -> SiteConfig { let r = try await request("/api/config"); return SiteConfig(emailEnabled: r.bool("passwordResetEmail"), pushIOS: r.obj("push")?.bool("ios") ?? false) }
+
     /// Manual log into one or more challenges at once (all or none). Returns how many entries were made.
     func logActivity(targets: [Target], type: String, date: Day, minutes: Int?, distance: Double?, unit: String, start: String?, end: String?, comment: String, steps: Int?) async throws -> Int {
+        try await postActivity(activityBody(targets: targets, type: type, date: date, minutes: minutes, distance: distance, unit: unit, start: start, end: end, comment: comment, steps: steps), expected: targets.count)
+    }
+    /// Sends a manual log (one made now, or one kept on the phone while it was offline).
+    func postActivity(_ body: [String: Any], expected: Int = 1) async throws -> Int { try await request("/api/activities", "POST", body).int("created", expected) }
+    func activityBody(targets: [Target], type: String, date: Day, minutes: Int?, distance: Double?, unit: String, start: String?, end: String?, comment: String, steps: Int?) -> [String: Any] {
         var b: [String: Any] = ["targets": targets.map { t -> [String: Any] in var o: [String: Any] = ["challenge_id": t.challengeId]; if let tm = t.teamId { o["team_id"] = tm }; return o },
                                 "activity_type": type, "activity_date": date.description, "minutes": minutes.map { $0 as Any } ?? NSNull(), "comment": comment]
         if let distance { b["distance"] = distance; b["distance_unit"] = unit }
         if let steps { b["steps"] = steps }
         if let start, let end, !start.isEmpty, !end.isEmpty { b["start_time"] = start; b["end_time"] = end }
-        let r = try await request("/api/activities", "POST", b)
-        return r.int("created", targets.count)
+        return b
     }
     /// Which of these device records are already in which challenges.
     func syncedIn(_ refs: [String]) async throws -> [String: Set<Int>] {
@@ -603,8 +635,17 @@ final class API: @unchecked Sendable {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        // Signed-in reads are kept, so without a connection the app shows what it last saw instead of nothing.
+        let cacheable = method == "GET" && token != nil
+        let data: Data, resp: URLResponse
+        do { (data, resp) = try await URLSession.shared.data(for: req) }
+        catch let e as URLError {
+            if cacheable, let kept = APICache.get(token, path), let o = (try? JSONSerialization.jsonObject(with: kept)) as? [String: Any] { APICache.offline = true; return J(o) }
+            throw e
+        }
+        APICache.offline = false
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if cacheable && (200...299).contains(status) { APICache.put(token, path, data) }
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         guard (200...299).contains(status) else {
             throw APIError(status: status, message: (json["error"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Request failed with HTTP \(status)",

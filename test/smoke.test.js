@@ -2939,3 +2939,26 @@ test('an invite code given at sign-up joins that challenge; admins copy open tic
   assert.ok(out.body.text.includes(`#${t.body.id} · Bug · New · New Joiner`));
   assert.ok(out.body.text.includes('Title: Copy me') && out.body.text.includes('Looking now (support)') === false && out.body.text.includes('(support)'));
 });
+
+test('global admins can choose an invite code; it must be free across challenges and teams', async () => {
+  const owner = await register('Chooser Owner');
+  const a = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Code A', start_date: '2026-01-01', end_date: '2026-12-31' });
+  const b = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Code B', start_date: '2026-01-01', end_date: '2026-12-31' });
+  const t = await jsonFetch(`${origin}/api/teams`, owner.cookie, 'POST', { challenge_id: b.body.id, name: 'Code team' });
+  const login = await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }) });
+  const admin = login.headers.get('set-cookie').split(';')[0];
+  // Owners can still make a new code, but not choose one.
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${a.body.id}/invite-code`, owner.cookie, 'POST', { code: 'MINE2026' })).status, 403);
+  assert.equal((await jsonFetch(`${origin}/api/invite-codes/suggest`, owner.cookie)).status, 403);
+  assert.match((await jsonFetch(`${origin}/api/invite-codes/suggest`, admin)).body.code, /^[A-Z0-9]{8}$/);
+  const set = await jsonFetch(`${origin}/api/challenges/${a.body.id}/invite-code`, admin, 'POST', { code: ' walk2026 ' });
+  assert.equal(set.body.invite_code, 'WALK2026');
+  assert.ok((await (await fetch(`${origin}/join/WALK2026`)).text()).includes('content="Join Code A"'));
+  // Taken by a challenge, by a team, the same code again, or not letters and numbers: refused.
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${b.body.id}/invite-code`, admin, 'POST', { code: 'WALK2026' })).status, 409);
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${a.body.id}/invite-code`, admin, 'POST', { code: t.body.invite_code })).status, 409);
+  assert.equal((await jsonFetch(`${origin}/api/teams/${t.body.id}/invite-code`, admin, 'POST', { code: 'walk2026' })).status, 409);
+  assert.equal((await jsonFetch(`${origin}/api/challenges/${a.body.id}/invite-code`, admin, 'POST', { code: 'WALK2026' })).status, 400);
+  for (const code of ['AB1', 'has space', 'x/y', 'A'.repeat(21)])
+    assert.equal((await jsonFetch(`${origin}/api/challenges/${a.body.id}/invite-code`, admin, 'POST', { code })).status, 400, code);
+});

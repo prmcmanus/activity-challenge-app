@@ -627,6 +627,16 @@ function ticketMail(ticketId,toReporter,what){
       text:`Hello,\n\n${toReporter?`There's news on your ticket "${t.title}": ${what}.`:`Ticket #${t.id} "${t.title}": ${what}.`}\n\nOpen it here: ${ORIGIN}/help/tickets/${t.id}\n\nYou can turn these emails off in My account.\n\nActive Together\n${ORIGIN}`});
   }
 }
+// Codes are unique across challenges and teams alike, since one box takes either.
+const codeTaken=code=>!!db.prepare('SELECT 1 FROM challenges WHERE invite_code=? UNION ALL SELECT 1 FROM teams WHERE invite_code=? LIMIT 1').get(code,code);
+function freeCode(){for(let i=0;i<10;i++){const c=genCode();if(!codeTaken(c))return c}throw new Error('Could not allocate a unique invite code')}
+// Why a code someone typed can't be used (null when it can). It goes in links as /join/CODE, so letters and numbers only.
+function customCodeProblem(code,current){
+  if(!/^[A-Z0-9]{4,20}$/.test(code))return {status:400,error:'Use 4 to 20 letters and numbers, with no spaces or symbols.'};
+  if(code===current)return {status:400,error:"That's already the code. Type a different one."};
+  if(codeTaken(code))return {status:409,error:'That code is already used by another challenge or team. Try a different one.'};
+  return null;
+}
 // Join with an invite code: a challenge's, or a team's (which joins its challenge too). What was joined, or null.
 function joinWithCode(uid,raw){
   const code=String(raw||'').trim().toUpperCase();if(!code)return null;
@@ -1372,16 +1382,21 @@ async function api(req,res,url){
    const row=db.prepare(`SELECT * FROM ${team?'teams':'challenges'} WHERE id=?`).get(id);
    if(!row)return send(res,404,{error:team?'Team not found':'Challenge not found'});
    if(team?!canManageTeam(u,row):!canManageChallenge(u,id))return send(res,403,{error:'Only an owner can change the invite link'});
-   for(let attempt=0;attempt<10;attempt++){
-     const code=genCode();
-     // Codes are unique across challenges and teams alike, since one box takes either.
-     if(db.prepare('SELECT 1 FROM challenges WHERE invite_code=? UNION SELECT 1 FROM teams WHERE invite_code=?').get(code,code))continue;
-     db.prepare(`UPDATE ${team?'teams':'challenges'} SET invite_code=? WHERE id=?`).run(code,id);
-     audit(u,'new invite link',{challenge:team?row.challenge_id:id,detail:team?`team ${row.name}`:null});
-     return send(res,200,{invite_code:code});
-   }
-   throw new Error('Could not allocate a unique invite code');
+   // Global admins may choose the code themselves; everyone else gets a made-up one.
+   const b=await body(req),wanted=String(b.code??'').trim().toUpperCase();
+   let code;
+   if(wanted){
+     if(u.role!=='global_admin')return send(res,403,{error:'Only a global admin can choose the code'});
+     const bad=customCodeProblem(wanted,row.invite_code);
+     if(bad)return send(res,bad.status,{error:bad.error});
+     code=wanted;
+   }else code=freeCode();
+   db.prepare(`UPDATE ${team?'teams':'challenges'} SET invite_code=? WHERE id=?`).run(code,id);
+   audit(u,'new invite link',{challenge:team?row.challenge_id:id,detail:[team&&`team ${row.name}`,wanted&&`code ${code}`].filter(Boolean).join(', ')||null});
+   return send(res,200,{invite_code:code});
  }
+ // Global admins: a free code to start from when choosing one.
+ if(m==='GET'&&url.pathname==='/api/invite-codes/suggest'){if(!need(res,u,['global_admin']))return;return send(res,200,{code:freeCode()})}
  // Leave a challenge: your team places in it, and everything you logged in it, go with you. The
  // last owner can't leave - they add another owner first, or delete the challenge instead.
  if(m==='POST'&&url.pathname.match(/^\/api\/challenges\/\d+\/leave$/)){

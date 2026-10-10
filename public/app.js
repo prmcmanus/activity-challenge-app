@@ -634,8 +634,21 @@ function openEditActivity(x){
 
 // A new invite code: the old link and code stop working, for anyone who hasn't joined yet.
 async function newInviteCode(kind,id,what){
+  if(me.role==='global_admin')return chooseInviteCode(kind,id,what);
   if(!await uiConfirm(`Make a new invite link for ${what}? The current link and code stop working straight away; people already in aren't affected.`,{ok:'Make a new link'}))return false;
   try{await api(`/api/${kind}/${id}/invite-code`,{method:'POST'});await refreshChallenge();return true}catch(e){uiAlert(e.message);return false}
+}
+// Global admins pick the new code: a suggestion to keep, or their own (asked again if it's taken or not allowed).
+async function chooseInviteCode(kind,id,what){
+  let code;try{code=(await api('/api/invite-codes/suggest')).code}catch(e){uiAlert(e.message);return false}
+  let note=`The current link and code for ${what} stop working straight away; people already in aren't affected. Keep this code or type your own (4 to 20 letters and numbers).`;
+  for(;;){
+    const v=await uiPrompt(note,{title:'New invite code',ok:'Use this code',value:code});
+    if(v==null)return false;
+    code=v.trim().toUpperCase();
+    try{await api(`/api/${kind}/${id}/invite-code`,{method:'POST',body:JSON.stringify({code})});await refreshChallenge();return true}
+    catch(e){if(e.status!==400&&e.status!==409){uiAlert(e.message);return false}note=e.message}
+  }
 }
 // The invite link and code, with Copy, the phone's share sheet where there is one, and (owners) a new link.
 const inviteBoxHtml=c=>`<span class="invite-box"><span class="invite-label">Invite people</span><span class="linkrow"><code>${esc(inviteUrl(c.invite_code))}</code><button type="button" data-copylink="${esc(c.invite_code)}">Copy link</button>${navigator.share?'<button type="button" data-share="1">Share…</button>':''}</span><span class="invite-note">Or share the code <b>${esc(c.invite_code)}</b>. Anyone with the link or code can join this challenge.${c.canManage?' <button type="button" class="linkish" data-newcode="1">Make a new link</button>':''}</span></span>`;

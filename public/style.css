@@ -41,3 +41,4 @@ footer a{color:var(--muted);font-size:13px;text-decoration:underline}
 .social{display:flex;flex-direction:column;gap:10px;margin:14px 0 4px}.google-btn{min-height:44px;display:flex;justify-content:center}.apple-btn{display:flex;align-items:center;justify-content:center;gap:8px;background:#000;color:#fff;border-radius:999px;padding:11px 16px;font-size:15px;font-weight:600;width:100%;max-width:400px;margin:0 auto}.apple-btn svg{width:16px;height:19px}
 :root[data-theme="dark"] .apple-btn{background:#fff;color:#000}@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .apple-btn{background:#fff;color:#000}}
 .or-line{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;margin-top:4px}.or-line:before,.or-line:after{content:"";flex:1;border-top:1px solid var(--line)}
+.mono-box{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;margin-bottom:10px}

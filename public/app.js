@@ -253,7 +253,7 @@ function renderSocial(){
   if(!g&&!a)return;
   box.innerHTML=`${g?'<div id="googleBtn" class="google-btn"></div>':''}${a?'<button type="button" class="apple-btn" id="appleBtn"><svg viewBox="0 0 17 20" aria-hidden="true"><path fill="currentColor" d="M14.1 10.6c0-2.4 2-3.6 2.1-3.7-1.2-1.7-3-1.9-3.6-2-1.5-.2-3 .9-3.8.9-.8 0-2-.9-3.3-.9-1.7 0-3.3 1-4.1 2.5-1.8 3.1-.5 7.6 1.3 10.1.8 1.2 1.8 2.6 3.1 2.5 1.3-.1 1.7-.8 3.3-.8s2 .8 3.3.8c1.4 0 2.2-1.2 3.1-2.5 1-1.4 1.4-2.8 1.4-2.9 0 0-2.7-1-2.8-4zM11.6 3.2c.7-.8 1.2-2 1-3.2-1 .1-2.2.7-2.9 1.5-.6.7-1.2 1.9-1 3.1 1.1.1 2.2-.6 2.9-1.4z"/></svg>Continue with Apple</button>':''}<div class="or-line"><span>or with your email</span></div>`;
   if(g)(googleReady||=loadScript('https://accounts.google.com/gsi/client').then(()=>google.accounts.id.initialize({client_id:g.clientId,callback:r=>socialSignIn('google',r.credential),ux_mode:'popup',use_fedcm_for_prompt:true})))
-    .then(()=>{const el=$('#googleBtn');if(el)google.accounts.id.renderButton(el,{theme:'outline',size:'large',shape:'pill',text:authTab==='register'?'signup_with':'continue_with',width:Math.min(el.clientWidth||320,400)})})
+    .then(()=>{const el=$('#googleBtn');if(el)el.innerHTML='';google.accounts.id.renderButton(el,{theme:darkTheme()?'filled_black':'outline',size:'large',shape:'pill',text:authTab==='register'?'signup_with':'continue_with',width:Math.min(el.clientWidth||320,400)})})
     .catch(e=>{$('#googleBtn').textContent=e.message});
   if(a)$('#appleBtn').onclick=async()=>{
     try{
@@ -263,6 +263,9 @@ function renderSocial(){
     }catch(e){if(e&&e.error!=='popup_closed_by_user'&&e.error!=='user_cancelled_authorize')$('#authMsg').textContent=e.message||'Signing in with Apple didn\'t work. Please try again.'}
   };
 }
+// Dark when chosen, or when following a device that's in dark mode.
+const darkTheme=()=>{const t=document.documentElement.getAttribute('data-theme');return t?t==='dark':!!(window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)};
+document.addEventListener('themechange',()=>{if(!me&&$('#googleBtn'))renderSocial()});
 // The provider vouched for them: sign in (or create the account; or ask for the invite code, or the two-step code).
 async function socialSignIn(provider,credential,name,inviteCode){
   socialPending={provider,credential,name};
@@ -270,6 +273,7 @@ async function socialSignIn(provider,credential,name,inviteCode){
     const r=await api(`/api/auth/${provider}`,{method:'POST',body:JSON.stringify({credential,name,invite_code:inviteCode||inviteCodeFromPath()||undefined,invite_token:pendingInviteToken||undefined})});
     socialPending=null;
     if(r.twoFactor)return showCodeStep(r.ticket,'/api/login/2fa');
+    if(r.joined)setUrl(`/challenges/${r.joined.challengeId}`,true);
     await load();
   }catch(x){
     if(x.data&&x.data.inviteRequired){
@@ -305,7 +309,7 @@ function renderAuth(){
       :'<label>Invite code<input id="rinvite" required autocomplete="off" placeholder="From the invite someone sent you" style="text-transform:uppercase"></label><p class="muted">Active Together is invite only: you need the invite link or code someone sent you.</p>';
     $('#authPanel').innerHTML=`<h1>Create your account</h1><p>Then create a challenge or join one with an invite code.</p><div id="socialBox" class="social hidden"></div><form id="registerForm"><label>Name<input id="rname" required autocomplete="name"></label><label>Email<input id="remail" type="email" required autocomplete="email" autocapitalize="off" spellcheck="false"></label><label>Password<input id="rpassword" type="password" required minlength="8" autocomplete="new-password"></label>${inviteBit}<div id="captcha-box"></div><button>Create account</button></form><p class="muted">By creating an account you agree to our <a href="privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</p><p id="authMsg" class="error"></p>`;
     $('#registerForm').onsubmit=guarded(async()=>{try{await api('/api/register',{method:'POST',body:JSON.stringify({name:$('#rname').value,email:$('#remail').value,password:$('#rpassword').value,
-      invite_code:linkCode||($('#rinvite')?$('#rinvite').value.trim():undefined),invite_token:pendingInviteToken||undefined,captchaToken:await captchaToken()})});await load()}catch(x){$('#authMsg').textContent=x.message;if(!x.keepCaptcha)resetCaptcha()}});
+      invite_code:linkCode||($('#rinvite')?$('#rinvite').value.trim():undefined),invite_token:pendingInviteToken||undefined,captchaToken:await captchaToken()})}).then(r=>{if(r.joined)setUrl(`/challenges/${r.joined.challengeId}`,true)});await load()}catch(x){$('#authMsg').textContent=x.message;if(!x.keepCaptcha)resetCaptcha()}});
   }
   renderCaptchaIfReady();
   renderSocial();
@@ -1356,6 +1360,14 @@ async function openTicket(id){
   refreshHelpBadge();
 }
 $('#helpBtn').onclick=showHelp;
+// Every open ticket as text, to paste somewhere else in one go.
+$('#copyOpenTickets').onclick=async()=>{
+  let r;try{r=await api('/api/admin/tickets/open-text')}catch(e){return uiAlert(e.message)}
+  $('#modalBody').innerHTML=`<h2>Open tickets <span class="muted">${r.count}</span></h2>${r.count?`<textarea id="openTicketsText" rows="16" readonly class="mono-box">${esc(r.text)}</textarea><div class="btnrow"><button type="button" id="copyOpenAll">Copy all</button><span class="muted" id="copyOpenMsg"></span></div>`:'<p class="muted">No open tickets.</p>'}`;
+  $('#modal').classList.add('wide');$('#modal').addEventListener('close',()=>$('#modal').classList.remove('wide'),{once:true});
+  $('#modal').showModal();
+  if(r.count)$('#copyOpenAll').onclick=async()=>{const box=$('#openTicketsText');box.select();try{await navigator.clipboard.writeText(r.text);$('#copyOpenMsg').textContent='Copied'}catch(e){document.execCommand('copy');$('#copyOpenMsg').textContent='Copied (selected text)'}};
+};
 $('#helpBack').onclick=()=>showHome();
 $('#dashStatus').onchange=()=>{dashFilter.status=$('#dashStatus').value;renderHelp()};
 $('#dashType').onchange=()=>{dashFilter.type=$('#dashType').value;renderHelp()};

@@ -627,6 +627,17 @@ function ticketMail(ticketId,toReporter,what){
       text:`Hello,\n\n${toReporter?`There's news on your ticket "${t.title}": ${what}.`:`Ticket #${t.id} "${t.title}": ${what}.`}\n\nOpen it here: ${ORIGIN}/help/tickets/${t.id}\n\nYou can turn these emails off in My account.\n\nActive Together\n${ORIGIN}`});
   }
 }
+// Join with an invite code: a challenge's, or a team's (which joins its challenge too). What was joined, or null.
+function joinWithCode(uid,raw){
+  const code=String(raw||'').trim().toUpperCase();if(!code)return null;
+  const challenge=db.prepare('SELECT id,name FROM challenges WHERE invite_code=?').get(code);
+  if(challenge){db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(challenge.id,uid);return {type:'challenge',challengeId:challenge.id,name:challenge.name}}
+  const team=db.prepare('SELECT id,name,challenge_id FROM teams WHERE invite_code=?').get(code);
+  if(!team)return null;
+  db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(team.challenge_id,uid);
+  db.prepare("INSERT OR IGNORE INTO team_members(team_id,user_id,team_role) VALUES(?,?,'member')").run(team.id,uid);
+  return {type:'team',challengeId:team.challenge_id,teamId:team.id,name:team.name};
+}
 // Take someone out of a challenge: their entries in it, team places and membership. Returns entries deleted.
 function removeFromChallenge(cid,uid){
   let removed;
@@ -1150,7 +1161,10 @@ async function api(req,res,url){
    if(inviteOnly()&&!validInvite(b.invite_code,b.invite_token))return send(res,403,{error:b.invite_code?"That invite code wasn't recognised. Check it, or ask for a new invite link.":'Active Together is invite only. Use the invite link or code someone sent you to create an account.',inviteRequired:true});
    if(!app&&!(await verifyCaptcha(b.captchaToken||b.recaptchaToken,ip)))return send(res,400,{error:'Bot check failed. Please try again.'});
    // On the website the session is only ever in the cookie (HttpOnly): page scripts never see it.
-   try{const r=db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'member')").run(email,name,await hash(b.password));const uid=Number(r.lastInsertRowid),t=startSession(uid,app?'app':'web'),user={id:uid,email,name,role:'member'};return app?send(res,201,{ok:true,sessionToken:t,user}):send(res,201,{ok:true,user},setSessionCookie(t))}catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
+   try{const r=db.prepare("INSERT INTO users(email,name,password_hash,role) VALUES(?,?,?,'member')").run(email,name,await hash(b.password));const uid=Number(r.lastInsertRowid),t=startSession(uid,app?'app':'web'),user={id:uid,email,name,role:'member'};
+     // An invite code given when signing up (typed, or from the invite link) joins that challenge straight away.
+     const joined=joinWithCode(uid,b.invite_code);
+     return app?send(res,201,{ok:true,sessionToken:t,user,joined}):send(res,201,{ok:true,user,joined},setSessionCookie(t))}catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
  }
  if(m==='POST'&&url.pathname==='/api/login'){
    const b=await body(req);
@@ -1189,10 +1203,12 @@ async function api(req,res,url){
      db.prepare('INSERT INTO identities(provider,sub,user_id,email) VALUES(?,?,?,?)').run(provider,String(claims.sub),Number(r.lastInsertRowid),email);
      user=db.prepare('SELECT * FROM users WHERE id=?').get(Number(r.lastInsertRowid));created=true;
    }
+   // An invite code that came with it (typed, or from the invite link) joins that challenge.
+   const joined=b.invite_code?joinWithCode(user.id,b.invite_code):null;
    if(user.deactivated_at)return send(res,403,{error:DEACTIVATED_MSG});
    if(linked){db.prepare('DELETE FROM sessions WHERE user_id=?').run(user.id);audit(user.id,`${label} sign-in linked`,{user:user.id,detail:'other sessions signed out'})}
    if(user.totp_secret)return send(res,200,{twoFactor:true,ticket:makeLoginTicket(user.id,app?'app':'web')});
-   const t=startSession(user.id,app?'app':'web'),out={ok:true,created,linked,user:{id:user.id,email:user.email,name:user.name,role:user.role,avatarUrl:user.avatar_url}};
+   const t=startSession(user.id,app?'app':'web'),out={ok:true,created,linked,joined,user:{id:user.id,email:user.email,name:user.name,role:user.role,avatarUrl:user.avatar_url}};
    return app?send(res,created?201:200,{...out,sessionToken:t}):send(res,created?201:200,out,setSessionCookie(t));
  }
  // My Google / Apple sign-ins: listed in My account; one can be removed while there's still a way in (a
@@ -1510,7 +1526,7 @@ async function api(req,res,url){
    if(u){out.member=!!challengeAccess(u.id,c.id);out.inTeam=team?!!db.prepare('SELECT 1 FROM team_members WHERE team_id=? AND user_id=?').get(team.id,u.id):null}
    return send(res,200,out);
  }
- if(m==='POST'&&url.pathname==='/api/join'){if(!need(res,u))return;const b=await body(req),code=String(b.code||'').trim().toUpperCase();if(!code)return send(res,400,{error:'Invite code required'});const challenge=db.prepare('SELECT * FROM challenges WHERE invite_code=?').get(code);if(challenge){db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(challenge.id,u.id);return send(res,200,{ok:true,type:'challenge',challengeId:challenge.id,name:challenge.name})}const team=db.prepare('SELECT * FROM teams WHERE invite_code=?').get(code);if(team){db.prepare("INSERT OR IGNORE INTO challenge_members(challenge_id,user_id,challenge_role) VALUES(?,?,'member')").run(team.challenge_id,u.id);db.prepare("INSERT OR IGNORE INTO team_members(team_id,user_id,team_role) VALUES(?,?,'member')").run(team.id,u.id);return send(res,200,{ok:true,type:'team',challengeId:team.challenge_id,teamId:team.id,name:team.name})}return send(res,400,{error:'That invite code was not recognised'})}
+ if(m==='POST'&&url.pathname==='/api/join'){if(!need(res,u))return;const b=await body(req),code=String(b.code||'').trim().toUpperCase();if(!code)return send(res,400,{error:'Invite code required'});const j=joinWithCode(u.id,code);return j?send(res,200,{ok:true,...j}):send(res,400,{error:'That invite code was not recognised'})}
 
  if(m==='POST'&&url.pathname==='/api/teams'){if(!need(res,u))return;const b=await body(req),cid=Number(b.challenge_id);if(!b.name||!cid)return send(res,400,{error:'challenge_id and name are required'});if(!challengeAccess(u.id,cid))return send(res,403,{error:'Join the challenge before creating a team in it'});if(isIndividual(db.prepare('SELECT participation FROM challenges WHERE id=?').get(cid)))return send(res,400,{error:'This challenge is for individuals - it has no teams'});let imageUrl;try{imageUrl=validateImageUrl(b.image_url)}catch(e){return send(res,400,{error:e.message})}const {id,invite_code}=insertTeam(cid,String(b.name).trim(),u.id,imageUrl||null);return send(res,201,{id,invite_code})}
  if(m==='POST'&&url.pathname.match(/^\/api\/teams\/\d+\/join$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!challengeAccess(u.id,team.challenge_id))return send(res,403,{error:'Join the challenge before joining one of its teams'});db.prepare("INSERT OR IGNORE INTO team_members(team_id,user_id,team_role) VALUES(?,?,'member')").run(tid,u.id);return send(res,200,{ok:true})}
@@ -1710,6 +1726,21 @@ async function api(req,res,url){
      for(const r of db.prepare("SELECT type,COUNT(*) n FROM tickets WHERE status IN ('new','in_progress','planned') GROUP BY type").all())out.byType[r.type]=r.n;
    }
    return send(res,200,out);
+ }
+ // Global admins: every open ticket (new, in progress, planned) as plain text with its conversation, to copy
+ // somewhere in one go. Reading it doesn't mark anything seen.
+ if(m==='GET'&&url.pathname==='/api/admin/tickets/open-text'){
+   if(!need(res,u,['global_admin']))return;
+   const rows=db.prepare(`${TICKET_SELECT} WHERE t.status IN ('new','in_progress','planned') ORDER BY t.id`).all();
+   const label={bug:'Bug',feature:'Feature request',question:'Question'},state={new:'New',in_progress:'In progress',planned:'Planned'};
+   const text=rows.map(t=>{
+     const replies=db.prepare('SELECT c.body,c.internal,c.created_at,c.user_id,us.name FROM ticket_comments c JOIN users us ON us.id=c.user_id WHERE c.ticket_id=? ORDER BY c.id').all(t.id);
+     return [`#${t.id} · ${label[t.type]||t.type} · ${state[t.status]||t.status} · ${t.reporter_name} (${t.reporter_email}) · ${String(t.created_at).slice(0,16)} UTC`,
+       `Title: ${t.title}`,t.description,t.client_info&&`Device: ${t.client_info}`,t.image_url&&`Screenshot: ${ORIGIN}${t.image_url}`,
+       replies.length&&'Replies:\n'+replies.map(r=>`- ${r.name}${r.internal?' (internal note)':r.user_id===t.user_id?' (reporter)':' (support)'}, ${String(r.created_at).slice(0,16)}: ${r.body}`).join('\n'),
+       t.resolution&&`Outcome so far: ${t.resolution}`].filter(Boolean).join('\n');
+   }).join('\n\n---\n\n');
+   return send(res,200,{count:rows.length,text});
  }
  // How many of my tickets have an unread reply - for the Help badge. Admins also get new/unread ones.
  if(m==='GET'&&url.pathname==='/api/tickets/badge'){

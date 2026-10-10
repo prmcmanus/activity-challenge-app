@@ -2920,3 +2920,22 @@ test('sign in with Google: new accounts, linking an existing email (signing othe
     keys.close();
   }
 });
+
+test('an invite code given at sign-up joins that challenge; admins copy open tickets as text', async () => {
+  const owner = await register('Cora Code');
+  const c = await jsonFetch(`${origin}/api/challenges`, owner.cookie, 'POST', { name: 'Joined at sign-up', start_date: '2026-01-01', end_date: '2026-12-31' });
+  const r = await fetch(`${origin}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'New Joiner', email: 'new.joiner@example.com', password: 'SuperSecret123!', invite_code: c.body.invite_code.toLowerCase() }) });
+  const body = await r.json();
+  assert.equal(body.joined.challengeId, c.body.id);
+  const cookie = r.headers.get('set-cookie').split(';')[0];
+  assert.ok((await jsonFetch(`${origin}/api/dashboard`, cookie)).body.challenges.some(x => x.id === c.body.id));
+
+  const login = await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }) });
+  const admin = login.headers.get('set-cookie').split(';')[0];
+  const t = await jsonFetch(`${origin}/api/tickets`, cookie, 'POST', { type: 'bug', title: 'Copy me', description: 'Something odd', client_info: 'Web test' });
+  await jsonFetch(`${origin}/api/tickets/${t.body.id}/comments`, admin, 'POST', { body: 'Looking now' });
+  assert.equal((await jsonFetch(`${origin}/api/admin/tickets/open-text`, cookie)).status, 403);
+  const out = await jsonFetch(`${origin}/api/admin/tickets/open-text`, admin);
+  assert.ok(out.body.text.includes(`#${t.body.id} · Bug · New · New Joiner`));
+  assert.ok(out.body.text.includes('Title: Copy me') && out.body.text.includes('Looking now (support)') === false && out.body.text.includes('(support)'));
+});

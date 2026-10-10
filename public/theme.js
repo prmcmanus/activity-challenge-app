@@ -3,7 +3,9 @@
 (function(){
   var KEY='at-theme',root=document.documentElement;
   function saved(){try{return localStorage.getItem(KEY)||'auto'}catch(e){return 'auto'}}
-  function apply(t){if(t==='light'||t==='dark')root.setAttribute('data-theme',t);else root.removeAttribute('data-theme')}
+  // Others (Google's sign-in button) redraw themselves when the theme changes.
+  function apply(t){if(t==='light'||t==='dark')root.setAttribute('data-theme',t);else root.removeAttribute('data-theme');document.dispatchEvent(new Event('themechange'))}
+  if(window.matchMedia)matchMedia('(prefers-color-scheme: dark)').addEventListener('change',function(){document.dispatchEvent(new Event('themechange'))});
   apply(saved());
   // Opened inside the phone apps (?in_app=1): the app has its own title bar, so the site's header and footer go.
   if(/[?&]in_app=1\b/.test(location.search))root.classList.add('in-app');

@@ -211,6 +211,33 @@ async function load(){
   await route();
 }
 
+// Passkeys: the browser's own sign-in with Face ID, a fingerprint or a PIN.
+const b64ToBuf=v=>Uint8Array.from(atob(v.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-v.length%4)%4)),ch=>ch.charCodeAt(0));
+const bufToB64=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const passkeysWork=()=>!!(window.PublicKeyCredential&&navigator.credentials);
+async function passkeySignIn(){
+  const o=await api('/api/passkey/options',{method:'POST'});
+  let cred;try{cred=await navigator.credentials.get({publicKey:{challenge:b64ToBuf(o.challenge),rpId:o.rpId,timeout:o.timeout,userVerification:o.userVerification,allowCredentials:[]}})}
+  catch(e){if(e.name==='NotAllowedError')return;throw Error("Your browser couldn't use a passkey just now.")}
+  await api('/api/passkey/login',{method:'POST',body:JSON.stringify({credential:{id:cred.id,response:{clientDataJSON:bufToB64(cred.response.clientDataJSON),authenticatorData:bufToB64(cred.response.authenticatorData),signature:bufToB64(cred.response.signature)}}})});
+  await load();
+}
+async function addPasskey(){
+  const o=await api('/api/me/passkeys/options',{method:'POST'});
+  let cred;try{cred=await navigator.credentials.create({publicKey:{...o,challenge:b64ToBuf(o.challenge),user:{...o.user,id:b64ToBuf(o.user.id)},excludeCredentials:o.excludeCredentials.map(x=>({...x,id:b64ToBuf(x.id)}))}})}
+  catch(e){if(e.name==='NotAllowedError')return false;if(e.name==='InvalidStateError')throw Error('This device already has a passkey for your account.');throw Error("Your browser couldn't make a passkey just now.")}
+  await api('/api/me/passkeys',{method:'POST',body:JSON.stringify({credential:{id:cred.id,response:{clientDataJSON:bufToB64(cred.response.clientDataJSON),attestationObject:bufToB64(cred.response.attestationObject)}}})});
+  return true;
+}
+async function renderPasskeys(){
+  const box=$('#passkeyList');if(!box)return;
+  if(!passkeysWork()){box.innerHTML='<p class="muted">This browser can\'t use passkeys.</p>';return}
+  let list;try{list=(await api('/api/me/passkeys')).passkeys}catch(e){box.innerHTML=`<p class="error" role="alert">${esc(e.message)}</p>`;return}
+  box.innerHTML=list.map(k=>`<div class="listrow"><div><b>${esc(k.name||'Passkey')}</b><div class="muted">Added ${esc(fmtDay(String(k.created_at).slice(0,10)))}${k.last_used_at?` · last used ${esc(fmtDay(String(k.last_used_at).slice(0,10)))}`:''}</div></div><button type="button" class="ghost" data-delkey="${k.id}">Remove</button></div>`).join('')
+    +`<div class="btnrow"><button type="button" class="ghost" id="addPasskey">Add a passkey on this device</button></div><p class="muted">Sign in with Face ID, a fingerprint or your device's PIN instead of a password.</p>`;
+  box.querySelectorAll('[data-delkey]').forEach(b=>b.onclick=async()=>{if(!await uiConfirm('Remove this passkey? It stops working for signing in.',{ok:'Remove'}))return;try{await api(`/api/me/passkeys/${b.dataset.delkey}`,{method:'DELETE'});renderPasskeys()}catch(e){uiAlert(e.message)}});
+  $('#addPasskey').onclick=async()=>{try{if(await addPasskey())renderPasskeys()}catch(e){uiAlert(e.message)}};
+}
 async function confirmEmailLink(token){
   try{const r=await api('/api/email/verify',{method:'POST',body:JSON.stringify({token})});await uiAlert(r.changed?`Done: your email address is now ${r.email}.`:'Thanks - your email address is confirmed.','Email confirmed')}
   catch(e){await uiAlert(e.message,"That link didn't work")}
@@ -312,8 +339,9 @@ function showCodeStep(ticket,url){
 function renderAuth(){
   $all('[data-authtab]').forEach(b=>{b.classList.toggle('active',b.dataset.authtab===authTab);b.setAttribute('aria-selected',String(b.dataset.authtab===authTab))});
   if(authTab==='login'){
-    $('#authPanel').innerHTML=`<h1>Welcome back</h1><p>Sign in to log activity and support your team.</p><div id="socialBox" class="social hidden"></div><form id="loginForm"><label>Email<input id="email" type="email" required autocomplete="username" autocapitalize="off" spellcheck="false"></label><label>Password<input id="password" type="password" required autocomplete="current-password"></label><div id="captcha-box"></div><button>Sign in</button></form><p id="authMsg" class="error" role="alert"></p><p><a href="/forgot" id="forgotLink">Forgot your password?</a></p>`;
+    $('#authPanel').innerHTML=`<h1>Welcome back</h1><p>Sign in to log activity and support your team.</p><div id="socialBox" class="social hidden"></div><form id="loginForm"><label>Email<input id="email" type="email" required autocomplete="username" autocapitalize="off" spellcheck="false"></label><label>Password<input id="password" type="password" required autocomplete="current-password"></label><div id="captcha-box"></div><button>Sign in</button></form>${passkeysWork()?'<p><button type="button" class="ghost" id="passkeyBtn">🔑 Sign in with a passkey</button></p>':''}<p id="authMsg" class="error" role="alert"></p><p><a href="/forgot" id="forgotLink">Forgot your password?</a></p>`;
     $('#forgotLink').onclick=e=>{e.preventDefault();setUrl('/forgot');showPasswordPage(null)};
+    if($('#passkeyBtn'))$('#passkeyBtn').onclick=()=>passkeySignIn().catch(x=>{$('#authMsg').textContent=x.message});
     $('#loginForm').onsubmit=guarded(async()=>{try{const r=await api('/api/login',{method:'POST',body:JSON.stringify({email:$('#email').value,password:$('#password').value,captchaToken:await captchaToken()})});if(r.twoFactor)return showCodeStep(r.ticket,'/api/login/2fa');await load()}catch(x){$('#authMsg').textContent=x.message;if(!x.keepCaptcha)resetCaptcha()}});
   }else{
     // An invite link (/join/CODE) or emailed invite (?invite=) is passed along automatically; on an invite-only
@@ -339,10 +367,10 @@ function showHome(){challengeBack='home';setUrl('/');showView('#homeView');rende
 const activeToday=()=>{const d=localToday();return dash.challenges.filter(c=>c.role!=='admin'&&c.start_date<=d&&d<=c.end_date)};
 function renderHome(){
   $('#hello').textContent=`Welcome, ${me.name}`;
-  renderAccountNotices();
+  renderAccountNotices();renderSetup();
   // Someone added me to a challenge: say who, and let me keep it or leave.
   const added=dash.challenges.filter(c=>c.added_by);
-  $('#addedNotices').innerHTML=added.map(c=>`<section class="card notice" data-notice="${c.id}"><div><b>${esc(c.added_by)}</b> added you to <b>${esc(c.name)}</b> (${esc(fmtRange(c.start_date,c.end_date))}).</div><div class="btnrow"><button type="button" data-noticeopen="${c.id}">Open</button><button type="button" class="ghost" data-noticekeep="${c.id}">Keep</button><button type="button" class="ghost" data-noticeleave="${c.id}">Leave</button></div></section>`).join('');
+  $('#addedNotices').innerHTML=added.map(c=>`<section class="card notice" data-notice="${c.id}"><div><b>${esc(c.added_by)}</b> added you to <b>${chLink(c.id,c.name)}</b> (${esc(fmtRange(c.start_date,c.end_date))}).</div><div class="btnrow"><button type="button" data-noticeopen="${c.id}">Open</button><button type="button" class="ghost" data-noticekeep="${c.id}">Keep</button><button type="button" class="ghost" data-noticeleave="${c.id}">Leave</button></div></section>`).join('');
   const ack=async id=>{await api(`/api/challenges/${id}/ack`,{method:'POST'});await loadDashboard();renderHome()};
   $all('[data-noticeopen]').forEach(b=>b.onclick=async()=>{await ack(Number(b.dataset.noticeopen));openChallenge(Number(b.dataset.noticeopen))});
   $all('[data-noticekeep]').forEach(b=>b.onclick=()=>ack(Number(b.dataset.noticekeep)).catch(e=>uiAlert(e.message)));
@@ -359,6 +387,19 @@ function renderHome(){
   loadIosCard();
 }
 // Things to do about my account: a global admin without two-step sign-in, an email address to confirm.
+// Getting started: a short checklist for someone new, until it's all done or they hide it.
+function renderSetup(){
+  const st=dash.setup;let hidden=false;try{hidden=localStorage.getItem('setupHidden')==='1'}catch(e){}
+  const steps=st?[[st.challenge,'Join a challenge (with the code someone sent you) or start your own','join'],[st.syncing,'Connect your phone so workouts and steps count without typing them in','sync'],
+    [st.push,'Get the app and allow notifications, for news about your challenges','sync'],...(siteConfig.passwordResetEmail?[[st.email,'Confirm your email address (we sent you a link)','email']]:[])]:[];
+  const done=steps.filter(x=>x[0]).length;
+  $('#setupCard').classList.toggle('hidden',!steps.length||hidden||done===steps.length);
+  if(!steps.length||hidden||done===steps.length)return;
+  $('#setupCard').innerHTML=`<div class="row"><h2>Getting started <span class="muted">${done} of ${steps.length}</span></h2><button type="button" class="ghost" id="setupHide">Hide</button></div>
+    <ul class="checklist">${steps.map(([ok,text,act])=>`<li class="${ok?'done':''}">${ok?'✅':'⬜'} ${act==='join'&&!ok?`<a href="#" data-setup="join">${text}</a>`:act==='sync'&&!ok?`<a href="/sync.html">${text}</a>`:text}</li>`).join('')}</ul>`;
+  $('#setupHide').onclick=()=>{try{localStorage.setItem('setupHidden','1')}catch(e){}renderSetup()};
+  const j=$('[data-setup="join"]');if(j)j.onclick=e=>{e.preventDefault();$('#joinBtn').click()};
+}
 function renderAccountNotices(){
   const notes=[];
   if(me.admin_needs_two_factor)notes.push(`<section class="card notice" role="status"><div><b>Turn on two-step sign-in to use the admin tools.</b> Global admins can see and change everything, so signing in needs a code from your phone as well as your password.</div><div class="btnrow"><button type="button" data-acct="1">Set it up</button></div></section>`);
@@ -440,9 +481,14 @@ async function loadAndroidCard(){
 let curMine=[];
 // Leaderboards show the top 10 and your own place; "Show all" asks for everyone (remembered for this visit).
 const fullBoards=new Set();
+// Leaderboards for all time, this month or this week (not for journeys, where progress builds up).
+let boardPeriod='all',curFeed=[],feedShown=6;
+const boardQuery=id=>{const q=[];if(!fullBoards.has(id))q.push('top=10');if(boardPeriod!=='all')q.push('period='+boardPeriod);return q.length?'?'+q.join('&'):''};
 async function loadChallenge(id){
-  const [c,lb,mine]=await Promise.all([api(`/api/challenges/${id}`),api(`/api/challenges/${id}/leaderboard${fullBoards.has(id)?'':'?top=10'}`),api(`/api/me/activities?challenge_id=${id}&limit=50`).catch(()=>({activities:[]}))]);
-  curChallenge=c;curLeaderboard=lb;curMine=mine.activities;
+  if(curChallenge&&curChallenge.id!==id){boardPeriod='all';feedShown=6}
+  const [c,lb,mine,feed]=await Promise.all([api(`/api/challenges/${id}`),api(`/api/challenges/${id}/leaderboard${boardQuery(id)}`),api(`/api/me/activities?challenge_id=${id}&limit=50`).catch(()=>({activities:[]})),
+    api(`/api/challenges/${id}/feed`).catch(()=>({activities:[]}))]);
+  curChallenge=c;curLeaderboard=lb;curMine=mine.activities;curFeed=feed.activities;
 }
 async function openChallenge(id){
   await loadChallenge(id);
@@ -497,7 +543,7 @@ function renderChallenge(){
   const mine=dash.challenges.find(x=>x.id===c.id);
   $('#myChMinutes').textContent=fmtNum(mine?(isSteps(c)?mine.mySteps:isDistance(c)?mine.myDistance:mine.myMinutes):0);
   $('#myChMetricLabel').textContent=isSteps(c)?'my steps':isDistance(c)?`my ${unitLong(c).toLowerCase()}`:'my minutes';
-  $('#myStanding').innerHTML=standingHtml(c,curLeaderboard.me);$('#myStanding').classList.toggle('hidden',!curLeaderboard.me);
+  $('#myStanding').innerHTML=standingHtml(c,curLeaderboard.me)+(dash.stats?.streak?`<span>🔥 ${dash.stats.streak}-day streak</span>`:'');$('#myStanding').classList.toggle('hidden',!curLeaderboard.me);
   // A step challenge asks only for the day's step count and the date.
   const steps=isSteps(c);
   ['#activityTypeWrap','#minutesWrap','#timesRow','#gpxWrap'].forEach(s=>$(s).classList.toggle('hidden',steps));
@@ -533,6 +579,15 @@ function renderChallenge(){
     const more=total>shown;$(box).innerHTML=more?`<button type="button" class="ghost" data-showall="1">Show all ${total}</button>`:'';
     if(more)$(box).querySelector('button').onclick=async()=>{fullBoards.add(c.id);await refreshChallenge()};
   }
+  // The period tabs (not for journeys), and the latest entries with their 👏.
+  const journeyBoard=c.kind==='journey';
+  $('#periodTabs').classList.toggle('hidden',journeyBoard);
+  $('#periodTabs').innerHTML=[['all','All time'],['month','This month'],['week','This week']].map(([k,l])=>`<button type="button" role="tab" aria-selected="${boardPeriod===k}" class="${boardPeriod===k?'on':''}" data-period="${k}">${l}</button>`).join('');
+  $all('[data-period]').forEach(b=>b.onclick=async()=>{boardPeriod=b.dataset.period;curLeaderboard=await api(`/api/challenges/${c.id}/leaderboard${boardQuery(c.id)}`);renderChallenge()});
+  $('#feedCard').classList.toggle('hidden',!curFeed.length);
+  $('#feed').innerHTML=curFeed.slice(0,feedShown).map(a=>`<div class="listrow entry-row"><div><div class="leader-name">${avatarHtml(a.avatar_url,a.name,'avatar-sm')}<b>${personLink(a.user_id,a.name)}</b> <span class="muted">${esc(a.activity_type)}</span></div><div class="muted">${esc(fmtDay(a.activity_date))}${a.team_name?` · ${esc(a.team_name)}`:''}${a.comment?` · “${esc(a.comment)}”`:''}</div></div>
+    <div class="entry-side"><b class="entry-amount">${esc(fmtEntry(c,a))}</b>${a.user_id===me.id?(a.kudos?`<span class="muted">👏 ${a.kudos}</span>`:''):kudosButton(a)}</div></div>`).join('');
+  if(curFeed.length>feedShown){$('#feed').insertAdjacentHTML('beforeend','<button type="button" class="ghost" id="feedMore">Show more</button>');$('#feedMore').onclick=()=>{feedShown+=10;renderChallenge()}}
   const recent=curMine;
   $('#recent').innerHTML=recent.map(x=>{
     const timeBit=x.start_time&&x.end_time?` · ${x.start_time}–${x.end_time}`:'';
@@ -575,7 +630,7 @@ async function openEditChallenge(c,after=refreshChallenge){
     </form>
     <p id="ecMsg" class="error" role="alert"></p>
     <h2 class="gap-top">Challenge owners</h2>
-    <div id="ownersList">${membersData.members.filter(m=>m.challenge_role==='owner').map(m=>`<div class="listrow"><div><b>${esc(m.name)}</b><div class="muted">${esc(m.email)}</div></div></div>`).join('')||'<p class="muted">No owners.</p>'}</div>
+    <div id="ownersList">${membersData.members.filter(m=>m.challenge_role==='owner').map(m=>`<div class="listrow"><div><b>${personLink(m.id,m.name)}</b>${m.email?`<div class="muted">${esc(m.email)}</div>`:''}</div></div>`).join('')||'<p class="muted">No owners.</p>'}</div>
     <form id="addOwnerForm"><label>Add an owner by email<input id="addOwnerEmail" type="email" required placeholder="name@example.com" autocomplete="off"></label><button>Add owner</button></form>
     <p class="muted">Anyone with an account; they're added to the challenge if they aren't in it, and told.</p>
     <p id="ownerMsg" class="error" role="alert"></p>
@@ -657,6 +712,8 @@ function openEditActivity(x){
       <label>Comment (optional)<input id="eaComment" maxlength="500" value="${esc(x.comment||'')}" placeholder="How did it go?"></label>
       <button>Save changes</button>
     </form>
+    ${(()=>{const others=dash.challenges.filter(o=>o.id!==c.id&&o.role!=='admin'&&o.start_date<=x.activity_date&&x.activity_date<=o.end_date);
+      return others.length?`<div class="copy-to"><h3>Count it in another challenge too</h3><div class="inline-row"><select id="eaCopyTo" aria-label="Challenge">${others.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select><button type="button" class="ghost" id="eaCopy">Add it</button></div></div>`:''})()}
     <p id="eaMsg" class="error" role="alert"></p>`;
   $('#modal').showModal();
   // The stored distance arrives in the challenge's unit; switching unit converts it until the
@@ -671,6 +728,11 @@ function openEditActivity(x){
       $('#eaDistance').value=String(Math.round((unitShort(c)===$('#eaUnit').value?v:$('#eaUnit').value==='km'?v*perMile:v/perMile)*100)/100);
     });
   }
+  if($('#eaCopy'))$('#eaCopy').onclick=async()=>{
+    const to=dash.challenges.find(o=>o.id===Number($('#eaCopyTo').value)),team=to&&!isIndividual(to)?to.teams[0]:null;
+    try{await api(`/api/activities/${x.id}/copy`,{method:'POST',body:JSON.stringify({challenge_id:to.id,team_id:team?team.id:undefined})});$('#modal').close();await loadDashboard();await refreshChallenge();uiAlert(`It counts in ${to.name} now as well.`)}
+    catch(err){$('#eaMsg').textContent=err.message}
+  };
   const recalc=()=>{const m=minutesBetween($('#eaStart').value,$('#eaEnd').value);if(m)$('#eaMinutes').value=m};
   $('#eaStart').addEventListener('change',recalc);
   $('#eaEnd').addEventListener('change',recalc);
@@ -755,7 +817,7 @@ async function openTeamManage(tid,tname){
       <button>Save changes</button>
     </form>
     <h2 class="gap-top">Members</h2>
-    <div id="teamMembersList">${data.members.map(m=>`<div class="listrow"><div><b>${esc(m.name)}</b><div class="muted">${esc(m.email)} · ${esc(m.team_role)}</div></div><button class="ghost" data-removemember="${m.id}">Remove</button></div>`).join('')||'<p class="muted">No members.</p>'}</div>
+    <div id="teamMembersList">${data.members.map(m=>`<div class="listrow"><div><b>${personLink(m.id,m.name)}</b><div class="muted">${m.email?`${esc(m.email)} · `:''}${m.team_role==='team_admin'?'team admin':'member'}</div></div><button class="ghost" data-removemember="${m.id}">Remove</button></div>`).join('')||'<p class="muted">No members.</p>'}</div>
     <form id="addMemberForm"><label>${curChallenge&&curChallenge.canManage?'Add someone by email':'Add someone already in this challenge (their email)'}<input id="addMemberEmail" type="email" required placeholder="name@example.com" autocomplete="off"></label><button>Add to team</button></form>
     <p class="muted">${curChallenge&&curChallenge.canManage?"Anyone with an account: they're added to the challenge too, and told.":"To bring someone new in, share the team's invite link."}</p>
     <p id="manageMsg" class="error" role="alert"></p>
@@ -801,6 +863,26 @@ async function leaveChallenge(c){
   try{await api(`/api/challenges/${c.id}/leave`,{method:'POST'});await loadDashboard();showHome()}catch(e){uiAlert(e.message)}
 }
 const ordinal=n=>n+(n%100>=11&&n%100<=13?'th':({1:'st',2:'nd',3:'rd'}[n%10]||'th'));
+// A challenge's name or a person's name, wherever it's shown, opens that challenge or their profile.
+const chLink=(id,name)=>id?`<a href="/challenges/${id}" class="name-link" data-openchallenge="${id}">${esc(name)}</a>`:esc(name);
+const personLink=(id,name)=>id?`<a href="/" class="name-link" data-profile="${id}">${esc(name)}</a>`:esc(name);
+document.addEventListener('click',e=>{const a=e.target.closest('[data-openchallenge]');if(!a)return;e.preventDefault();e.stopPropagation();
+  if($('#modal').open)$('#modal').close();challengeBack='home';openChallenge(Number(a.dataset.openchallenge)).catch(x=>uiAlert(x.message))},true);
+// 👏 on a challenge-mate's entry: a toggle showing how many there are.
+const kudosButton=a=>`<button type="button" class="kudos${a.kudos_mine?' on':''}" data-kudos="${a.id}" aria-pressed="${!!a.kudos_mine}" title="${a.kudos_mine?'Take back your 👏':'Give 👏'}">👏 <span>${a.kudos||''}</span></button>`;
+document.addEventListener('click',async e=>{const b=e.target.closest('[data-kudos]');if(!b)return;e.preventDefault();e.stopPropagation();const on=b.classList.contains('on');
+  try{const r=await api(`/api/activities/${b.dataset.kudos}/kudos`,{method:on?'DELETE':'POST'});b.classList.toggle('on',!on);b.setAttribute('aria-pressed',String(!on));b.querySelector('span').textContent=r.kudos||''}catch(x){uiAlert(x.message)}});
+// Streaks and personal bests: "🔥 5-day streak · best 9 days · longest 75 min · furthest 21 km · most steps 18,240".
+function statsLine(st){
+  if(!st)return '';
+  const unit=(siteConfig.prefUnit||'mi'),dist=unit==='km'?st.bestDistanceKm:st.bestDistanceMi,bits=[];
+  if(st.streak)bits.push(`🔥 ${st.streak}-day streak`);
+  if(st.longestStreak>1)bits.push(`best run ${st.longestStreak} days`);
+  if(st.bestMinutes)bits.push(`longest ${fmtNum(st.bestMinutes)} min`);
+  if(dist)bits.push(`furthest ${fmtNum(dist)} ${unit==='km'?'km':'mi'}`);
+  if(st.bestSteps)bits.push(`most steps ${Number(st.bestSteps).toLocaleString()}`);
+  return bits.join(' · ');
+}
 function personButton(x){return `<button type="button" class="person" data-profile="${x.id}">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<span>${esc(x.name)}</span></button>`}
 function followList(title,people,count,empty){
   const hidden=count-people.length;
@@ -815,10 +897,10 @@ async function openProfile(id){
   const since=p.member_since?`Member since ${new Date(p.member_since+'T00:00:00').toLocaleDateString(undefined,{month:'long',year:'numeric'})}`:'';
   const counts=`<b>${p.followers_count}</b> follower${p.followers_count===1?'':'s'} · <b>${p.following_count}</b> following${p.follows_you?' · <span class="status">Follows you</span>':''}`;
   const lists=p.followers?`<div class="follow-cols">${followList('Followers',p.followers,p.followers_count,p.self?'Nobody yet.':'No followers yet.')}${followList('Following',p.following,p.following_count,'Nobody yet.')}</div>`:'';
-  let body='';
+  let body=p.stats&&statsLine(p.stats)?`<p class="stats-line">${esc(statsLine(p.stats))}</p>`:'';
   if(p.challenges){
-    body+=`<div class="profile-section"><h3>${p.self?'My challenges':'Challenges you share'}</h3>${p.challenges.map(c=>`<div class="listrow"><div><b>${esc(c.name)}</b><div class="muted">${c.team?`${esc(c.team)} · `:''}${esc(fmtRange(c.start_date,c.end_date))}</div></div><div class="right"><b>${esc(fmtTotal(c,c.minutes,c.distance,c.steps))}</b>${c.rank?`<div class="muted">${ordinal(c.rank)} of ${c.of}</div>`:''}</div></div>`).join('')||'<p class="muted">No challenges yet.</p>'}</div>`;
-    if(p.activities)body+=`<div class="profile-section"><h3>Recent activity</h3>${p.activities.map(a=>`<div class="listrow"><div><b>${esc(a.activity_type)}</b><div class="muted">${esc(fmtDay(a.activity_date))}${a.start_time?` · ${esc(a.start_time)}`:''} · ${esc(a.challenge_name)}</div>${a.comment?`<div class="muted">“${esc(a.comment)}”</div>`:''}</div><b>${esc(fmtEntry(a,a))}</b></div>`).join('')||'<p class="muted">Nothing logged yet.</p>'}</div>`;
+    body+=`<div class="profile-section"><h3>${p.self?'My challenges':'Challenges you share'}</h3>${p.challenges.map(c=>`<div class="listrow"><div><b>${chLink(c.id,c.name)}</b><div class="muted">${c.team?`${esc(c.team)} · `:''}${esc(fmtRange(c.start_date,c.end_date))}</div></div><div class="right"><b>${esc(fmtTotal(c,c.minutes,c.distance,c.steps))}</b>${c.rank?`<div class="muted">${ordinal(c.rank)} of ${c.of}</div>`:''}</div></div>`).join('')||'<p class="muted">No challenges yet.</p>'}</div>`;
+    if(p.activities)body+=`<div class="profile-section"><h3>Recent activity</h3>${p.activities.map(a=>`<div class="listrow"><div><b>${esc(a.activity_type)}</b><div class="muted">${esc(fmtDay(a.activity_date))}${a.start_time?` · ${esc(a.start_time)}`:''} · ${chLink(a.challenge_id,a.challenge_name)}</div>${a.comment?`<div class="muted">“${esc(a.comment)}”</div>`:''}</div><div class="entry-side"><b>${esc(fmtEntry(a,a))}</b>${p.self?(a.kudos?`<span class="muted">👏 ${a.kudos}</span>`:''):kudosButton(a)}</div></div>`).join('')||'<p class="muted">Nothing logged yet.</p>'}</div>`;
   }else body+=`<p class="muted">${p.self?'Your profile is private: people only see your name and photo.':`${first} keeps their profile private.`}</p>`;
   $('#modalBody').innerHTML=`<div class="profile-head">${avatarHtml(p.avatar_url,p.name,'avatar-lg')}<div><h2>${esc(p.name)}</h2>${p.bio?`<div>${esc(p.bio)}</div>`:''}<div class="muted">${since}</div></div></div>
     <div class="row"><div>${counts}</div><div class="btnrow">${p.self?'<button class="ghost" id="profileEdit">Edit my account</button>':`<button id="followBtn" class="${p.is_following?'ghost':''}">${p.is_following?'Following ✓':'Follow'}</button>`}</div></div>
@@ -1056,7 +1138,8 @@ async function renderJourneyMap(c){
       .addTo(journeyMap).bindTooltip(`Stop ${i+1}: ${esc(v.name)} · ${fmtLen(v.at)} ${unitWord} in`));
     const face=mk=>mk.image_url?`<img src="${esc(mk.image_url)}" alt="">`:esc((mk.name||'?')[0].toUpperCase());
     const about=mk=>`${esc(fmtTotal(c,0,mk.distance,mk.steps))} · ${Math.round(mk.progress*100)}%${mk.finished_on?` · 🏁 ${esc(mk.finished_on)}`:''}`;
-    const detail=mk=>`<b>${esc(mk.name)}</b><br>${esc(fmtTotal(c,0,mk.distance,mk.steps))} · ${Math.round(mk.progress*100)}%${mk.finished_on?`<br>🏁 Finished on ${esc(mk.finished_on)}`:mk.next?`<br>Next: ${esc(mk.next.name)}, ${esc(mk.next.remaining>=10?Math.round(mk.next.remaining).toLocaleString():fmtNum(mk.next.remaining))} ${unitWord} to go`:''}`;
+    const who=mk=>j.by==='team'?esc(mk.name):personLink(mk.id,mk.name);
+    const detail=mk=>`<b>${who(mk)}</b><br>${esc(fmtTotal(c,0,mk.distance,mk.steps))} · ${Math.round(mk.progress*100)}%${mk.finished_on?`<br>🏁 Finished on ${esc(mk.finished_on)}`:mk.next?`<br>Next: ${esc(mk.next.name)}, ${esc(mk.next.remaining>=10?Math.round(mk.next.remaining).toLocaleString():fmtNum(mk.next.remaining))} ${unitWord} to go`:''}`;
     // Pins closer than a pin's width at this zoom share one, showing whoever's furthest along and how many more.
     const pins=L.layerGroup().addTo(journeyMap);
     const drawPins=()=>{
@@ -1071,7 +1154,7 @@ async function renderJourneyMap(c){
         L.marker([lead.lat,lead.lon],{icon:L.divIcon({className:'jm-icon',html:`<div class="jm-pin${lead.finished_on?' done':''}">${face(lead)}</div>${more?`<span class="jm-more">+${more}</span>`:''}`,iconSize:[38,38],iconAnchor:[19,19],popupAnchor:[0,-18]}),
           zIndexOffset:Math.round(lead.progress*1000)+more,title:more?`${lead.name} and ${more} more`:lead.name})
           .addTo(pins)
-          .bindPopup(more?`<div class="jm-list">${g.items.map(mk=>`<div><b>${esc(mk.name)}</b> ${about(mk)}</div>`).join('')}</div><p class="muted">Zoom in to see them apart.</p>`:detail(lead));
+          .bindPopup(more?`<div class="jm-list">${g.items.map(mk=>`<div><b>${who(mk)}</b> ${about(mk)}</div>`).join('')}</div><p class="muted">Zoom in to see them apart.</p>`:detail(lead));
       }
     };
     journeyMap.fitBounds(line.getBounds(),{paddingTopLeft:[56,40],paddingBottomRight:[40,40]});
@@ -1138,7 +1221,7 @@ function renderAdminUsers(){
   const rows=adminUsers;
   $('#adminUserCount').textContent=String(adminUserTotal);
   $('#adminUsersMore').classList.toggle('hidden',adminUsers.length>=adminUserTotal);
-  $('#adminUserList').innerHTML=rows.map(x=>`<div class="adminrow"><div><div class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</div>
+  $('#adminUserList').innerHTML=rows.map(x=>`<div class="adminrow"><div><div class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${personLink(x.id,x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</div>
     <div class="facts"><span>${esc(x.email)}</span><span>${plural(x.challenges,'challenge','challenges')}</span><span>${plural(x.activities,'activity','activities')}</span><span>${x.last_activity?`last active ${esc(fmtDate(x.last_activity))}`:'no activity yet'}</span>${x.tickets?`<span>${plural(x.tickets,'ticket','tickets')}</span>`:''}<span>joined ${esc(fmtDate(String(x.created_at||'').slice(0,10)))}</span></div></div>
     <div class="btnrow">${x.two_factor?'<span class="status" title="Two-step sign-in is on">2-step</span>':''}${x.deactivated_at?statusPillFor('deactivated','Deactivated'):''}${statusPillFor(x.role,x.role==='global_admin'?'Global admin':'Member')}<button class="ghost" data-edituser="${x.id}">Edit</button></div></div>`).join('')||'<p class="muted">No users match.</p>';
   $all('[data-edituser]').forEach(b=>{const x=adminUsers.find(x2=>x2.id===Number(b.dataset.edituser));b.onclick=()=>openEditUser(x)});
@@ -1147,7 +1230,7 @@ function renderAdminChallenges(){
   const q=$('#adminChallengeSearch').value.trim().toLowerCase(),st=$('#adminChallengeState').value;
   const rows=adminChallenges.filter(c=>(!st||c.state===st)&&(!q||`${c.name} ${c.owners||''} ${c.creator_name||''} ${c.invite_code}`.toLowerCase().includes(q)));
   $('#adminChallengeCount').textContent=rows.length===adminChallenges.length?String(rows.length):`${rows.length} of ${adminChallenges.length}`;
-  $('#adminChallengeList').innerHTML=rows.map(c=>`<div class="adminrow"><div><b>${esc(c.name)}</b>
+  $('#adminChallengeList').innerHTML=rows.map(c=>`<div class="adminrow"><div><b>${chLink(c.id,c.name)}</b>
     <div class="facts"><span>${esc(fmtRange(c.start_date,c.end_date))}</span><span>${esc(MEASURE_LABEL(c))}</span><span>${c.participation==='individual'?'Individuals':plural(c.teams,'team','teams')}</span><span>${plural(c.members,'member','members')}</span><span>${plural(c.activities,'activity','activities')}</span><span>owner: ${esc(c.owners||c.creator_name||'none')}</span><span>code ${esc(c.invite_code)}</span>${c.state==='finished'?`<span title="Finished challenges and their activity are deleted 60 days after they end">deleted on ${esc(fmtDate(c.purge_date))}</span>`:''}</div></div>
     <div class="btnrow">${statusPillFor(c.state,STATE_LABEL[c.state])}<button data-adminopen="${c.id}">Open</button><button class="ghost" data-adminmembers="${c.id}">Members</button><button class="ghost" data-adminedit="${c.id}">Edit</button></div></div>`).join('')||'<p class="muted">No challenges match.</p>';
   $all('[data-adminmembers]').forEach(b=>b.onclick=()=>openMembers(adminChallenges.find(c=>c.id===Number(b.dataset.adminmembers)),{admin:true}));
@@ -1174,8 +1257,8 @@ async function openMembers(c,{admin=false,note=''}={}){
       <label>Role<select id="amRole"><option value="member">Member</option><option value="owner">Owner</option></select></label></div>
       <button>Add to challenge</button><p class="muted">Anyone with an account. They're told, and can leave if they didn't expect it. No account yet? Share the invite link.</p></form>
     <p id="amMsg" class="${note?'muted':'error'}">${esc(note)}</p>
-    <div>${d.members.map(x=>`<div class="member-block"><div class="listrow"><div><div class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</div>
-      <div class="muted">${esc(x.email)} · ${x.role==='owner'?'owner':'member'}${x.teams?` · ${esc(x.teams)}`:individual?'':' · no team'} · ${plural(x.entries,'entry','entries')}${x.deactivated_at?' · deactivated':''}</div></div>
+    <div>${d.members.map(x=>`<div class="member-block"><div class="listrow"><div><div class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${personLink(x.id,x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</div>
+      <div class="muted">${x.email?`${esc(x.email)} · `:''}${x.role==='owner'?'owner':'member'}${x.teams?` · ${esc(x.teams)}`:individual?'':' · no team'} · ${plural(x.entries,'entry','entries')}${x.deactivated_at?' · deactivated':''}</div></div>
       <div class="btnrow">${x.entries?`<button type="button" class="ghost" data-amentries="${x.id}" aria-expanded="false">Entries</button>`:''}${x.id!==me.id||admin?`<button type="button" class="ghost" data-amremove="${x.id}">Remove</button>`:''}</div></div>
       <div class="member-entries hidden" data-amlist="${x.id}"></div></div>`).join('')||'<p class="muted">Nobody is in this challenge.</p>'}</div>`;
   if(!$('#modal').open)$('#modal').showModal();
@@ -1230,7 +1313,7 @@ async function renderAuditLog(more=false){
   try{
     const r=await api(`/api/admin/audit?limit=100&offset=${more?auditEntries.length:0}${q?`&q=${encodeURIComponent(q)}`:''}`);
     auditEntries=more?auditEntries.concat(r.entries):r.entries;
-    $('#auditList').innerHTML=auditEntries.map(e=>`<div class="listrow audit-row"><div><b>${esc(e.actor_name||'Someone')}</b> ${esc(e.action)}${e.target_name?` · <b>${esc(e.target_name)}</b>`:''}${e.challenge_name?` · ${esc(e.challenge_name)}`:''}${e.detail?`<div class="muted">${esc(e.detail)}</div>`:''}</div><span class="muted">${esc(fmtWhen(e.at))}</span></div>`).join('')||'<p class="muted">Nothing recorded yet.</p>';
+    $('#auditList').innerHTML=auditEntries.map(e=>`<div class="listrow audit-row"><div><b>${e.actor_name?personLink(e.actor_id,e.actor_name):'Someone'}</b> ${esc(e.action)}${e.target_name?` · <b>${personLink(e.target_id,e.target_name)}</b>`:''}${e.challenge_name?` · ${chLink(e.challenge_id,e.challenge_name)}`:''}${e.detail?`<div class="muted">${esc(e.detail)}</div>`:''}</div><span class="muted">${esc(fmtWhen(e.at))}</span></div>`).join('')||'<p class="muted">Nothing recorded yet.</p>';
     $('#auditMore').classList.toggle('hidden',!r.more);
   }catch(e){$('#auditList').innerHTML=`<p class="error" role="alert">${esc(e.message)}</p>`}
 }
@@ -1306,7 +1389,9 @@ function openMyAccount(){
       </select></label>
       <p class="muted">Only people in a challenge with you can see your profile, and only for challenges you share. Leaderboard totals are always visible to them; GPS routes never are.</p>
       <label class="check-row"><input type="checkbox" id="acctNotify"${me.notify_email?' checked':''}> <span>Email me when support replies to my tickets, or someone adds me to a challenge (if you get phone notifications, these come there instead)</span></label>
-      <label class="check-row"><input type="checkbox" id="acctNotifyPush"${me.notify_push?' checked':''}> <span>Phone notifications in the Active Together app (replies, being added, challenges starting and ending, a weekly summary)</span></label>
+      <label class="check-row"><input type="checkbox" id="acctNotifyPush"${me.notify_push?' checked':''}> <span>Phone notifications in the Active Together app</span></label>
+      <div class="push-kinds">${[['replies','Replies to my tickets'],['added','Someone adds me to a challenge'],['challenge','Challenges starting and ending'],['weekly','My weekly summary'],['kudos','👏 on my activity'],...(me.role==='global_admin'||me.admin_needs_two_factor?[['admin','New support tickets and server errors (admins)']]:[])]
+        .map(([k,l])=>`<label class="check-row"><input type="checkbox" data-pushkind="${k}"${me.push_prefs?.[k]!==false?' checked':''}> <span>${l}</span></label>`).join('')}</div>
       ${me.role==='global_admin'||me.admin_needs_two_factor?`<label class="check-row"><input type="checkbox" id="acctNotifyAdmin"${me.notify_admin?' checked':''}> <span>Email me about new support tickets and replies (global admins)</span></label>`:''}
       ${me.has_password?`<label>New password (leave blank to keep current)<input id="acctNewPassword" type="password" minlength="8" autocomplete="new-password"></label>
       <label>Current password (required to change email or password)<input id="acctCurrentPassword" type="password" autocomplete="current-password"></label>`
@@ -1316,6 +1401,7 @@ function openMyAccount(){
     </form>
     <p id="acctMsg" class="error" role="alert"></p>
     <div class="twostep"><h2>Two-step sign-in</h2><div id="tsBody"></div></div>
+    <div class="passkeys"><h2>Passkeys</h2><div id="passkeyList"><p class="muted">Loading…</p></div></div>
     <div class="devices"><h2>Signed-in devices</h2><div id="devicesList"><p class="muted">Loading…</p></div></div>
     <div class="danger-zone"><h2>Delete my account</h2>
       <p class="muted">Deletes your account, everything you've logged, your routes, follows and support tickets, straight away. A challenge you own alone passes to its longest-standing member, or is deleted if nobody else is in it. This can't be undone.</p>
@@ -1324,6 +1410,7 @@ function openMyAccount(){
   $('#modal').showModal();
   renderTwoStep();
   renderDevices();
+  renderPasskeys();
   // Google / Apple sign-ins linked to this account, each removable while there's another way in.
   api('/api/me/identities').then(r=>{
     const box=$('#acctLinked');if(!box||!r.identities.length)return;
@@ -1342,7 +1429,7 @@ function openMyAccount(){
   });
   $('#accountForm').onsubmit=guarded(async e=>{
     e.preventDefault();
-    const payload={name:$('#acctName').value.trim(),email:$('#acctEmail').value.trim(),bio:$('#acctBio').value,profileSharing:$('#acctSharing').value,notifyEmail:$('#acctNotify').checked,notifyPush:$('#acctNotifyPush').checked,...($('#acctNotifyAdmin')?{notifyAdmin:$('#acctNotifyAdmin').checked}:{})};
+    const payload={name:$('#acctName').value.trim(),email:$('#acctEmail').value.trim(),bio:$('#acctBio').value,profileSharing:$('#acctSharing').value,notifyEmail:$('#acctNotify').checked,notifyPush:$('#acctNotifyPush').checked,pushPrefs:Object.fromEntries($all('[data-pushkind]').map(b=>[b.dataset.pushkind,b.checked])),...($('#acctNotifyAdmin')?{notifyAdmin:$('#acctNotifyAdmin').checked}:{})};
     // Only send email when it changed - sending it at all asks for the current password.
     if(payload.email.toLowerCase()===String(me.email).toLowerCase())delete payload.email;
     const newPassword=$('#acctNewPassword').value;
@@ -1425,7 +1512,7 @@ async function refreshHelpBadge(){
   }catch(e){}
 }
 function ticketRow(t,showReporter){
-  return `<div class="listrow ticketrow" data-ticket="${t.id}"><div><b>${t.unread?'<span class="unread-dot" title="New"></span>':''}${esc(t.title)}</b><div class="muted">${esc(TICKET_TYPE_LABEL[t.type]||t.type)} · #${t.id}${showReporter?` · ${esc(t.reporter.name)}`:''} · updated ${esc(fmtWhen(t.updated_at))}${t.comment_count?` · ${t.comment_count} repl${t.comment_count===1?'y':'ies'}`:''}</div></div><div>${statusPill(t.status)}</div></div>`;
+  return `<div class="listrow ticketrow" data-ticket="${t.id}"><div><b>${t.unread?'<span class="unread-dot" title="New"></span>':''}${esc(t.title)}</b><div class="muted">${esc(TICKET_TYPE_LABEL[t.type]||t.type)} · #${t.id}${showReporter?` · ${personLink(t.reporter.id,t.reporter.name)}`:''} · updated ${esc(fmtWhen(t.updated_at))}${t.comment_count?` · ${t.comment_count} repl${t.comment_count===1?'y':'ies'}`:''}</div></div><div>${statusPill(t.status)}</div></div>`;
 }
 async function renderHelp(){
   try{
@@ -1446,9 +1533,9 @@ async function renderHelp(){
 async function openTicket(id){
   const t=await api(`/api/tickets/${id}`),admin=me.role==='global_admin';
   if(location.pathname.startsWith('/help'))setUrl(`/help/tickets/${id}`);
-  const convo=t.comments.map(c=>`<div class="bubble ${c.internal?'internal':c.from_support?'support':''}"><div class="who">${esc(c.author.name)}${c.from_support?' · Support':''}${c.internal?' · internal note (only admins see this)':''} · ${esc(fmtWhen(c.created_at))}</div>${esc(c.body).replace(/\n/g,'<br>')}</div>`).join('');
+  const convo=t.comments.map(c=>`<div class="bubble ${c.internal?'internal':c.from_support?'support':''}"><div class="who">${personLink(c.author.id,c.author.name)}${c.from_support?' · Support':''}${c.internal?' · internal note (only admins see this)':''} · ${esc(fmtWhen(c.created_at))}</div>${esc(c.body).replace(/\n/g,'<br>')}</div>`).join('');
   $('#modalBody').innerHTML=`<h2>${esc(t.title)}</h2>
-    <p>${statusPill(t.status)} <span class="muted">${esc(TICKET_TYPE_LABEL[t.type])} · #${t.id} · ${t.mine?'you':esc(t.reporter.name)+(t.reporter.email?` (${esc(t.reporter.email)})`:'')} · ${esc(fmtWhen(t.created_at))}</span></p>
+    <p>${statusPill(t.status)} <span class="muted">${esc(TICKET_TYPE_LABEL[t.type])} · #${t.id} · ${t.mine?'you':personLink(t.reporter.id,t.reporter.name)+(t.reporter.email?` (${esc(t.reporter.email)})`:'')} · ${esc(fmtWhen(t.created_at))}</span></p>
     <p class="pre-wrap">${esc(t.description)}</p>
     ${t.image_url?`<a href="${esc(t.image_url)}" target="_blank" rel="noopener"><img class="ticket-img" src="${esc(t.image_url)}" alt="Screenshot"></a>`:''}
     ${t.client_info?`<p class="muted">Device: ${esc(t.client_info)}</p>`:''}
@@ -1659,7 +1746,7 @@ async function loadMyActivity(append=false){
   myActivity=append?myActivity.concat(r.activities):r.activities;myActivityMore=r.more;
   $('#myActivity').innerHTML=myActivity.map(x=>{
     const c={metric:x.metric,distance_unit:x.distance_unit};
-    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${esc(x.challenge_name)}${x.team_name?` · ${esc(x.team_name)}`:''} · ${esc(fmtDay(x.activity_date))}${x.start_time?` · ${esc(x.start_time)}`:''}</div></div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b>${x.has_route?`<button class="ghost" data-mymap="${x.id}">Map</button>`:''}</div></div>`;
+    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${chLink(x.challenge_id,x.challenge_name)}${x.team_name?` · ${esc(x.team_name)}`:''} · ${esc(fmtDay(x.activity_date))}${x.start_time?` · ${esc(x.start_time)}`:''}</div></div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b>${x.has_route?`<button class="ghost" data-mymap="${x.id}">Map</button>`:''}</div></div>`;
   }).join('')||'<p class="muted">Nothing logged yet.</p>';
   $('#moreActivity').classList.toggle('hidden',!myActivityMore);
   $all('[data-mymap]').forEach(b=>{const x=myActivity.find(a=>a.id===Number(b.dataset.mymap));b.onclick=()=>openRouteMap(x,{metric:x.metric,distance_unit:x.distance_unit})});

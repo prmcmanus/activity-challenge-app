@@ -324,7 +324,7 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
         }
         item {
             SectionCard("Leaderboard") {
-                if (c.journey == null) {
+                run {
                     val period = vm.periods[challengeId] ?: "all"
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                         listOf("all" to "All time", "month" to "This month", "week" to "This week").forEachIndexed { i, (k, l) ->

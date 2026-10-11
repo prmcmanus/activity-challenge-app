@@ -481,7 +481,7 @@ async function loadAndroidCard(){
 let curMine=[];
 // Leaderboards show the top 10 and your own place; "Show all" asks for everyone (remembered for this visit).
 const fullBoards=new Set();
-// Leaderboards for all time, this month or this week (not for journeys, where progress builds up).
+// Leaderboards for all time, this month or this week. For a journey, the map and the share of the route stay all-time.
 let boardPeriod='all',curFeed=[],feedShown=6;
 const boardQuery=id=>{const q=[];if(!fullBoards.has(id))q.push('top=10');if(boardPeriod!=='all')q.push('period='+boardPeriod);return q.length?'?'+q.join('&'):''};
 async function loadChallenge(id){
@@ -579,9 +579,8 @@ function renderChallenge(){
     const more=total>shown;$(box).innerHTML=more?`<button type="button" class="ghost" data-showall="1">Show all ${total}</button>`:'';
     if(more)$(box).querySelector('button').onclick=async()=>{fullBoards.add(c.id);await refreshChallenge()};
   }
-  // The period tabs (not for journeys), and the latest entries with their 👏.
-  const journeyBoard=c.kind==='journey';
-  $('#periodTabs').classList.toggle('hidden',journeyBoard);
+  // The period tabs (a journey's map and route progress stay all-time), and the latest entries with their 👏.
+  $('#periodTabs').classList.remove('hidden');
   $('#periodTabs').innerHTML=[['all','All time'],['month','This month'],['week','This week']].map(([k,l])=>`<button type="button" role="tab" aria-selected="${boardPeriod===k}" class="${boardPeriod===k?'on':''}" data-period="${k}">${l}</button>`).join('');
   $all('[data-period]').forEach(b=>b.onclick=async()=>{boardPeriod=b.dataset.period;curLeaderboard=await api(`/api/challenges/${c.id}/leaderboard${boardQuery(c.id)}`);renderChallenge()});
   $('#feedCard').classList.toggle('hidden',!curFeed.length);

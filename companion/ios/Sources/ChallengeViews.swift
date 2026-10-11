@@ -229,7 +229,7 @@ struct ChallengeDetailView: View {
                 if !c.individual { teams(c, d) }
             }
             SectionCard("Leaderboard") {
-                if c.journey == nil {
+                do {
                     Picker("Period", selection: Binding(get: { model.periods[c.id] ?? "all" }, set: { p in Task { await model.setPeriod(c.id, p) } })) {
                         Text("All time").tag("all"); Text("This month").tag("month"); Text("This week").tag("week")
                     }.pickerStyle(.segmented)

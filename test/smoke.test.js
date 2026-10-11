@@ -3292,3 +3292,25 @@ test('passkeys: add one, sign in with it (no password), a replayed or foreign re
   assert.equal((await jsonFetch(`${origin}/api/me/passkeys/${id}`, u.cookie, 'DELETE')).status, 200);
   assert.equal((await signIn(9)).status, 401);
 });
+
+test("the email allowance: sign-ups by email pause near the day's limit (Google or Apple instead); essentials still go", async () => {
+  const http = require('node:http');
+  const sent = [];
+  const mock = http.createServer((req, res) => { let b = ''; req.on('data', c => b += c); req.on('end', () => { sent.push(JSON.parse(b)); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"id":"x"}'); }); });
+  await new Promise(r => mock.listen(0, '127.0.0.1', r));
+  const srv = await spawnServer({ RESEND_API_KEY: 're_test', RESEND_API_URL: `http://127.0.0.1:${mock.address().port}/emails`, MAIL_DAY_MAX: '4', MAIL_RESERVE: '2' });
+  const reg = n => fetch(`${srv.origin}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: `Mia ${n}`, email: `mia${n}@example.com`, password: 'SuperSecret123!' }) }).then(async r => ({ status: r.status, body: await r.json() }));
+  const settle = () => new Promise(r => setTimeout(r, 300));
+  try {
+    assert.equal((await reg(1)).status, 201);
+    assert.equal((await reg(2)).status, 201);
+    await settle();
+    const third = await reg(3);
+    assert.deepEqual([third.status, third.body.emailFull, /Google or Apple/.test(third.body.error)], [503, true, true]);
+    assert.equal((await fetch(`${srv.origin}/api/config`).then(r => r.json())).emailSignupOpen, false);
+    // A password reset is essential: it still goes, up to the day's limit and no further.
+    for (let i = 0; i < 3; i++) await fetch(`${srv.origin}/api/password/forgot`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: i < 2 ? 'mia1@example.com' : 'mia2@example.com' }) });
+    await settle();
+    assert.equal(sent.length, 4, 'two confirmations and two resets, then nothing over the limit');
+  } finally { await srv.stop(); mock.close(); }
+});

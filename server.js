@@ -396,8 +396,10 @@ const AUTH_RATE_LIMIT_MAX=Number(process.env.AUTH_RATE_LIMIT_MAX||20), AUTH_RATE
 // Sign-in attempts count per network and email, so a whole office behind one address can sign in on a Monday
 // morning; a network as a whole gets five times that, which still stops one address trying many accounts.
 // Sign-ups get three times the per-network limit, for a team all registering at once.
-const LOGIN_NETWORK_MAX=Number(process.env.LOGIN_NETWORK_RATE_LIMIT_MAX||AUTH_RATE_LIMIT_MAX*5);
-const REGISTER_RATE_LIMIT_MAX=Number(process.env.REGISTER_RATE_LIMIT_MAX||AUTH_RATE_LIMIT_MAX*3);
+// Generous enough for a whole office signing up at a launch event on one connection (about 300 sign-ups and 500
+// sign-ins in 15 minutes); each account still has its own limit, and the website has the bot check.
+const LOGIN_NETWORK_MAX=Number(process.env.LOGIN_NETWORK_RATE_LIMIT_MAX||AUTH_RATE_LIMIT_MAX*25);
+const REGISTER_RATE_LIMIT_MAX=Number(process.env.REGISTER_RATE_LIMIT_MAX||AUTH_RATE_LIMIT_MAX*15);
 const loginLimited=(kind,ip,email)=>hitRateLimit(`${kind}:${ip}:${String(email||'').toLowerCase().trim()}`,AUTH_RATE_LIMIT_MAX,AUTH_RATE_LIMIT_WINDOW_MS)|hitRateLimit(`${kind}net:${ip}`,LOGIN_NETWORK_MAX,AUTH_RATE_LIMIT_WINDOW_MS);
 const UPLOAD_RATE_LIMIT_MAX=Number(process.env.UPLOAD_RATE_LIMIT_MAX||30), UPLOAD_RATE_LIMIT_WINDOW_MS=Number(process.env.UPLOAD_RATE_LIMIT_WINDOW_MS||15*60_000);
 const rateBuckets=new Map();
@@ -467,7 +469,7 @@ function sendEmailCheck(uid,email,{change=false}={}){
   const t=crypto.randomBytes(32).toString('base64url');
   db.prepare('DELETE FROM email_checks WHERE user_id=?').run(uid);
   db.prepare("INSERT INTO email_checks(token_hash,user_id,email,expires_at) VALUES(?,?,?,datetime('now','+3 days'))").run(sha256hex(t),uid,email);
-  sendMail({to:email,subject:change?'Confirm your new email address for Active Together':'Confirm your email address for Active Together',
+  sendMail({essential:true,to:email,subject:change?'Confirm your new email address for Active Together':'Confirm your email address for Active Together',
     text:`Hello,\n\n${change?'To use this address for your Active Together account, open this link':'Please confirm this is your email address for Active Together: open this link'} within the next three days:\n\n${ORIGIN}/verify/${t}\n\nIf you didn't ${change?'ask for this':'make an account'}, ignore this email${change?' - nothing changes':''}.\n\nActive Together\n${ORIGIN}`});
   return true;
 }
@@ -476,7 +478,7 @@ function sendEmailCheck(uid,email,{change=false}={}){
 function securityMail(uid,what,{to=null}={}){
   const x=db.prepare('SELECT email,email_verified_at FROM users WHERE id=?').get(uid);
   if(!x||!(to||x.email_verified_at))return;
-  sendMail({to:to||x.email,subject:'Security notice from Active Together',text:`Hello,\n\n${what} - on the Active Together account for ${x.email}, at ${new Date().toISOString().slice(0,16).replace('T',' ')} UTC.\n\nIf that was you, there's nothing to do.\n\nIf it wasn't, reset your password now at ${ORIGIN}/forgot and tell us at support@activetogether.team.\n\nActive Together\n${ORIGIN}`});
+  sendMail({essential:true,to:to||x.email,subject:'Security notice from Active Together',text:`Hello,\n\n${what} - on the Active Together account for ${x.email}, at ${new Date().toISOString().slice(0,16).replace('T',' ')} UTC.\n\nIf that was you, there's nothing to do.\n\nIf it wasn't, reset your password now at ${ORIGIN}/forgot and tell us at support@activetogether.team.\n\nActive Together\n${ORIGIN}`});
 }
 // --- Passkeys (WebAuthn) -------------------------------------------------------------------------------------
 // The site's own name is the relying party; the website's origin and the apps' (Android names itself by its signing
@@ -533,8 +535,24 @@ function checkAuthData(ad){
 
 // Replies go to the support mailbox rather than the no-reply sender.
 const MAIL_REPLY_TO=process.env.MAIL_REPLY_TO||'support@activetogether.team';
-async function sendMail({to,subject,text}){
+// The email service's allowance (Resend's free plan: 100 a day, 3,000 a month), counted here so it's never
+// overrun. The last few each day and month are kept for what can't wait - password resets, security notices,
+// confirming links (essential); other news (being added, ticket replies, error alerts) stops a little earlier.
+const MAIL_DAY_MAX=Number(process.env.MAIL_DAY_MAX||100),MAIL_MONTH_MAX=Number(process.env.MAIL_MONTH_MAX||3000),MAIL_RESERVE=Number(process.env.MAIL_RESERVE||10);
+db.exec('CREATE TABLE IF NOT EXISTS mail_counts(period TEXT PRIMARY KEY,n INTEGER NOT NULL DEFAULT 0)');
+const mailPeriods=()=>{const d=new Date().toISOString();return ['day:'+d.slice(0,10),'month:'+d.slice(0,7)]};
+function mailLeft(){
+  const [day,month]=mailPeriods(),n=k=>db.prepare('SELECT n FROM mail_counts WHERE period=?').get(k)?.n||0;
+  return Math.min(MAIL_DAY_MAX-n(day),MAIL_MONTH_MAX-n(month));
+}
+// New email-and-password accounts each need a confirming email: they pause when only the reserve is left.
+const emailSignupOpen=()=>!emailEnabled()||mailLeft()>MAIL_RESERVE;
+const MAIL_FULL_MSG="We've sent as many emails as we can today, so a new account can't get its confirming email until tomorrow. Sign up with Google or Apple instead - no email needed - or try again tomorrow.";
+async function sendMail({to,subject,text,essential=false}){
   if(!RESEND_API_KEY)return false;
+  const left=mailLeft();
+  if(left<=0||(!essential&&left<=MAIL_RESERVE)){console.error(`Email not sent (today's or this month's allowance is used up): ${subject}`);return false}
+  for(const k of mailPeriods())db.prepare('INSERT INTO mail_counts(period,n) VALUES(?,1) ON CONFLICT(period) DO UPDATE SET n=n+1').run(k);
   try{
     const r=await fetch(RESEND_API_URL,{method:'POST',headers:{Authorization:`Bearer ${RESEND_API_KEY}`,'Content-Type':'application/json'},
       body:JSON.stringify({from:MAIL_FROM,to:[to],reply_to:MAIL_REPLY_TO,subject,text}),signal:AbortSignal.timeout(15000)});
@@ -765,6 +783,7 @@ const purgeSessions=()=>{
   db.prepare("DELETE FROM sessions WHERE expires_at<=datetime('now')").run();
   db.prepare("DELETE FROM password_resets WHERE used_at IS NOT NULL OR expires_at<=datetime('now')").run();
   db.prepare("DELETE FROM audit_log WHERE at<datetime('now','-365 days')").run();
+  db.prepare("DELETE FROM mail_counts WHERE period<?").run('day:'+new Date(Date.now()-40*864e5).toISOString().slice(0,10));
   // Keeps the query planner's statistics fresh as the tables grow (cheap; only re-analyses what changed).
   db.exec('PRAGMA optimize');
 };
@@ -1479,7 +1498,7 @@ async function api(req,res,url){
  if(u&&u.renewCookie)res.setHeader('Set-Cookie',setSessionCookie(u.renewCookie)['Set-Cookie']);
  if(m==='GET'&&url.pathname==='/api/config'){const cap=captchaConfig();return send(res,200,{captcha:cap,recaptchaSiteKey:cap&&cap.provider==='recaptcha'?cap.siteKey:null,shortcutUrl:SHORTCUT_URL||null,inviteOnly:inviteOnly(),passwordResetEmail:emailEnabled(),
    google:GOOGLE_WEB_CLIENT_ID?{clientId:GOOGLE_WEB_CLIENT_ID,iosClientId:GOOGLE_IOS_CLIENT_ID||null}:null,apple:{servicesId:APPLE_SERVICES_ID||null},
-   stores:STORES,tiles:{url:TILE_URL,attribution:TILE_ATTRIBUTION,maxZoom:TILE_MAX_ZOOM},
+   emailSignupOpen:emailSignupOpen(),stores:STORES,tiles:{url:TILE_URL,attribution:TILE_ATTRIBUTION,maxZoom:TILE_MAX_ZOOM},
    push:{android:pushEnabled.android?{appId:FCM.appId,apiKey:FCM.apiKey,projectId:FCM_SA.project_id,senderId:FCM.senderId}:null,ios:pushEnabled.ios}})}
  // Forgotten password: always the same answer, so it never says whether an email has an account. The email
  // goes out in the background so the reply takes as long either way.
@@ -1500,7 +1519,7 @@ async function api(req,res,url){
    }
    if(allowed){
      const link=makeResetLink(who.id,60);
-     sendMail({to:email,subject:'Reset your Active Together password',text:`Hello,\n\nSomeone (hopefully you) asked to reset the password for the Active Together account that uses this email address. To choose a new password, open this link within the next hour:\n\n${link.url}\n\nIf you didn't ask for this, ignore this email: your password stays as it is.\n\nActive Together\n${ORIGIN}`});
+     sendMail({essential:true,to:email,subject:'Reset your Active Together password',text:`Hello,\n\nSomeone (hopefully you) asked to reset the password for the Active Together account that uses this email address. To choose a new password, open this link within the next hour:\n\n${link.url}\n\nIf you didn't ask for this, ignore this email: your password stays as it is.\n\nActive Together\n${ORIGIN}`});
    }
    return send(res,200,{ok:true,emailEnabled:emailEnabled()});
  }
@@ -1539,6 +1558,7 @@ async function api(req,res,url){
    if(!name||!email||!b.password)return send(res,400,{error:'Name, email and a password of at least 8 characters are required'});
    const fieldErr=tooLong(name,MAX_LEN.person,'your name')||(!validEmail(email)&&'Enter a valid email address')||passwordProblem(b.password,{email,name});
    if(fieldErr)return send(res,400,{error:fieldErr});
+   if(!emailSignupOpen())return send(res,503,{error:MAIL_FULL_MSG,emailFull:true});
    if(b.invite_code&&codeGuessBlocked(ip))return send(res,429,CODE_BLOCKED);
    // Invite only: a new account needs the invite code (or emailed invite) someone shared.
    if(inviteOnly()&&!validInvite(b.invite_code,b.invite_token)){if(b.invite_code)noteBadCode(ip);return send(res,403,{error:b.invite_code?"That invite code wasn't recognised. Check it, or ask for a new invite link.":'Active Together is invite only. Use the invite link or code someone sent you to create an account.',inviteRequired:true})}
@@ -1645,6 +1665,7 @@ async function api(req,res,url){
    if(!need(res,u))return;
    if(!emailEnabled())return send(res,400,{error:"This site can't send email at the moment"});
    if(u.email_verified&&!u.pending_email)return send(res,400,{error:'Your email address is already confirmed'});
+   if(!emailSignupOpen())return send(res,503,{error:"We've sent as many emails as we can today - please try again tomorrow."});
    if(hitRateLimit('resend:'+u.id,3,60*60_000))return send(res,429,{error:'We’ve sent a few already - check your spam folder, or try again in an hour.'});
    sendEmailCheck(u.id,u.pending_email||u.email,{change:!!u.pending_email});
    return send(res,200,{ok:true,to:u.pending_email||u.email});
@@ -1772,6 +1793,7 @@ async function api(req,res,url){
    if(email===u.email){if(u.pending_email){db.prepare('UPDATE users SET pending_email=NULL WHERE id=?').run(u.id);db.prepare('DELETE FROM email_checks WHERE user_id=?').run(u.id)}email=undefined}
    if(email!==undefined&&!validEmail(email))return send(res,400,{error:'Enter a valid email address'});
    if(email!==undefined&&db.prepare('SELECT 1 FROM users WHERE email=? AND id!=?').get(email,u.id))return send(res,409,{error:'An account with that email already exists'});
+   if(email!==undefined&&emailEnabled()&&!emailSignupOpen())return send(res,503,{error:"We've sent as many emails as we can today, so the new address can't be confirmed until tomorrow. Please try again then."});
    if(b.newPassword){const pwErr=passwordProblem(b.newPassword,{email:u.email,name:name||u.name});if(pwErr)return send(res,400,{error:pwErr})}
    const changingSensitive=email!==undefined||!!b.newPassword;
    if(changingSensitive){

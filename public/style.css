@@ -119,4 +119,4 @@ dialog#modal .close{position:sticky;top:0;z-index:3;background:var(--surface);bo
 .push-kinds{margin:-4px 0 6px 26px}
 .push-kinds .check-row{font-size:14px;margin:6px 0}
 .passkeys{margin-top:24px}
-
+.notice-inline{background:var(--tint-yellow);border:1px solid var(--tint-yellow-line);border-radius:10px;padding:10px 12px;font-size:14px}

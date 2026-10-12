@@ -2428,7 +2428,7 @@ async function api(req,res,url){
    if(!need(res,u,['global_admin']))return;
    const q=String(url.searchParams.get('q')||'').trim().toLowerCase(),limit=Number(url.searchParams.get('limit'))||0,offset=Math.max(0,Number(url.searchParams.get('offset'))||0);
    const where=q?" WHERE lower(us.name) LIKE ? ESCAPE '\\' OR us.email LIKE ? ESCAPE '\\'":'',like='%'+q.replace(/[\\%_]/g,c=>'\\'+c)+'%',args=q?[like,like]:[];
-   const users=db.prepare(`SELECT us.id,us.email,us.name,us.role,us.created_at,us.avatar_url,us.deactivated_at,(us.totp_secret IS NOT NULL) two_factor,
+   const users=db.prepare(`SELECT us.id,us.email,us.name,us.role,us.created_at,us.avatar_url,us.bio,us.deactivated_at,(us.totp_secret IS NOT NULL) two_factor,
      (SELECT COUNT(*) FROM challenge_members cm WHERE cm.user_id=us.id) challenges,
      (SELECT COUNT(*) FROM activities a WHERE a.user_id=us.id) activities,
      (SELECT MAX(a.activity_date) FROM activities a WHERE a.user_id=us.id) last_activity,
@@ -2519,10 +2519,16 @@ async function api(req,res,url){
    const email=b.email!==undefined?String(b.email).toLowerCase().trim():undefined;
    if(email!==undefined&&!email)return send(res,400,{error:'Email cannot be empty'});
    if(email!==undefined&&email!==target.email&&!validEmail(email))return send(res,400,{error:'Enter a valid email address'});
+   let avatarUrl;
+   try{avatarUrl=b.avatarUrl===undefined?undefined:(validateImageUrl(b.avatarUrl)??null)}catch(e){return send(res,400,{error:e.message})}
+   const bio=b.bio!==undefined?(String(b.bio??'').trim().slice(0,280)||null):undefined;
    let passwordHash;
    if(b.password){const pwErr=passwordProblem(b.password,{email:email||target.email,name:name||target.name});if(pwErr)return send(res,400,{error:pwErr});passwordHash=await hash(b.password)}
    try{
      updateUserFields(id,{name,email,passwordHash});
+     // Their photo and "about me", for support or to take down something harmful: null (or empty) removes them.
+     if(avatarUrl!==undefined)db.prepare('UPDATE users SET avatar_url=? WHERE id=?').run(avatarUrl,id);
+     if(bio!==undefined)db.prepare('UPDATE users SET bio=? WHERE id=?').run(bio,id);
      if(b.role!==undefined)db.prepare('UPDATE users SET role=? WHERE id=?').run(b.role,id);
    }catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
    if(b.active!==undefined)db.prepare('UPDATE users SET deactivated_at=? WHERE id=?').run(b.active?null:(target.deactivated_at||nowIso()),id);
@@ -2535,7 +2541,7 @@ async function api(req,res,url){
    if(email!==undefined&&email!==target.email){db.prepare('UPDATE users SET email_verified_at=NULL,pending_email=NULL WHERE id=?').run(id);sendEmailCheck(id,email)}
    if(passwordHash)securityMail(id,'An administrator set a new password');
    if(clear2fa)securityMail(id,'An administrator turned off two-step sign-in');
-   const changes=[name!==undefined&&name!==target.name&&'name',email!==undefined&&email!==target.email&&'email',passwordHash&&'password',
+   const changes=[avatarUrl!==undefined&&(avatarUrl?'photo replaced':'photo removed'),bio!==undefined&&(bio?'about me changed':'about me removed'),name!==undefined&&name!==target.name&&'name',email!==undefined&&email!==target.email&&'email',passwordHash&&'password',
      b.role!==undefined&&b.role!==target.role&&`role: ${b.role==='global_admin'?'global admin':'member'}`,deactivating&&'deactivated',b.active===true&&target.deactivated_at&&'reactivated',clear2fa&&'two-step sign-in off'].filter(Boolean);
    if(changes.length)audit(u,'changed account',{user:id,detail:changes.join(', ')});
    return send(res,200,{ok:true})

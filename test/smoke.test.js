@@ -3314,3 +3314,18 @@ test("the email allowance: sign-ups by email pause near the day's limit (Google 
     assert.equal(sent.length, 4, 'two confirmations and two resets, then nothing over the limit');
   } finally { await srv.stop(); mock.close(); }
 });
+
+test('global admins can remove (or replace) someone\'s photo and "about me"', async () => {
+  const u = await register('Pat Photo');
+  const png = 'data:image/png;base64,' + Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...Array(40).fill(0)]).toString('base64');
+  const up = await jsonFetch(`${origin}/api/uploads`, u.cookie, 'POST', { dataUrl: png });
+  await jsonFetch(`${origin}/api/me`, u.cookie, 'PATCH', { avatarUrl: up.body.url, bio: 'Something nasty' });
+  const login = await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }) });
+  const admin = login.headers.get('set-cookie').split(';')[0];
+  assert.equal((await jsonFetch(`${origin}/api/admin/users/${u.user.id}`, u.cookie, 'PATCH', { avatarUrl: null })).status, 403, 'not for members');
+  assert.equal((await jsonFetch(`${origin}/api/admin/users/${u.user.id}`, admin, 'PATCH', { avatarUrl: null, bio: '' })).status, 200);
+  const me = (await jsonFetch(`${origin}/api/me`, u.cookie)).body.user;
+  assert.deepEqual([me.avatar_url, me.bio], [null, null]);
+  const log = (await jsonFetch(`${origin}/api/admin/audit?limit=20`, admin)).body.entries.find(e => e.target_id === u.user.id && e.action === 'changed account');
+  assert.match(log.detail, /photo removed, about me removed/);
+});

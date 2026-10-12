@@ -157,7 +157,7 @@ fun JourneyEditor(vm: AppViewModel, draft: JourneyDraft, onModeChange: () -> Uni
             draft.preview = withContext(Dispatchers.IO) { vm.api().previewJourney(j) }
             draft.status = null
         } catch (e: ApiException) { draft.preview = null; draft.status = e.message; draft.statusIsError = true }
-        catch (e: Exception) { draft.preview = null; draft.status = "Couldn't reach Active Together: ${e.message}"; draft.statusIsError = true }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { draft.preview = null; draft.status = "Couldn't reach Active Together: ${e.message}"; draft.statusIsError = true }
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -222,7 +222,7 @@ private fun PlaceField(vm: AppViewModel, label: String, place: DraftPlace?, onPi
             try {
                 val r = withContext(Dispatchers.IO) { vm.api().searchPlaces(query) }
                 results = r; note = if (r.isEmpty()) "Nothing found - try another name, or tap the map." else null
-            } catch (e: Exception) { note = e.message }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { note = e.message }
         }
     }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {

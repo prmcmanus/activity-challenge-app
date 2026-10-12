@@ -61,7 +61,7 @@ private suspend fun <T> AppViewModel.tryInline(onError: (String) -> Unit, block:
     withContext(Dispatchers.IO) { block(api()) }
 } catch (e: ApiException) {
     if (e.status == 401) call<T> { throw e } else onError(e.message ?: "That didn't work"); null
-} catch (e: Exception) {
+} catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
     onError("Couldn't reach Active Together: ${e.message ?: e.javaClass.simpleName}"); null
 }
 

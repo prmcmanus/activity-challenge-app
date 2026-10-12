@@ -188,7 +188,7 @@ private fun ForgotPasswordDialog(vm: AppViewModel, start: String, close: () -> U
             err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         } },
         confirmButton = { if (sent) androidx.compose.material3.TextButton(onClick = close) { Text("Done") } else androidx.compose.material3.TextButton(enabled = email.contains('@'), onClick = {
-            scope.launch { try { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.activetogether.companion.ActiveTogetherApi(null).forgotPassword(email) }; sent = true } catch (e: Exception) { err = e.message } }
+            scope.launch { try { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.activetogether.companion.ActiveTogetherApi(null).forgotPassword(email) }; sent = true } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { err = e.message } }
         }) { Text("Send me a link") } },
         dismissButton = { if (!sent) androidx.compose.material3.TextButton(onClick = close) { Text("Cancel") } })
 }

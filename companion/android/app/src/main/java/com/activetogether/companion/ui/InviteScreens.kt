@@ -61,7 +61,7 @@ fun InviteScreen(vm: AppViewModel, code: String, opened: (Int) -> Unit, dismiss:
     var busy by remember { mutableStateOf(false) }
     LaunchedEffect(code) {
         vm.clearInvite()
-        try { preview = withContext(Dispatchers.IO) { vm.api().invitePreview(code) } } catch (e: Exception) { failed = e.message ?: "Couldn't check that invite" }
+        try { preview = withContext(Dispatchers.IO) { vm.api().invitePreview(code) } } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { failed = e.message ?: "Couldn't check that invite" }
     }
     Column(Modifier.verticalScroll(rememberScrollState()).padding(PagePadding), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         val p = preview

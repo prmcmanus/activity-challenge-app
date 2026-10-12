@@ -61,9 +61,11 @@ fun openHealthConnectSettings(context: android.content.Context) {
     val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
         Intent("android.health.connect.action.MANAGE_HEALTH_PERMISSIONS").putExtra(Intent.EXTRA_PACKAGE_NAME, context.packageName)
     else Intent(HealthConnectClient.ACTION_HEALTH_CONNECT_SETTINGS)
-    try { context.startActivity(intent) } catch (e: ActivityNotFoundException) {
-        runCatching { context.startActivity(Intent(HealthConnectClient.ACTION_HEALTH_CONNECT_SETTINGS)) }
-    }
+    // Newer Android may refuse to open its permissions screen for other apps (a SecurityException): fall back to Health
+    // Connect's own settings, then to this app's settings, rather than crash.
+    val fallbacks = listOf(intent, Intent(HealthConnectClient.ACTION_HEALTH_CONNECT_SETTINGS),
+        Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", context.packageName, null)))
+    for (i in fallbacks) { try { context.startActivity(i); return } catch (e: Exception) { } }
 }
 
 @Composable

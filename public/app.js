@@ -1332,6 +1332,10 @@ function openEditUser(x){
     <form id="editUserForm">
       <label>Name<input id="euName" value="${esc(x.name)}" required></label>
       <label>Email<input id="euEmail" type="email" value="${esc(x.email)}" required></label>
+      <label for="euPhoto">Profile photo</label>
+      <div class="inline-row"><span id="euPhotoPreview">${avatarHtml(x.avatar_url,x.name,'imgpreview')}</span>${x.avatar_url?'<button type="button" class="ghost" id="euPhotoRemove">Remove photo</button>':''}</div>
+      <input type="file" id="euPhoto" accept="image/*">
+      <label>About me<textarea id="euBio" rows="2" maxlength="280">${esc(x.bio||'')}</textarea></label>
       <label>Role<select id="euRole"><option value="member"${x.role==='member'?' selected':''}>Member</option><option value="global_admin"${x.role==='global_admin'?' selected':''}>Global admin</option></select></label>
       <label>Reset password (leave blank to keep current)<input id="euPassword" type="password" minlength="8" autocomplete="new-password"></label>
       <button>Save changes</button>
@@ -1362,12 +1366,19 @@ function openEditUser(x){
     if(typed.trim().toLowerCase()!==x.email.toLowerCase()){$('#euMsg').textContent='The email did not match, so nothing was deleted.';return}
     try{await api(`/api/admin/users/${x.id}`,{method:'DELETE'});$('#modal').close();renderAdmin()}catch(err){$('#euMsg').textContent=err.message}
   };
+  let photoRemoved=false;
+  if($('#euPhotoRemove'))$('#euPhotoRemove').onclick=()=>{photoRemoved=true;$('#euPhotoPreview').innerHTML=avatarHtml(null,x.name,'imgpreview');$('#euPhotoRemove').remove()};
+  $('#euPhoto').addEventListener('change',()=>{const f=$('#euPhoto').files[0];if(f){photoRemoved=false;$('#euPhotoPreview').innerHTML=`<img src="${URL.createObjectURL(f)}" class="imgpreview" alt="">`}});
   $('#editUserForm').onsubmit=guarded(async e=>{
     e.preventDefault();
     const payload={name:$('#euName').value.trim(),email:$('#euEmail').value.trim(),role:$('#euRole').value};
     const pw=$('#euPassword').value;
     if(pw)payload.password=pw;
-    try{await api(`/api/admin/users/${x.id}`,{method:'PATCH',body:JSON.stringify(payload)});$('#modal').close();renderAdmin()}catch(err){$('#euMsg').textContent=err.message}
+    if($('#euBio').value.trim()!==(x.bio||''))payload.bio=$('#euBio').value;
+    if(photoRemoved)payload.avatarUrl=null;
+    try{
+      const f=$('#euPhoto').files[0];if(f)payload.avatarUrl=await uploadImageFile(f,320,0.85);
+      await api(`/api/admin/users/${x.id}`,{method:'PATCH',body:JSON.stringify(payload)});$('#modal').close();renderAdmin()}catch(err){$('#euMsg').textContent=err.message}
   });
 }
 

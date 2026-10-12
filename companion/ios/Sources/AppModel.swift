@@ -534,13 +534,13 @@ enum BackgroundSync {
             // Nothing new to choose from: say so, rather than opening an empty review.
             if !candidates.contains(where: { !$0.outstanding.isEmpty }) {
                 review = nil
-                syncStatus = stepNote + (candidates.isEmpty ? "No workouts in Apple Health fall within your challenges' dates." : "You're up to date: every workout in Apple Health is already synced.")
+                syncStatus = stepNote + (candidates.isEmpty ? "No new workouts to add from Apple Health." : "No new workouts to add: everything in Apple Health for your challenges' dates is already synced.")
                 return
             }
             review = candidates.map { c in
                 ReviewItem(c, unit: c.outstanding.first(where: \.measuresDistance)?.distanceUnit ?? c.fits.first(where: \.measuresDistance)?.distanceUnit ?? Prefs.preferredUnit)
             }
-            syncStatus = stepNote + (candidates.isEmpty ? "No workouts in Apple Health fall within your challenges' dates." : "")
+            syncStatus = stepNote + (candidates.isEmpty ? "No new workouts to add from Apple Health." : "")
         } catch let e as APIError where e.status == 401 {
             forceSignOut("Your session has expired. Please sign in again.")
         } catch {

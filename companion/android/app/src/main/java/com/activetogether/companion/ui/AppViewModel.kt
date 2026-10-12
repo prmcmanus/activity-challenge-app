@@ -118,7 +118,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         withContext(Dispatchers.IO) { block(api()) }
     } catch (e: ApiException) {
         if (e.status == 401) { forceSignOut("Your session has expired. Please sign in again."); null } else { message = e.message; null }
-    } catch (e: Exception) {
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
         message = "Couldn't reach Active Together: ${e.message ?: e.javaClass.simpleName}"; null
     }
 
@@ -185,14 +185,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Sign in with a passkey on this phone (Credential Manager). Returns an error to show, or null (signed in, or cancelled). */
     suspend fun passkeySignIn(context: android.content.Context): String? {
-        val opts = try { withContext(Dispatchers.IO) { ActiveTogetherApi(null).passkeyLoginOptions() } } catch (e: Exception) { return e.message ?: "Couldn't reach Active Together" }
+        val opts = try { withContext(Dispatchers.IO) { ActiveTogetherApi(null).passkeyLoginOptions() } } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { return e.message ?: "Couldn't reach Active Together" }
         val res = try {
             androidx.credentials.CredentialManager.create(context).getCredential(context, androidx.credentials.GetCredentialRequest(listOf(androidx.credentials.GetPublicKeyCredentialOption(opts))))
         } catch (e: androidx.credentials.exceptions.GetCredentialCancellationException) { return null
         } catch (e: androidx.credentials.exceptions.NoCredentialException) { return "There's no Active Together passkey on this phone yet. Sign in another way, then add one under Me, Edit."
-        } catch (e: Exception) { return "Passkeys aren't available on this phone just now: ${e.message}" }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { return "Passkeys aren't available on this phone just now: ${e.message}" }
         val json = (res.credential as? androidx.credentials.PublicKeyCredential)?.authenticationResponseJson ?: return "No passkey came back"
-        val token = try { withContext(Dispatchers.IO) { ActiveTogetherApi(null).passkeyLogin(json) } } catch (e: ApiException) { return e.message } catch (e: Exception) { return "Couldn't reach Active Together" }
+        val token = try { withContext(Dispatchers.IO) { ActiveTogetherApi(null).passkeyLogin(json) } } catch (e: ApiException) { return e.message } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { return "Couldn't reach Active Together" }
         signedInWith(token); return null
     }
     /** Make a passkey on this phone for my account. Returns an error, or null when saved (or cancelled: false). */
@@ -201,7 +201,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val res = try {
             androidx.credentials.CredentialManager.create(context).createCredential(context, androidx.credentials.CreatePublicKeyCredentialRequest(opts))
         } catch (e: androidx.credentials.exceptions.CreateCredentialCancellationException) { return ""
-        } catch (e: Exception) { return "Couldn't make a passkey: ${e.message}" }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { return "Couldn't make a passkey: ${e.message}" }
         val json = (res as? androidx.credentials.CreatePublicKeyCredentialResponse)?.registrationResponseJson ?: return "No passkey came back"
         return if (call { it.savePasskey(json, "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()) } != null) null else message.also { message = null }
     }
@@ -269,7 +269,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (step.ticket != null) { done(null, step.ticket); return@launch }
             signedInWith(step.token!!)
             done(null, null)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
             done(e.message ?: "Sign in failed", null)
         }
     }
@@ -281,7 +281,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             prefs.email = email.trim()
             signedInWith(token)
             done(null)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
             done(e.message ?: "Couldn't create the account")
         }
     }
@@ -295,7 +295,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             done(null, null, false)
         } catch (e: ApiException) {
             done(e.message, null, e.body?.optBoolean("inviteRequired") == true)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
             done(e.message ?: "Sign in failed", null, false)
         }
     }
@@ -306,7 +306,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val token = withContext(Dispatchers.IO) { ActiveTogetherApi().loginCode(ticket, code.trim()) }
             signedInWith(token)
             done(null)
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
             done(e.message ?: "Sign in failed")
         }
     }
@@ -542,19 +542,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // Nothing new to choose from: say so, rather than opening an empty review.
             if (candidates.none { it.outstanding.isNotEmpty() }) {
                 review = null
-                syncStatus = stepNote + if (candidates.isEmpty()) "No workouts in Health Connect fall within your challenges' dates." else "You're up to date: every workout in Health Connect is already synced."
+                syncStatus = stepNote + if (candidates.isEmpty()) "No new workouts to add from Health Connect." else "No new workouts to add: everything in Health Connect for your challenges' dates is already synced."
                 return@launch
             }
             review = candidates.map { c ->
                 val unit = c.outstanding.firstOrNull { it.measuresDistance }?.distanceUnit ?: c.fits.firstOrNull { it.measuresDistance }?.distanceUnit ?: prefs.preferredUnit
                 ReviewItem(c, unit)
             }
-            syncStatus = stepNote + if (candidates.isEmpty()) "No workouts in Health Connect fall within your challenges' dates." else ""
+            syncStatus = stepNote + if (candidates.isEmpty()) "No new workouts to add from Health Connect." else ""
         } catch (e: ApiException) {
             if (e.status == 401) forceSignOut("Your session has expired. Please sign in again.") else syncStatus = "Sync failed: ${e.message}"
         } catch (e: SecurityException) {
             syncStatus = "Health Connect permission is needed - tap \"Allow access\" above."
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
             syncStatus = "Couldn't read workouts: ${e.message}"
         } finally {
             syncBusy = false
@@ -590,7 +590,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             afterChange()
         } catch (e: ApiException) {
             if (e.status == 401) forceSignOut("Your session has expired. Please sign in again.") else syncStatus = "Upload failed: ${e.message}"
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
             syncStatus = "Upload failed: ${e.message}"
         } finally {
             syncBusy = false
@@ -610,7 +610,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 prefs.lastSyncSummary = "$syncStatus - ${LocalDateTime.now().withNano(0).toString().replace('T', ' ')}"
                 afterChange()
             } else if (!quiet) syncStatus = "Nothing new to sync."
-        } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
             if (!quiet) syncStatus = "Automatic sync failed: ${e.message}"
         } finally {
             syncBusy = false

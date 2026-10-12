@@ -456,17 +456,27 @@ document.addEventListener('click',e=>{for(const d of $all('details.menu[open]'))
 // Where to get the apps: the Google Play and App Store badges once those listings are open to everyone, the direct
 // download and TestFlight until then (from the site's settings). A phone sees its own; a computer sees both.
 const STORE_BADGE={play:'<img src="/badges/google-play.png" alt="Get it on Google Play" class="store-badge play">',apple:'<img src="/badges/app-store.svg" alt="Download on the App Store" class="store-badge apple">'};
+// Everyone gets Google Play and TestFlight (or the App Store); the website download, Apple Shortcuts and Sideloadly
+// are only offered to global admins.
+const isSiteAdmin=()=>me&&(me.role==='global_admin'||me.admin_needs_two_factor);
 async function loadIosCard(){
   const st=siteConfig.stores||{};
-  for(const id of ['#iphoneAppRow','#iphoneShortcutRow'])$(id).classList.toggle('hidden',isAndroid);
+  $('#iphoneAppRow').classList.toggle('hidden',isAndroid);
+  $('#iphoneShortcutRow').classList.toggle('hidden',isAndroid||!isSiteAdmin());
   $('#iphoneGet').innerHTML=st.appStore?`<a href="${esc(st.appStore)}" target="_blank" rel="noopener">${STORE_BADGE.apple}</a>`
     :`<a class="button" href="${esc(st.testFlight||'https://testflight.apple.com/join/cFAwqWKT')}" target="_blank" rel="noopener">Join the beta</a>`;
   $('#iphoneAppMeta').textContent=st.appStore?'Syncs each workout and your daily steps from Apple Health.':"Now in beta through Apple's TestFlight: syncs each workout and your daily steps from Apple Health.";
+  if(!isSiteAdmin()){$('#iosAppLine').classList.add('hidden');return}
   try{const a=await api('/api/app/ios');$('#iosAppLine').classList.toggle('hidden',!a.available||!!st.appStore||isAndroid)}catch(e){$('#iosAppLine').classList.add('hidden')}
 }
 async function loadAndroidCard(){
   const st=siteConfig.stores||{};
   $('#androidRow').classList.toggle('hidden',isIOS);
+  if(!isSiteAdmin()){
+    $('#androidGet').innerHTML=`<a href="${esc(st.play||'https://play.google.com/store/apps/details?id=com.activetogether.companion')}" target="_blank" rel="noopener">${STORE_BADGE.play}</a>`;
+    $('#androidMeta').textContent='Get it from Google Play.';
+    return;
+  }
   let apk=null;try{const a=await api('/api/app/android');if(a.available)apk=a}catch(e){}
   if(st.playLive){
     $('#androidGet').innerHTML=`<a href="${esc(st.play)}" target="_blank" rel="noopener">${STORE_BADGE.play}</a>`;

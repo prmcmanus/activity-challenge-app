@@ -306,7 +306,7 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                         Avatar(t.imageUrl, t.name)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(t.name, style = MaterialTheme.typography.titleMedium)
+                            Text(t.name, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable { vm.openTeam(t.id) })
                             Text(listOfNotNull("${t.members} member${if (t.members == 1) "" else "s"}", if (t.mine) "your team" else null, t.inviteCode?.let { "code $it" }).joinToString(" · "),
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
@@ -343,10 +343,10 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                     else -> {
                         val rows = if (tab == 0 && !c.individual) board.teams else board.users
                         if (rows.isEmpty()) EmptyNote("Nobody on the board yet.")
-                        if (rows === board.users) Text("Tap someone to see their profile.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (rows.isNotEmpty()) Text(if (rows === board.users) "Tap someone to see their profile." else "Tap a team to see its page.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         rows.forEachIndexed { i, s ->
-                            val person = s.userId
-                            Row(Modifier.fillMaxWidth().then(if (person != null) Modifier.clickable { openProfile(person) } else Modifier).padding(vertical = 6.dp),
+                            val person = s.userId; val team = s.teamId
+                            Row(Modifier.fillMaxWidth().then(if (person != null) Modifier.clickable { openProfile(person) } else if (team != null) Modifier.clickable { vm.openTeam(team) } else Modifier).padding(vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically) {
                                 Text("${i + 1}", fontWeight = FontWeight.Black, color = if (i < 3) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.width(30.dp))
@@ -354,7 +354,7 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                                 Spacer(Modifier.width(10.dp))
                                 Text(s.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                                 Text(fmtMeasure(c.measuresDistance, s.minutes, s.distance, c.distanceUnit, c.measuresSteps, s.steps) + progressText(s), style = MaterialTheme.typography.titleMedium)
-                                if (person != null) Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (person != null || team != null) Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             if (i < rows.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         }
@@ -374,8 +374,12 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                         Avatar(e.avatarUrl, e.name)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(e.name, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable { vm.openProfile(e.userId) })
-                            Text(listOfNotNull(e.type, fmtDay(e.date), e.teamName, e.comment?.let { "“$it”" }).joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row {
+                                Text(e.name, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable { vm.openProfile(e.userId) })
+                                if (e.teamName != null) Text(" · ${e.teamName}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.align(Alignment.CenterVertically).then(e.teamId?.let { tid -> Modifier.clickable { vm.openTeam(tid) } } ?: Modifier))
+                            }
+                            Text(listOfNotNull(e.type, fmtDay(e.date), e.comment?.let { "“$it”" }).joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Text(fmtMeasure(c.measuresDistance, e.minutes ?: 0.0, e.distance ?: 0.0, c.distanceUnit, c.measuresSteps, (e.steps ?: 0).toDouble()), fontWeight = FontWeight.Bold)
                         if (e.userId == vm.me?.id) { if (e.kudos > 0) Text("  👏 ${e.kudos}", style = MaterialTheme.typography.bodySmall) }

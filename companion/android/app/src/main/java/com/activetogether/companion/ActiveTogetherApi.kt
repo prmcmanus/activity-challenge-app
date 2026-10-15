@@ -42,7 +42,7 @@ data class TicketList(val tickets: List<Ticket>, val counts: Map<String, Int>, v
 
 data class ProfileChallenge(val id: Int, val name: String, val startDate: LocalDate, val endDate: LocalDate, val measuresDistance: Boolean,
     val distanceUnit: String, val team: String?, val minutes: Double, val distance: Double, val rank: Int, val of: Int,
-    val measuresSteps: Boolean = false, val steps: Double = 0.0)
+    val measuresSteps: Boolean = false, val steps: Double = 0.0, val teamId: Int? = null)
 /** Streaks and personal bests across every challenge. */
 data class UserStats(val streak: Int, val longestStreak: Int, val bestMinutes: Double, val bestKm: Double, val bestMi: Double, val bestSteps: Int)
 /** Getting started: what's done. */
@@ -51,7 +51,7 @@ data class SetupState(val challenge: Boolean, val syncing: Boolean, val push: Bo
 object Dash { @Volatile var stats: UserStats? = null; @Volatile var setup: SetupState? = null }
 /** A challenge's recent entry, as its feed shows it, with its 👏. */
 data class FeedEntry(val id: Int, val userId: Int, val name: String, val avatarUrl: String?, val type: String, val minutes: Double?, val distance: Double?, val steps: Int?,
-                     val date: LocalDate, val comment: String?, val teamName: String?, val kudos: Int, val kudosMine: Boolean)
+                     val date: LocalDate, val comment: String?, val teamName: String?, val kudos: Int, val kudosMine: Boolean, val teamId: Int? = null)
 data class Passkey(val id: String, val name: String, val createdAt: String, val lastUsedAt: String?)
 internal fun parseStats(o: JSONObject?) = o?.let { UserStats(it.optInt("streak"), it.optInt("longestStreak"), it.optDouble("bestMinutes", 0.0), it.optDouble("bestDistanceKm", 0.0), it.optDouble("bestDistanceMi", 0.0), it.optInt("bestSteps")) }
 
@@ -206,8 +206,19 @@ data class JourneyPreview(val points: List<RoutePoint>, val miles: Double, val k
 /** A leaderboard row; userId is set for people (tap to see their profile), null for teams. */
 data class Standing(val name: String, val minutes: Double, val distance: Double, val imageUrl: String?, val userId: Int? = null, val steps: Double = 0.0,
     /** Journeys only: the share of the route covered (0..1), and the day they reached the finish. */
-    val progress: Double? = null, val finishedOn: String? = null)
+    val progress: Double? = null, val finishedOn: String? = null, val teamId: Int? = null)
 data class Leaderboard(val teams: List<Standing>, val users: List<Standing>, val journey: Journey? = null, val me: MyStanding? = null)
+
+/** A team's own page: its place and totals, the last fortnight day by day, each member's share (and anyone who
+ *  logged under it before leaving), and its latest entries. */
+data class Totals(val minutes: Double, val distance: Double, val steps: Double)
+data class TeamPageMember(val id: Int, val name: String, val avatarUrl: String?, val teamAdmin: Boolean, val former: Boolean, val total: Totals, val week: Totals, val share: Double)
+data class TeamDay(val date: LocalDate, val total: Totals)
+data class TeamPage(val id: Int, val name: String, val imageUrl: String?, val members: Int, val mine: Boolean, val canManage: Boolean, val rank: Int, val of: Int,
+    val total: Totals, val month: Totals, val week: Totals,
+    val progress: Double?, val finishedOn: String?, val nextName: String?, val nextRemaining: Double?,
+    val challengeId: Int, val challengeName: String, val measuresDistance: Boolean, val measuresSteps: Boolean, val distanceUnit: String, val journeyUnit: String?,
+    val people: List<TeamPageMember>, val days: List<TeamDay>, val activities: List<FeedEntry>)
 
 data class MyActivity(
     val id: Int,
@@ -432,12 +443,35 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
     // --- Feed, 👏, and counting an entry in another challenge ---
     fun feed(challengeId: Int): List<FeedEntry> {
         val a = request("/api/challenges/$challengeId/feed").getJSONArray("activities")
-        return (0 until a.length()).map { i -> a.getJSONObject(i).let { x ->
-            FeedEntry(x.getInt("id"), x.getInt("user_id"), x.optString("name"), if (x.isNull("avatar_url")) null else x.optString("avatar_url").takeIf { it.isNotBlank() }, x.optString("activity_type"),
-                if (x.isNull("minutes")) null else x.optDouble("minutes"), if (x.isNull("distance")) null else x.optDouble("distance"), if (x.isNull("steps")) null else x.optInt("steps"),
-                LocalDate.parse(x.getString("activity_date")), if (x.isNull("comment")) null else x.optString("comment").takeIf { it.isNotBlank() },
-                if (x.isNull("team_name")) null else x.optString("team_name"), x.optInt("kudos"), x.optInt("kudos_mine") == 1 || x.optBoolean("kudos_mine"))
-        } }
+        return (0 until a.length()).map { i -> feedEntry(a.getJSONObject(i)) }
+    }
+    private fun feedEntry(x: JSONObject) =
+        FeedEntry(x.getInt("id"), x.getInt("user_id"), x.optString("name"), if (x.isNull("avatar_url")) null else x.optString("avatar_url").takeIf { it.isNotBlank() }, x.optString("activity_type"),
+            if (x.isNull("minutes")) null else x.optDouble("minutes"), if (x.isNull("distance")) null else x.optDouble("distance"), if (x.isNull("steps")) null else x.optInt("steps"),
+            LocalDate.parse(x.getString("activity_date")), if (x.isNull("comment")) null else x.optString("comment").takeIf { it.isNotBlank() },
+            if (x.isNull("team_name") || !x.has("team_name")) null else x.optString("team_name"), x.optInt("kudos"), x.optInt("kudos_mine") == 1 || x.optBoolean("kudos_mine"),
+            if (x.isNull("team_id") || !x.has("team_id")) null else x.optInt("team_id"))
+
+    fun team(teamId: Int): TeamPage {
+        val r = request("/api/teams/$teamId")
+        val t = r.getJSONObject("team"); val c = r.getJSONObject("challenge")
+        fun totals(o: JSONObject?) = Totals(o?.optDouble("minutes", 0.0) ?: 0.0, o?.optDouble("distance", 0.0) ?: 0.0, o?.optDouble("steps", 0.0) ?: 0.0)
+        fun list(k: String) = r.optJSONArray(k) ?: JSONArray()
+        val people = list("members").let { a -> (0 until a.length()).map { i -> a.getJSONObject(i).let { x ->
+            TeamPageMember(x.getInt("id"), x.optString("name"), if (x.isNull("avatar_url")) null else x.optString("avatar_url").takeIf { it.isNotBlank() },
+                x.optString("team_role") == "team_admin", x.optBoolean("former"), totals(x), totals(x.optJSONObject("week")), x.optDouble("share", 0.0))
+        } } }
+        val days = list("days").let { a -> (0 until a.length()).map { i -> a.getJSONObject(i).let { x -> TeamDay(LocalDate.parse(x.getString("date")), totals(x)) } } }
+        val next = t.optJSONObject("next")
+        return TeamPage(t.getInt("id"), t.getString("name"), if (t.isNull("image_url")) null else t.optString("image_url").takeIf { it.isNotBlank() },
+            t.optInt("members"), t.optBoolean("mine"), t.optBoolean("canManage"), t.optInt("rank"), t.optInt("of"),
+            totals(t), totals(t.optJSONObject("month")), totals(t.optJSONObject("week")),
+            if (t.has("progress") && !t.isNull("progress")) t.getDouble("progress") else null,
+            if (t.has("finished_on") && !t.isNull("finished_on")) t.optString("finished_on") else null,
+            next?.optString("name"), next?.optDouble("remaining"),
+            c.getInt("id"), c.getString("name"), c.optString("metric") == "distance", c.optString("metric") == "steps", if (c.optString("distance_unit") == "km") "km" else "mi",
+            c.optJSONObject("journey")?.optString("unit"),
+            people, days, list("activities").let { a -> (0 until a.length()).map { i -> feedEntry(a.getJSONObject(i)) } })
     }
     /** Gives (or takes back) 👏; returns how many the entry now has. */
     fun kudos(activityId: Int, on: Boolean): Int = request("/api/activities/$activityId/kudos", if (on) "POST" else "DELETE").optInt("kudos")
@@ -575,7 +609,8 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
                 (x.optString("image_url").ifBlank { x.optString("avatar_url") }).takeIf { it.isNotBlank() && it != "null" },
                 if (people) x.optInt("id") else null, x.optDouble("steps", 0.0),
                 if (x.has("progress") && !x.isNull("progress")) x.getDouble("progress") else null,
-                if (x.has("finished_on") && !x.isNull("finished_on")) x.optString("finished_on") else null)
+                if (x.has("finished_on") && !x.isNull("finished_on")) x.optString("finished_on") else null,
+                if (people) null else x.optInt("id"))
         }
         val me = r.optJSONObject("me")?.let { m ->
             val ahead = m.optJSONObject("ahead"); val team = m.optJSONObject("team")
@@ -592,7 +627,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
             ProfileChallenge(c.getInt("id"), c.getString("name"), LocalDate.parse(c.getString("start_date")), LocalDate.parse(c.getString("end_date")),
                 c.optString("metric") == "distance", if (c.optString("distance_unit") == "km") "km" else "mi", str(c, "team"),
                 c.optDouble("minutes", 0.0), c.optDouble("distance", 0.0), c.optInt("rank"), c.optInt("of"),
-                c.optString("metric") == "steps", c.optDouble("steps", 0.0))
+                c.optString("metric") == "steps", c.optDouble("steps", 0.0), if (c.isNull("team_id") || !c.has("team_id")) null else c.optInt("team_id"))
         } } }
         val activities = r.optJSONArray("activities")?.let { a -> (0 until a.length()).map { i -> a.getJSONObject(i).let { x ->
             ProfileActivity(x.getString("activity_type"), if (x.isNull("minutes")) null else x.getDouble("minutes"),

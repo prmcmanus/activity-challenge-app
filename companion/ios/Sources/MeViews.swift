@@ -72,7 +72,13 @@ struct ProfileSections<Header: View>: View {
                     HStack {
                         VStack(alignment: .leading) {
                             Button(c.name) { model.openChallenge(c.id) }.font(.headline).buttonStyle(.plain).foregroundStyle(Color.brandRed)
-                            Text([c.team, fmtRange(c.startDate, c.endDate)].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                            HStack(spacing: 0) {
+                                if let team = c.team {
+                                    Button(team) { if let tid = c.teamId { model.openTeam(tid) } }.buttonStyle(.plain).foregroundStyle(Color.brandRed).disabled(c.teamId == nil)
+                                    Text(" · ").foregroundStyle(.secondary)
+                                }
+                                Text(fmtRange(c.startDate, c.endDate)).foregroundStyle(.secondary)
+                            }.font(.caption)
                         }
                         Spacer()
                         VStack(alignment: .trailing) {

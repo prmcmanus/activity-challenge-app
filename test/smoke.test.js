@@ -515,6 +515,46 @@ test('per-challenge team and individual leaderboards only aggregate that challen
   assert.equal(board.users[0].minutes, 50);
 });
 
+test("a team's page: its place, totals, the last fortnight, and each member's share (including someone who left)", async () => {
+  const alice = await register('Alice Teampage');
+  const bob = await register('Bob Teampage');
+  const outsider = await register('Olly Teampage');
+  const day = n => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+  const json = (cookie, body) => ({ method: 'POST', headers: { cookie, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const { id: challengeId, invite_code: code } = await (await fetch(`${origin}/api/challenges`, json(alice.cookie, { name: 'Team Page Challenge', start_date: day(-30), end_date: day(10), metric: 'steps' }))).json();
+  const { id: teamId } = await (await fetch(`${origin}/api/teams`, json(alice.cookie, { challenge_id: challengeId, name: 'Striders' }))).json();
+  const { id: otherId } = await (await fetch(`${origin}/api/teams`, json(alice.cookie, { challenge_id: challengeId, name: 'Amblers' }))).json();
+  await fetch(`${origin}/api/join`, json(bob.cookie, { code }));
+  await fetch(`${origin}/api/teams/${teamId}/join`, { method: 'POST', headers: { cookie: bob.cookie } });
+  await fetch(`${origin}/api/activities`, json(alice.cookie, { team_id: teamId, challenge_id: challengeId, activity_type: 'Steps', steps: 9000, activity_date: day(0) }));
+  await fetch(`${origin}/api/activities`, json(bob.cookie, { team_id: teamId, challenge_id: challengeId, activity_type: 'Steps', steps: 3000, activity_date: day(-1) }));
+  await fetch(`${origin}/api/activities`, json(alice.cookie, { team_id: otherId, challenge_id: challengeId, activity_type: 'Steps', steps: 100, activity_date: day(-20) }));
+  await fetch(`${origin}/api/teams/${teamId}/leave`, { method: 'POST', headers: { cookie: bob.cookie } });
+
+  const r = await fetch(`${origin}/api/teams/${teamId}`, { headers: { cookie: bob.cookie } });
+  assert.equal(r.status, 200);
+  const page = await r.json();
+  assert.equal(page.team.name, 'Striders');
+  assert.equal(page.team.steps, 12000);
+  assert.equal(page.team.rank, 1);
+  assert.equal(page.team.of, 2);
+  assert.equal(page.team.members, 1);
+  assert.equal(page.team.mine, false);
+  assert.equal(page.challenge.id, challengeId);
+  assert.equal(page.challenge.invite_code, undefined, "the team page doesn't give away the challenge's invite code");
+  assert.deepEqual(page.members.map(x => [x.name, x.steps, x.former, x.share]), [['Alice Teampage', 9000, false, 0.75], ['Bob Teampage', 3000, true, 0.25]]);
+  assert.equal(page.days.length, 14);
+  assert.equal(page.days.at(-1).date, day(0));
+  assert.equal(page.days.at(-1).steps, 9000);
+  assert.equal(page.days.at(-2).steps, 3000);
+  assert.deepEqual(page.activities.map(a => a.steps), [3000], "only my own entries, and those of people who share everything");
+
+  const outside = await fetch(`${origin}/api/teams/${teamId}`, { headers: { cookie: outsider.cookie } });
+  assert.equal(outside.status, 403);
+  const missing = await fetch(`${origin}/api/teams/999999`, { headers: { cookie: alice.cookie } });
+  assert.equal(missing.status, 404);
+});
+
 test('supports companion app bearer auth and idempotent health imports', async () => {
   const dana = await register('Dana Mobile');
   const challengeRes = await fetch(`${origin}/api/challenges`, {

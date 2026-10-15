@@ -2018,7 +2018,7 @@ async function api(req,res,url){
    if(!need(res,u))return;
    const parts=url.pathname.split('/'),cid=Number(parts[3]),targetId=Number(parts[5]);
    if(!canManageChallenge(u,cid))return send(res,403,{error:'Only a challenge owner can view this'});
-   const rows=db.prepare(`SELECT a.id,a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.end_time,a.comment,a.source,t.name team_name,c.distance_unit
+   const rows=db.prepare(`SELECT a.id,a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.end_time,a.comment,a.source,a.team_id,t.name team_name,c.distance_unit
      FROM activities a LEFT JOIN teams t ON t.id=a.team_id JOIN challenges c ON c.id=a.challenge_id WHERE a.challenge_id=? AND a.user_id=? ORDER BY a.activity_date DESC,a.id DESC LIMIT 200`).all(cid,targetId);
    return send(res,200,{activities:rows.map(({distance_m,...a})=>({...a,distance:distance_m==null?null:metersToUnit(distance_m,a.distance_unit)}))});
  }
@@ -2111,6 +2111,44 @@ async function api(req,res,url){
  if(m==='POST'&&url.pathname==='/api/join'){if(!need(res,u))return;const b=await body(req),code=String(b.code||'').trim().toUpperCase();if(!code)return send(res,400,{error:'Invite code required'});if(codeGuessBlocked(ip,u.id))return send(res,429,CODE_BLOCKED);const j=joinWithCode(u.id,code);if(!j)noteBadCode(ip,u.id);return j?send(res,200,{ok:true,...j}):send(res,400,{error:'That invite code was not recognised'})}
 
  if(m==='POST'&&url.pathname==='/api/teams'){if(!need(res,u))return;const b=await body(req),cid=Number(b.challenge_id);if(!b.name||!cid)return send(res,400,{error:'challenge_id and name are required'});if(String(b.name).trim().length>MAX_LEN.team)return send(res,400,{error:tooLong(String(b.name).trim(),MAX_LEN.team,'the team name')});if(!challengeAccess(u.id,cid))return send(res,403,{error:'Join the challenge before creating a team in it'});if(isIndividual(db.prepare('SELECT participation FROM challenges WHERE id=?').get(cid)))return send(res,400,{error:'This challenge is for individuals - it has no teams'});let imageUrl;try{imageUrl=validateImageUrl(b.image_url)}catch(e){return send(res,400,{error:e.message})}const {id,invite_code}=insertTeam(cid,String(b.name).trim(),u.id,imageUrl||null);return send(res,201,{id,invite_code})}
+ // A team's own page: its place and totals (all time, this month, this week), the last fortnight day by day, where it
+ // is on a journey, each member's share (and anyone who logged under it before leaving), and its latest entries.
+ if(m==='GET'&&url.pathname.match(/^\/api\/teams\/\d+$/)){
+   if(!need(res,u))return;
+   const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);
+   if(!team)return send(res,404,{error:'Team not found'});
+   if(!challengeAccess(u.id,team.challenge_id)&&!isAdmin(u))return send(res,403,{error:'You need an invite code to view this challenge'});
+   const c=db.prepare('SELECT * FROM challenges WHERE id=?').get(team.challenge_id),unit=challengeUnit(c);
+   const sums="COALESCE(SUM(minutes),0) minutes,COALESCE(SUM(distance_m),0) distance_m,COALESCE(SUM(steps),0) steps";
+   const shape=({distance_m,...r})=>({...r,distance:metersToUnit(distance_m,unit)});
+   const totalSince=since=>shape(db.prepare(`SELECT ${sums} FROM activities WHERE team_id=?${since?' AND activity_date>=?':''}`).get(...(since?[tid,since]:[tid])));
+   const lb=leaderboard(c),i=lb.teams.findIndex(t=>t.id===tid),js=isJourney(c)?journeyStandings(c):null,jt=js?.teams.find(t=>t.id===tid);
+   const members=db.prepare('SELECT us.id,us.name,us.avatar_url,tm.team_role FROM team_members tm JOIN users us ON us.id=tm.user_id WHERE tm.team_id=?').all(tid);
+   const logged=new Map(db.prepare(`SELECT user_id,${sums} FROM activities WHERE team_id=? GROUP BY user_id`).all(tid).map(r=>[r.user_id,r]));
+   const week=new Map(db.prepare(`SELECT user_id,${sums} FROM activities WHERE team_id=? AND activity_date>=? GROUP BY user_id`).all(tid,periodStart('week')).map(r=>[r.user_id,r]));
+   const inTeam=new Set(members.map(x=>x.id));
+   // Someone who logged under the team and then left still counts towards it, so they're listed too.
+   const former=[...logged.keys()].filter(id=>!inTeam.has(id));
+   if(former.length)members.push(...db.prepare(`SELECT id,name,avatar_url FROM users WHERE id IN (${former.map(()=>'?').join(',')})`).all(...former).map(x=>({...x,team_role:null,former:true})));
+   const key={distance:'distance',steps:'steps'}[challengeMetric(c)]||'minutes',total=totalSince(null);
+   const people=members.map(x=>{const t=shape(logged.get(x.id)||{minutes:0,distance_m:0,steps:0}),w=shape(week.get(x.id)||{minutes:0,distance_m:0,steps:0});
+     return {...x,former:!!x.former,...t,week:w,share:total[key]?Math.round(t[key]/total[key]*1000)/1000:0}})
+     .sort((a,b)=>b[key]-a[key]||a.name.localeCompare(b.name));
+   // The last 14 days of the challenge so far, every day present (a quiet day shows as nothing).
+   const today=new Date().toISOString().slice(0,10),last=today<c.end_date?today:c.end_date,days=[];
+   if(last>=c.start_date){
+     const byDay=new Map(db.prepare(`SELECT activity_date d,${sums} FROM activities WHERE team_id=? AND activity_date BETWEEN date(?,'-13 days') AND ? GROUP BY activity_date`).all(tid,last,last).map(r=>[r.d,r]));
+     for(let n=13;n>=0;n--){const d=new Date(Date.parse(last+'T00:00:00Z')-n*864e5).toISOString().slice(0,10);if(d>=c.start_date)days.push({date:d,...shape(byDay.get(d)||{minutes:0,distance_m:0,steps:0})})}
+   }
+   const activities=db.prepare(`SELECT a.id,a.user_id,us.name,us.avatar_url,a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.comment,
+       (SELECT COUNT(*) FROM kudos k WHERE k.activity_id=a.id) kudos,EXISTS(SELECT 1 FROM kudos k WHERE k.activity_id=a.id AND k.user_id=?) kudos_mine
+     FROM activities a JOIN users us ON us.id=a.user_id WHERE a.team_id=? AND us.deactivated_at IS NULL AND (a.user_id=? OR us.profile_sharing='full') ORDER BY a.activity_date DESC,a.id DESC LIMIT 20`).all(u.id,tid,u.id).map(shape);
+   return send(res,200,{
+     team:{id:team.id,name:team.name,image_url:team.image_url,members:members.filter(x=>!x.former).length,mine:inTeam.has(u.id),canManage:canManageTeam(u,team),
+       rank:i+1,of:lb.teams.length,...total,month:totalSince(periodStart('month')),week:totalSince(periodStart('week')),
+       ...(jt?{progress:jt.progress,finished_on:jt.finished_on,next:jt.next}:{})},
+     challenge:{...publicChallenge(c),invite_code:undefined},members:people,days,activities});
+ }
  if(m==='POST'&&url.pathname.match(/^\/api\/teams\/\d+\/join$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!challengeAccess(u.id,team.challenge_id))return send(res,403,{error:'Join the challenge before joining one of its teams'});db.prepare("INSERT OR IGNORE INTO team_members(team_id,user_id,team_role) VALUES(?,?,'member')").run(tid,u.id);return send(res,200,{ok:true})}
  if(m==='PATCH'&&url.pathname.match(/^\/api\/teams\/\d+$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can rename this team'});const b=await body(req),name=String(b.name||'').trim();if(!name)return send(res,400,{error:'Name is required'});if(name.length>MAX_LEN.team)return send(res,400,{error:tooLong(name,MAX_LEN.team,'the team name')});let imageUrl;try{imageUrl=validateImageUrl(b.image_url)}catch(e){return send(res,400,{error:e.message})}if(imageUrl!==undefined)db.prepare('UPDATE teams SET name=?,image_url=? WHERE id=?').run(name,imageUrl,tid);else db.prepare('UPDATE teams SET name=? WHERE id=?').run(name,tid);return send(res,200,{ok:true})}
  if(m==='DELETE'&&url.pathname.match(/^\/api\/teams\/\d+$/)){if(!need(res,u))return;const tid=Number(url.pathname.split('/')[3]),team=db.prepare('SELECT * FROM teams WHERE id=?').get(tid);if(!team)return send(res,404,{error:'Team not found'});if(!canManageTeam(u,team))return send(res,403,{error:'Only a team admin or the challenge owner can delete this team'});try{db.exec('BEGIN');db.prepare('DELETE FROM activities WHERE team_id=?').run(tid);db.prepare('DELETE FROM teams WHERE id=?').run(tid);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}pruneRoutes();return send(res,200,{ok:true})}
@@ -2152,9 +2190,9 @@ async function api(req,res,url){
    if(sharing!=='private'){
      out.challenges=shared.map(c=>{
        const lb=leaderboard(c),i=lb.users.findIndex(x=>x.id===id),me=lb.users[i]||{minutes:0,distance:0,steps:0};
-       const team=db.prepare('SELECT t.name FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=? AND t.challenge_id=? ORDER BY t.name LIMIT 1').get(id,c.id);
+       const team=db.prepare('SELECT t.id,t.name FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=? AND t.challenge_id=? ORDER BY t.name LIMIT 1').get(id,c.id);
        return {id:c.id,name:c.name,start_date:c.start_date,end_date:c.end_date,metric:challengeMetric(c),distance_unit:challengeUnit(c),participation:isIndividual(c)?'individual':'teams',
-         team:team?team.name:null,minutes:me.minutes,distance:me.distance,steps:me.steps,rank:i+1,of:lb.users.length};
+         team:team?team.name:null,team_id:team?team.id:null,minutes:me.minutes,distance:me.distance,steps:me.steps,rank:i+1,of:lb.users.length};
      });
    }
    if(self||sharing!=='private')out.stats=userStats(id);
@@ -2230,7 +2268,7 @@ async function api(req,res,url){
    const cid=Number(url.pathname.split('/')[3]);
    if(!challengeAccess(u.id,cid)&&!isAdmin(u))return send(res,403,{error:'You need an invite code to view this challenge'});
    const c=db.prepare('SELECT * FROM challenges WHERE id=?').get(cid);if(!c)return send(res,404,{error:'Challenge not found'});
-   const rows=db.prepare(`SELECT a.id,a.user_id,us.name,us.avatar_url,a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.comment,t.name team_name,
+   const rows=db.prepare(`SELECT a.id,a.user_id,us.name,us.avatar_url,a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.comment,a.team_id,t.name team_name,
        (SELECT COUNT(*) FROM kudos k WHERE k.activity_id=a.id) kudos,EXISTS(SELECT 1 FROM kudos k WHERE k.activity_id=a.id AND k.user_id=?) kudos_mine
      FROM activities a JOIN users us ON us.id=a.user_id LEFT JOIN teams t ON t.id=a.team_id
      WHERE a.challenge_id=? AND us.deactivated_at IS NULL AND (a.user_id=? OR us.profile_sharing='full') ORDER BY a.activity_date DESC,a.id DESC LIMIT 40`).all(u.id,cid,u.id);

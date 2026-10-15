@@ -209,6 +209,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Open a challenge or someone's profile from wherever their name is shown. */
     fun openChallenge(id: Int) { pendingRoute = "/challenges/$id" }
     fun openProfile(id: Int) { pendingRoute = "/users/$id" }
+    fun openTeam(id: Int) { pendingRoute = "/teams/$id" }
     /** Streaks and bests, and the getting-started checklist, from the last dashboard. */
     var stats by mutableStateOf<com.activetogether.companion.UserStats?>(null); private set
     var setup by mutableStateOf<com.activetogether.companion.SetupState?>(null); private set

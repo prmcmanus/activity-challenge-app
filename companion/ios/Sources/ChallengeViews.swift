@@ -49,7 +49,10 @@ struct FeedCard: View {
                             Avatar(url: e.avatarURL, name: e.name)
                             VStack(alignment: .leading) {
                                 Button(e.name) { model.openProfile(e.userId) }.font(.subheadline.weight(.semibold)).buttonStyle(.plain).foregroundStyle(Color.brandRed)
-                                Text([e.type, fmtDay(e.date), e.teamName, e.comment.map { "“\($0)”" }].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                                if let team = e.teamName {
+                                    Button(team) { if let tid = e.teamId { model.openTeam(tid) } }.font(.caption.weight(.semibold)).buttonStyle(.plain).foregroundStyle(Color.brandRed).disabled(e.teamId == nil)
+                                }
+                                Text([e.type, fmtDay(e.date), e.comment.map { "“\($0)”" }].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             Text(fmtMeasure(challenge.measure, minutes: e.minutes ?? 0, distance: e.distance ?? 0, steps: Double(e.steps ?? 0), unit: challenge.distanceUnit)).bold()
@@ -240,18 +243,18 @@ struct ChallengeDetailView: View {
                 if let board {
                     let rows = (tab == 0 && !c.individual) ? board.teams : board.users
                     if rows.isEmpty { EmptyNote("Nobody on the board yet.") }
-                    if !(tab == 0 && !c.individual) { Text("Tap someone to see their profile.").font(.caption).foregroundStyle(.secondary) }
+                    if !rows.isEmpty { Text(tab == 0 && !c.individual ? "Tap a team to see its page." : "Tap someone to see their profile.").font(.caption).foregroundStyle(.secondary) }
                     ForEach(Array(rows.enumerated()), id: \.offset) { i, s in
-                        Button { if let uid = s.userId { router.push(.user(uid)) } } label: {
+                        Button { if let uid = s.userId { router.push(.user(uid)) } else if let tid = s.teamId { router.push(.team(tid)) } } label: {
                             HStack {
                                 Text("\(i + 1)").font(.headline.weight(.black)).foregroundStyle(i < 3 ? Color.brandRed : .secondary).frame(width: 28, alignment: .leading)
                                 Avatar(url: s.imageURL, name: s.name)
                                 Text(s.name).font(.headline).foregroundStyle(.primary)
                                 Spacer()
                                 Text(fmtMeasure(c.measure, minutes: s.minutes, distance: s.distance, steps: s.steps, unit: c.distanceUnit) + progressText(s)).font(.headline).foregroundStyle(.primary)
-                                if s.userId != nil { Image(systemName: "chevron.right").foregroundStyle(.secondary) }
+                                if s.userId != nil || s.teamId != nil { Image(systemName: "chevron.right").foregroundStyle(.secondary) }
                             }.padding(.vertical, 4)
-                        }.buttonStyle(.plain).disabled(s.userId == nil)
+                        }.buttonStyle(.plain).disabled(s.userId == nil && s.teamId == nil)
                         if i < rows.count - 1 { Divider() }
                     }
                 } else { ProgressView().frame(maxWidth: .infinity) }
@@ -288,7 +291,7 @@ struct ChallengeDetailView: View {
                 HStack {
                     Avatar(url: t.imageURL, name: t.name)
                     VStack(alignment: .leading) {
-                        Text(t.name).font(.headline)
+                        Button(t.name) { router.push(.team(t.id)) }.font(.headline).buttonStyle(.plain).foregroundStyle(Color.brandRed)
                         Text(["\(t.members) member\(t.members == 1 ? "" : "s")", t.mine ? "your team" : nil, t.inviteCode.map { "code \($0)" }].compactMap { $0 }.joined(separator: " · "))
                             .font(.caption).foregroundStyle(.secondary)
                     }

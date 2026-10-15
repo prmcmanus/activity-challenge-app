@@ -90,7 +90,7 @@ val SHARING_LEVELS = listOf(
 )
 fun sharingLabel(code: String) = SHARING_LEVELS.firstOrNull { it.first == code }?.second ?: "Totals"
 
-private fun ordinal(n: Int) = n.toString() + when { n % 100 in 11..13 -> "th"; n % 10 == 1 -> "st"; n % 10 == 2 -> "nd"; n % 10 == 3 -> "rd"; else -> "th" }
+internal fun ordinal(n: Int) = n.toString() + when { n % 100 in 11..13 -> "th"; n % 10 == 1 -> "st"; n % 10 == 2 -> "nd"; n % 10 == 3 -> "rd"; else -> "th" }
 
 /** A followers or following list; anyone not named is someone I don't share a challenge with. */
 @Composable
@@ -165,7 +165,11 @@ fun LazyListScope.profileItems(p: Profile, openProfile: (Int) -> Unit = {}, foll
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(c.name, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable { vm?.openChallenge(c.id) })
-                        Text(listOfNotNull(c.team, fmtRange(c.startDate, c.endDate)).joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row {
+                            c.team?.let { team -> Text("$team · ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary,
+                                modifier = c.teamId?.let { tid -> Modifier.clickable { vm?.openTeam(tid) } } ?: Modifier) }
+                            Text(fmtRange(c.startDate, c.endDate), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                     Column(horizontalAlignment = Alignment.End) {
                         Text(fmtMeasure(c.measuresDistance, c.minutes, c.distance, c.distanceUnit, c.measuresSteps, c.steps), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)

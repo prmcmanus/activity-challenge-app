@@ -120,3 +120,12 @@ dialog#modal .close{position:sticky;top:0;z-index:3;background:var(--surface);bo
 .push-kinds .check-row{font-size:14px;margin:6px 0}
 .passkeys{margin-top:24px}
 .notice-inline{background:var(--tint-yellow);border:1px solid var(--tint-yellow-line);border-radius:10px;padding:10px 12px;font-size:14px}
+/* A team's page: its logo, totals as tiles, the last fortnight as bars, and each member's share. */
+.leader[data-openteam]{cursor:pointer}.leader[data-openteam]:hover{background:var(--hover)}.leader.me[data-openteam]:hover{background:var(--tint-yellow)}
+.logo-lg{width:72px;height:72px;border-radius:12px;object-fit:cover;flex-shrink:0}.logo-lg.avatar-placeholder{font-size:28px}
+.team-tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0 4px}.team-tile{background:var(--surface-2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}.team-tile b{font-size:17px}.team-tile .muted{font-size:12px}
+@media(max-width:560px){.team-tiles{grid-template-columns:1fr 1fr}}
+.team-days{display:flex;align-items:flex-end;gap:4px;height:96px}.team-day{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:stretch;gap:3px}.team-day>div{flex:1;position:relative}.team-day span{position:absolute;left:0;right:0;bottom:0;background:var(--red);border-radius:3px 3px 0 0;min-height:2px}.team-day i{font-style:normal;font-size:11px;color:var(--muted);text-align:center}
+.team-bar,.team-share{background:var(--surface-2);border-radius:99px;overflow:hidden}.team-bar{height:12px;margin:4px 0 6px}.team-share{height:5px;width:110px;margin:4px 0 2px auto}.team-bar span,.team-share span{display:block;height:100%;background:var(--red)}
+.listrow.me{background:var(--tint-yellow);border-radius:8px;padding-left:8px;padding-right:8px;margin:0 -8px;border-bottom-color:transparent}
+.listrow .rank{display:inline-block;min-width:1.4em}

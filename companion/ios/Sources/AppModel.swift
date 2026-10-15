@@ -401,6 +401,7 @@ enum BackgroundSync {
     /// Open a challenge or someone's profile from wherever their name is shown.
     func openChallenge(_ id: Int) { pendingRoute = "/challenges/\(id)" }
     func openProfile(_ id: Int) { pendingRoute = "/users/\(id)" }
+    func openTeam(_ id: Int) { pendingRoute = "/teams/\(id)" }
     /// Count an entry in another challenge too.
     func copyActivity(_ activityId: Int, to c: Challenge) async -> Bool {
         guard await call({ try await $0.copyActivity(activityId, challengeId: c.id, teamId: c.target?.teamId) }) != nil else { return false }

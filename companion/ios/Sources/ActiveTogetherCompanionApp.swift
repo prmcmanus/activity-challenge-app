@@ -27,7 +27,7 @@ enum Route: Hashable {
     case challenge(Int), editChallenge(Int), newChallenge, join, invite(String)
     case activity(Int), editActivity(Int), log
     case user(Int), editProfile, help, newTicket, ticket(Int), support, admin
-    case members(Int), manageTeam(Int, Int)
+    case members(Int), manageTeam(Int, Int), team(Int)
 }
 
 enum Tab: Hashable { case challenges, activity, sync, me }
@@ -60,7 +60,9 @@ struct RootView: View {
                     guard let url = model.pendingRoute else { return }
                     model.pendingRoute = nil
                     let parts = url.split(separator: "/").map(String.init)
-                    if parts.count == 2, parts[0] == "challenges", let id = Int(parts[1]) { if router.tab == .challenges { router.push(.challenge(id)) } else { router.tab = .challenges; router.paths[.challenges] = [.challenge(id)] } }
+                    // A team's page: /teams/5, or /challenges/12/teams/5 as the website writes it.
+                    if parts.count >= 2, parts[parts.count - 2] == "teams", let id = Int(parts[parts.count - 1]) { router.push(.team(id)) }
+                    else if parts.count == 2, parts[0] == "challenges", let id = Int(parts[1]) { if router.tab == .challenges { router.push(.challenge(id)) } else { router.tab = .challenges; router.paths[.challenges] = [.challenge(id)] } }
                     else if parts.count == 3, parts[0] == "help", parts[1] == "tickets", let id = Int(parts[2]) { router.tab = .me; router.paths[.me] = [.ticket(id)] }
                     else if parts.count == 2, parts[0] == "users", let id = Int(parts[1]) { router.push(.user(id)) }
                 }
@@ -126,6 +128,7 @@ struct RootView: View {
         case .admin: AdminView()
         case .members(let id): ChallengeMembersView(challengeId: id)
         case .manageTeam(let c, let t): TeamManageView(challengeId: c, teamId: t)
+        case .team(let id): TeamView(teamId: id)
         }
     }
 }

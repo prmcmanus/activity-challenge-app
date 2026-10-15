@@ -583,7 +583,7 @@ function renderChallenge(){
   const myTeamIds=new Set(c.teams.filter(t=>t.mine).map(t=>t.id));
   // A gap in the ranks (the top 10, then my own place further down) shows as a dotted row.
   const gapped=(rows,draw)=>rows.map((r,i)=>(i&&r.rank>rows[i-1].rank+1?'<div class="leader-gap" aria-hidden="true">⋯</div>':'')+draw(r)).join('');
-  $('#teamLeaderboard').innerHTML=gapped(curLeaderboard.teams,t=>`<div class="leader${myTeamIds.has(t.id)?' me':''}"${myTeamIds.has(t.id)?' title="Your team"':''}><span class="rank">${t.rank}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${esc(fmtTotal(c,t.minutes,t.distance,t.steps))}${journeyProgress(c,t)}</span></div>`)||'<p class="muted">No teams yet.</p>';
+  $('#teamLeaderboard').innerHTML=gapped(curLeaderboard.teams,t=>`<div class="leader${myTeamIds.has(t.id)?' me':''}" data-openteam="${t.id}" role="button" tabindex="0" title="See ${myTeamIds.has(t.id)?'your team':esc(t.name)}"><span class="rank">${t.rank}</span><span class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<b>${esc(t.name)}</b></span><span>${esc(fmtTotal(c,t.minutes,t.distance,t.steps))}${journeyProgress(c,t)}</span></div>`)||'<p class="muted">No teams yet.</p>';
   $('#userLeaderboard').innerHTML=gapped(curLeaderboard.users,x=>`<div class="leader${x.id===me.id?' me':''}" data-profile="${x.id}" role="button" tabindex="0" title="See ${x.id===me.id?'your':esc(x.name)+"'s"} profile"><span class="rank">${x.rank}</span><span class="leader-name">${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<b>${esc(x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}</span><span>${esc(fmtTotal(c,x.minutes,x.distance,x.steps))}${journeyProgress(c,x)}</span></div>`)||'<p class="muted">No members yet.</p>';
   for(const [box,shown,total] of [['#teamBoardMore',curLeaderboard.teams.length,curLeaderboard.teams_total],['#userBoardMore',curLeaderboard.users.length,curLeaderboard.users_total]]){
     const more=total>shown;$(box).innerHTML=more?`<button type="button" class="ghost" data-showall="1">Show all ${total}</button>`:'';
@@ -594,14 +594,14 @@ function renderChallenge(){
   $('#periodTabs').innerHTML=[['all','All time'],['month','This month'],['week','This week']].map(([k,l])=>`<button type="button" role="tab" aria-selected="${boardPeriod===k}" class="${boardPeriod===k?'on':''}" data-period="${k}">${l}</button>`).join('');
   $all('[data-period]').forEach(b=>b.onclick=async()=>{boardPeriod=b.dataset.period;curLeaderboard=await api(`/api/challenges/${c.id}/leaderboard${boardQuery(c.id)}`);renderChallenge()});
   $('#feedCard').classList.toggle('hidden',!curFeed.length);
-  $('#feed').innerHTML=curFeed.slice(0,feedShown).map(a=>`<div class="listrow entry-row"><div><div class="leader-name">${avatarHtml(a.avatar_url,a.name,'avatar-sm')}<b>${personLink(a.user_id,a.name)}</b> <span class="muted">${esc(a.activity_type)}</span></div><div class="muted">${esc(fmtDay(a.activity_date))}${a.team_name?` · ${esc(a.team_name)}`:''}${a.comment?` · “${esc(a.comment)}”`:''}</div></div>
+  $('#feed').innerHTML=curFeed.slice(0,feedShown).map(a=>`<div class="listrow entry-row"><div><div class="leader-name">${avatarHtml(a.avatar_url,a.name,'avatar-sm')}<b>${personLink(a.user_id,a.name)}</b> <span class="muted">${esc(a.activity_type)}</span></div><div class="muted">${esc(fmtDay(a.activity_date))}${a.team_name?` · ${teamLink(a.team_id,a.team_name)}`:''}${a.comment?` · “${esc(a.comment)}”`:''}</div></div>
     <div class="entry-side"><b class="entry-amount">${esc(fmtEntry(c,a))}</b>${a.user_id===me.id?(a.kudos?`<span class="muted">👏 ${a.kudos}</span>`:''):kudosButton(a)}</div></div>`).join('');
   if(curFeed.length>feedShown){$('#feed').insertAdjacentHTML('beforeend','<button type="button" class="ghost" id="feedMore">Show more</button>');$('#feedMore').onclick=()=>{feedShown+=10;renderChallenge()}}
   const recent=curMine;
   $('#recent').innerHTML=recent.map(x=>{
     const timeBit=x.start_time&&x.end_time?` · ${x.start_time}–${x.end_time}`:'';
     const commentBit=x.comment?`<div class="muted">“${esc(x.comment)}”</div>`:'';
-    return `<div class="listrow entry-row"><div><b>${esc(x.activity_type)}</b><div class="muted">${x.team_name?`${esc(x.team_name)} · `:''}${esc(fmtDay(x.activity_date))}${esc(timeBit)} · ${esc(SOURCE_LABEL[x.source]||x.source)}</div>${commentBit}</div><div class="entry-side"><b class="entry-amount">${esc(fmtEntry(c,x))}</b><span class="btnrow">${x.has_route?`<button class="ghost" data-maproute="${x.id}">Map</button>`:''}<button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></span></div></div>`;
+    return `<div class="listrow entry-row"><div><b>${esc(x.activity_type)}</b><div class="muted">${x.team_name?`${teamLink(x.team_id,x.team_name)} · `:''}${esc(fmtDay(x.activity_date))}${esc(timeBit)} · ${esc(SOURCE_LABEL[x.source]||x.source)}</div>${commentBit}</div><div class="entry-side"><b class="entry-amount">${esc(fmtEntry(c,x))}</b><span class="btnrow">${x.has_route?`<button class="ghost" data-maproute="${x.id}">Map</button>`:''}<button class="ghost" data-editactivity="${x.id}">Edit</button><button class="ghost" data-delactivity="${x.id}">Delete</button></span></div></div>`;
   }).join('')||'<p class="muted">No activity logged yet in this challenge.</p>';
   $all('[data-editactivity]').forEach(b=>{const x=recent.find(a=>a.id===Number(b.dataset.editactivity));b.onclick=()=>openEditActivity(x)});
   $all('[data-maproute]').forEach(b=>{const x=recent.find(a=>a.id===Number(b.dataset.maproute));b.onclick=()=>openRouteMap(x)});
@@ -797,7 +797,7 @@ function teamRowsHtml(c){
     const bits=[`${t.members} member(s)`];
     if(t.mine)bits.push('you are in this team');
     if(t.invite_code)bits.push(`code: <b>${esc(t.invite_code)}</b> <button type="button" class="ghost" data-copylink="${esc(t.invite_code)}" title="Copy a link that joins this team">Copy invite link</button>`);
-    return `<div class="listrow"><div class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<div><b>${esc(t.name)}</b><div class="muted">${bits.join(' · ')}</div></div></div><div class="btnrow">${actions.join('')}</div></div>`;
+    return `<div class="listrow"><div class="leader-name">${avatarHtml(t.image_url,t.name,'logo-sm')}<div><b>${teamLink(t.id,t.name)}</b><div class="muted">${bits.join(' · ')}</div></div></div><div class="btnrow">${actions.join('')}</div></div>`;
   }).join('')||'<p class="muted">No teams yet — create the first one.</p>';
 }
 function wireTeamButtons(root){
@@ -875,6 +875,8 @@ const ordinal=n=>n+(n%100>=11&&n%100<=13?'th':({1:'st',2:'nd',3:'rd'}[n%10]||'th
 // A challenge's name or a person's name, wherever it's shown, opens that challenge or their profile.
 const chLink=(id,name)=>id?`<a href="/challenges/${id}" class="name-link" data-openchallenge="${id}">${esc(name)}</a>`:esc(name);
 const personLink=(id,name)=>id?`<a href="/" class="name-link" data-profile="${id}">${esc(name)}</a>`:esc(name);
+const teamLink=(id,name)=>id?`<a href="/" class="name-link" data-openteam="${id}">${esc(name)}</a>`:esc(name);
+document.addEventListener('click',e=>{const a=e.target.closest('[data-openteam]');if(!a||e.target.closest('button,[data-profile],[data-openchallenge]'))return;e.preventDefault();e.stopPropagation();openTeam(Number(a.dataset.openteam))},true);
 document.addEventListener('click',e=>{const a=e.target.closest('[data-openchallenge]');if(!a)return;e.preventDefault();e.stopPropagation();
   if($('#modal').open)$('#modal').close();challengeBack='home';openChallenge(Number(a.dataset.openchallenge)).catch(x=>uiAlert(x.message))},true);
 // 👏 on a challenge-mate's entry: a toggle showing how many there are.
@@ -908,7 +910,7 @@ async function openProfile(id){
   const lists=p.followers?`<div class="follow-cols">${followList('Followers',p.followers,p.followers_count,p.self?'Nobody yet.':'No followers yet.')}${followList('Following',p.following,p.following_count,'Nobody yet.')}</div>`:'';
   let body=p.stats&&statsLine(p.stats)?`<p class="stats-line">${esc(statsLine(p.stats))}</p>`:'';
   if(p.challenges){
-    body+=`<div class="profile-section"><h3>${p.self?'My challenges':'Challenges you share'}</h3>${p.challenges.map(c=>`<div class="listrow"><div><b>${chLink(c.id,c.name)}</b><div class="muted">${c.team?`${esc(c.team)} · `:''}${esc(fmtRange(c.start_date,c.end_date))}</div></div><div class="right"><b>${esc(fmtTotal(c,c.minutes,c.distance,c.steps))}</b>${c.rank?`<div class="muted">${ordinal(c.rank)} of ${c.of}</div>`:''}</div></div>`).join('')||'<p class="muted">No challenges yet.</p>'}</div>`;
+    body+=`<div class="profile-section"><h3>${p.self?'My challenges':'Challenges you share'}</h3>${p.challenges.map(c=>`<div class="listrow"><div><b>${chLink(c.id,c.name)}</b><div class="muted">${c.team?`${teamLink(c.team_id,c.team)} · `:''}${esc(fmtRange(c.start_date,c.end_date))}</div></div><div class="right"><b>${esc(fmtTotal(c,c.minutes,c.distance,c.steps))}</b>${c.rank?`<div class="muted">${ordinal(c.rank)} of ${c.of}</div>`:''}</div></div>`).join('')||'<p class="muted">No challenges yet.</p>'}</div>`;
     if(p.activities)body+=`<div class="profile-section"><h3>Recent activity</h3>${p.activities.map(a=>`<div class="listrow"><div><b>${esc(a.activity_type)}</b><div class="muted">${esc(fmtDay(a.activity_date))}${a.start_time?` · ${esc(a.start_time)}`:''} · ${chLink(a.challenge_id,a.challenge_name)}</div>${a.comment?`<div class="muted">“${esc(a.comment)}”</div>`:''}</div><div class="entry-side"><b>${esc(fmtEntry(a,a))}</b>${p.self?(a.kudos?`<span class="muted">👏 ${a.kudos}</span>`:''):kudosButton(a)}</div></div>`).join('')||'<p class="muted">Nothing logged yet.</p>'}</div>`;
   }else body+=`<p class="muted">${p.self?'Your profile is private: people only see your name and photo.':`${first} keeps their profile private.`}</p>`;
   $('#modalBody').innerHTML=`<div class="profile-head">${avatarHtml(p.avatar_url,p.name,'avatar-lg')}<div><h2>${esc(p.name)}</h2>${p.bio?`<div>${esc(p.bio)}</div>`:''}<div class="muted">${since}</div></div></div>
@@ -919,6 +921,36 @@ async function openProfile(id){
   else $('#followBtn').onclick=async()=>{
     try{await api(`/api/users/${p.id}/follow`,{method:p.is_following?'DELETE':'POST'});await openProfile(p.id)}catch(e){$('#profileMsg').textContent=e.message}
   };
+}
+// A team's page in the modal, with its own address: its place and totals, the last fortnight, everyone's share, latest entries.
+let teamReturnUrl=null;
+async function openTeam(id){
+  let r;
+  try{r=await api(`/api/teams/${id}`)}catch(e){uiAlert(e.message);return}
+  const t=r.team,c=r.challenge,key=isSteps(c)?'steps':isDistance(c)?'distance':'minutes',amt=x=>fmtTotal(c,x.minutes,x.distance,x.steps);
+  if(!/\/teams\/\d+\/?$/.test(location.pathname))teamReturnUrl=location.pathname;
+  setUrl(`/challenges/${c.id}/teams/${t.id}`);
+  const inChallenge=dash.challenges.some(x=>x.id===c.id&&x.role!=='admin');
+  const n=r.members.filter(x=>!x.former).length,avg=n?{minutes:Math.round(t.minutes/n),distance:Math.round(t.distance/n*100)/100,steps:Math.round(t.steps/n)}:null;
+  const tile=(label,x)=>`<div class="team-tile"><b>${esc(amt(x))}</b><span class="muted">${label}</span></div>`;
+  const top=Math.max(1,...r.days.map(d=>d[key]));
+  const days=r.days.length?`<div class="profile-section"><h3>The last ${r.days.length===14?'fortnight':`${r.days.length} day${r.days.length===1?'':'s'}`}</h3><div class="team-days" role="img" aria-label="Team totals day by day">${r.days.map(d=>`<div class="team-day" title="${esc(fmtDay(d.date))}: ${esc(amt(d))}"><div><span data-h="${Math.round(d[key]/top*100)}"></span></div><i>${new Date(d.date+'T00:00:00').toLocaleDateString(undefined,{weekday:'narrow'})}</i></div>`).join('')}</div></div>`:'';
+  const unitName=c.journey&&(c.journey.unit==='steps'?'steps':c.journey.unit);
+  const journey=c.kind==='journey'&&t.progress!=null?`<div class="profile-section"><h3>On the journey</h3><div class="team-bar"><span data-w="${Math.round(t.progress*100)}"></span></div><p class="muted">${t.finished_on?`🏁 Finished on ${esc(fmtDay(t.finished_on))}`:`${Math.round(t.progress*100)}% of the way${t.next?` · ${esc(fmtNum(t.next.remaining))} ${esc(unitName)} to ${esc(t.next.name)}`:''}`}</p></div>`:'';
+  let place=0;
+  const people=r.members.map(x=>`<div class="listrow${x.id===me.id?' me':''}"><div class="leader-name">${x.former?'<span class="rank"></span>':`<span class="rank">${++place}</span>`}${avatarHtml(x.avatar_url,x.name,'avatar-sm')}<div><b>${personLink(x.id,x.name)}</b>${x.id===me.id?' <span class="muted">(you)</span>':''}<div class="muted">${x.former?'left the team · ':x.team_role==='team_admin'?'team admin · ':''}${esc(amt(x.week))} this week</div></div></div><div class="right"><b>${esc(amt(x))}</b><div class="team-share"><span data-w="${Math.round(x.share*100)}"></span></div><div class="muted">${Math.round(x.share*100)}% of the team</div></div></div>`).join('')||'<p class="muted">Nobody in this team yet.</p>';
+  const entries=r.activities.map(a=>`<div class="listrow entry-row"><div><div class="leader-name">${avatarHtml(a.avatar_url,a.name,'avatar-sm')}<b>${personLink(a.user_id,a.name)}</b> <span class="muted">${esc(a.activity_type)}</span></div><div class="muted">${esc(fmtDay(a.activity_date))}${a.comment?` · “${esc(a.comment)}”`:''}</div></div><div class="entry-side"><b class="entry-amount">${esc(fmtEntry(c,a))}</b>${a.user_id===me.id?(a.kudos?`<span class="muted">👏 ${a.kudos}</span>`:''):kudosButton(a)}</div></div>`).join('');
+  const buttons=(!t.mine&&inChallenge?'<button id="teamJoin">Join this team</button>':'')+(t.canManage?'<button class="ghost" id="teamManage">Manage</button>':'');
+  $('#modalBody').innerHTML=`<div class="profile-head">${avatarHtml(t.image_url,t.name,'logo-lg')}<div><h2>${esc(t.name)}</h2><div>${chLink(c.id,c.name)}</div><div class="muted">${n} member${n===1?'':'s'}${t.rank?` · ${ordinal(t.rank)} of ${t.of} teams`:''}${t.mine?' · your team':''}</div></div></div>
+    ${buttons?`<div class="btnrow">${buttons}</div>`:''}
+    <div class="team-tiles">${tile('all time',t)}${tile('this month',t.month)}${tile('this week',t.week)}${avg?tile('per member',avg):''}</div>
+    ${journey}${days}<div class="profile-section"><h3>Members</h3>${people}</div>${entries?`<div class="profile-section"><h3>Latest entries</h3>${entries}</div>`:''}<p id="teamMsg" class="error" role="alert"></p>`;
+  // Bar sizes set here rather than in the markup, so the page needs no inline styles.
+  $('#modalBody').querySelectorAll('[data-h]').forEach(el=>el.style.height=el.dataset.h+'%');
+  $('#modalBody').querySelectorAll('[data-w]').forEach(el=>el.style.width=el.dataset.w+'%');
+  if(!$('#modal').open)$('#modal').showModal();
+  if($('#teamJoin'))$('#teamJoin').onclick=async()=>{try{await api(`/api/teams/${t.id}/join`,{method:'POST'});await loadDashboard();if(curChallenge?.id===c.id)await refreshChallenge();await openTeam(t.id)}catch(e){$('#teamMsg').textContent=e.message}};
+  if($('#teamManage'))$('#teamManage').onclick=()=>openTeamManage(t.id,t.name);
 }
 document.addEventListener('click',e=>{const b=e.target.closest('[data-profile]');if(b){e.preventDefault();openProfile(Number(b.dataset.profile))}});
 document.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&e.target.matches('[role="button"]')){e.preventDefault();e.target.click()}});
@@ -1292,7 +1324,7 @@ async function openMembers(c,{admin=false,note=''}={}){
     try{
       const {activities}=await api(`/api/challenges/${c.id}/members/${id}/activities`);
       const cc={metric:c.metric,distance_unit:c.distance_unit};
-      box.innerHTML=activities.map(a=>`<div class="listrow entry-row"><div><b>${esc(a.activity_type)}</b><div class="muted">${esc(fmtDay(a.activity_date))}${a.start_time?` · ${esc(a.start_time)}`:''}${a.team_name?` · ${esc(a.team_name)}`:''} · ${esc(SOURCE_LABEL[a.source]||a.source)}${a.comment?` · “${esc(a.comment)}”`:''}</div></div><div class="entry-side"><b class="entry-amount">${esc(fmtEntry(cc,a))}</b><button type="button" class="ghost" data-amdel="${a.id}">Delete</button></div></div>`).join('')||'<p class="muted">No entries.</p>';
+      box.innerHTML=activities.map(a=>`<div class="listrow entry-row"><div><b>${esc(a.activity_type)}</b><div class="muted">${esc(fmtDay(a.activity_date))}${a.start_time?` · ${esc(a.start_time)}`:''}${a.team_name?` · ${teamLink(a.team_id,a.team_name)}`:''} · ${esc(SOURCE_LABEL[a.source]||a.source)}${a.comment?` · “${esc(a.comment)}”`:''}</div></div><div class="entry-side"><b class="entry-amount">${esc(fmtEntry(cc,a))}</b><button type="button" class="ghost" data-amdel="${a.id}">Delete</button></div></div>`).join('')||'<p class="muted">No entries.</p>';
       box.querySelectorAll('[data-amdel]').forEach(x=>x.onclick=async()=>{
         if(!await uiConfirm("Delete this entry? It stops counting straight away, and the person can't undo it.",{ok:'Delete entry',danger:true}))return;
         try{await api(`/api/activities/${x.dataset.amdel}`,{method:'DELETE'});await refresh('Entry deleted.')}catch(err){say(err.message)}
@@ -1807,6 +1839,7 @@ async function route(){
   try{
     if(/^\/challenges\/new\/?$/.test(p))return showNewChallenge();
     if((m=p.match(/^\/challenges\/(\d+)\/?$/)))return await openChallenge(Number(m[1]));
+    if((m=p.match(/^\/challenges\/(\d+)\/teams\/(\d+)\/?$/))){await openChallenge(Number(m[1]));teamReturnUrl=`/challenges/${m[1]}`;return await openTeam(Number(m[2]))}
     if((m=p.match(/^\/help\/tickets\/(\d+)\/?$/))){showHelp();setUrl(p,true);return await openTicket(Number(m[1]))}
     if(/^\/help\/?$/.test(p))return showHelp();
     if((m=p.match(/^\/admin(\/challenges|\/log)?\/?$/))&&me.role==='global_admin'){adminTab=m[1]==='/challenges'?'challenges':m[1]==='/log'?'log':'users';return await showAdmin()}
@@ -1825,6 +1858,7 @@ async function route(){
 let firstRoute=true;
 window.addEventListener('popstate',()=>{if(me){if($('#modal').open)$('#modal').close();route()}});
 $('#modal').addEventListener('close',()=>{const m=location.pathname.match(/^\/help\/tickets\//);if(m)setUrl('/help',true)});
+$('#modal').addEventListener('close',()=>{if(/\/teams\/\d+\/?$/.test(location.pathname)){setUrl(teamReturnUrl||location.pathname.replace(/\/teams\/\d+\/?$/,''),true);teamReturnUrl=null}});
 
 async function copyInviteLink(code,btn){
   const url=inviteUrl(code);

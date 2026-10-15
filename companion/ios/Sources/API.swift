@@ -164,8 +164,28 @@ struct Standing: Hashable {
     let name: String, minutes: Double, distance: Double, steps: Double, imageURL: String?, userId: Int?
     /// Journeys only: the share of the route covered (0...1), and the day they reached the finish.
     var progress: Double? = nil, finishedOn: String? = nil
+    /// Teams only: tap to see the team's page.
+    var teamId: Int? = nil
 }
 struct Leaderboard { let teams: [Standing]; let users: [Standing]; var journey: Journey? = nil; var me: MyStanding? = nil }
+
+/// A team's own page: its place and totals, the last fortnight day by day, each member's share (and anyone who
+/// logged under it before leaving), and its latest entries.
+struct Totals: Hashable {
+    let minutes: Double, distance: Double, steps: Double
+    init(_ j: J?) { minutes = j?.double("minutes") ?? 0; distance = j?.double("distance") ?? 0; steps = j?.double("steps") ?? 0 }
+    init(minutes: Double, distance: Double, steps: Double) { self.minutes = minutes; self.distance = distance; self.steps = steps }
+    func value(_ m: Measure) -> Double { m == .steps ? steps : m == .distance ? distance : minutes }
+}
+struct TeamPageMember: Identifiable, Hashable { let id: Int, name: String, avatarURL: String?, teamAdmin: Bool, former: Bool, total: Totals, week: Totals, share: Double }
+struct TeamDay: Hashable { let date: Day, total: Totals }
+struct TeamPage {
+    let id: Int, name: String, imageURL: String?, members: Int, mine: Bool, canManage: Bool, rank: Int, of: Int
+    let total: Totals, month: Totals, week: Totals
+    let progress: Double?, finishedOn: String?, nextName: String?, nextRemaining: Double?
+    let challengeId: Int, challengeName: String, measure: Measure, distanceUnit: String, journeyUnit: String?
+    let people: [TeamPageMember], days: [TeamDay], activities: [FeedEntry]
+}
 
 struct MyActivity: Identifiable, Hashable {
     let id: Int, challengeId: Int, challengeName: String, teamName: String?, type: String
@@ -173,7 +193,7 @@ struct MyActivity: Identifiable, Hashable {
     let date: Day, startTime: String?, endTime: String?, comment: String?, source: String, hasRoute: Bool
 }
 
-struct ProfileChallenge: Hashable { let id: Int, name: String, startDate: Day, endDate: Day, measure: Measure, distanceUnit: String, team: String?, minutes: Double, distance: Double, steps: Double, rank: Int, of: Int }
+struct ProfileChallenge: Hashable { let id: Int, name: String, startDate: Day, endDate: Day, measure: Measure, distanceUnit: String, team: String?, minutes: Double, distance: Double, steps: Double, rank: Int, of: Int; var teamId: Int? = nil }
 struct ProfileActivity: Hashable {
     let type: String, minutes: Double?, distance: Double?, steps: Int?, distanceUnit: String, measure: Measure, date: Day, startTime: String?, comment: String?, challengeName: String
     var id = 0, challengeId = 0, kudos = 0, kudosMine = false
@@ -193,6 +213,7 @@ struct SetupState: Hashable { let challenge: Bool, syncing: Bool, push: Bool, em
 struct FeedEntry: Identifiable, Hashable {
     let id: Int, userId: Int, name: String, avatarURL: String?, type: String, minutes: Double?, distance: Double?, steps: Int?, date: Day, comment: String?, teamName: String?
     var kudos: Int, kudosMine: Bool
+    var teamId: Int? = nil
 }
 struct Passkey: Identifiable, Hashable { let id: String, name: String, createdAt: String, lastUsedAt: String? }
 /// The dashboard's extras from its last load.
@@ -459,7 +480,7 @@ final class API: @unchecked Sendable {
         func rows(_ a: [J], people: Bool) -> [Standing] {
             a.map { x in Standing(name: x.string("name"), minutes: x.double("minutes"), distance: x.double("distance"), steps: x.double("steps"),
                                   imageURL: x.str("image_url") ?? x.str("avatar_url"), userId: people ? x.int("id") : nil,
-                                  progress: x.has("progress") ? x.double("progress") : nil, finishedOn: x.str("finished_on")) }
+                                  progress: x.has("progress") ? x.double("progress") : nil, finishedOn: x.str("finished_on"), teamId: people ? nil : x.int("id")) }
         }
         let me = r.obj("me").map { m in MyStanding(rank: m.int("rank"), of: m.int("of"), total: m.double("total"), aheadName: m.obj("ahead")?.str("name"),
                                                    aheadGap: m.obj("ahead").map { $0.double("gap") }, week: m.double("week"), teamRank: m.obj("team").map { $0.int("rank") }, teamOf: m.obj("team").map { $0.int("of") }) }
@@ -495,11 +516,25 @@ final class API: @unchecked Sendable {
     }
     // Feed, 👏, counting an entry in another challenge
     func feed(_ challengeId: Int) async throws -> [FeedEntry] {
-        try await request("/api/challenges/\(challengeId)/feed").arr("activities").map { x in
-            FeedEntry(id: x.int("id"), userId: x.int("user_id"), name: x.string("name"), avatarURL: x.str("avatar_url"), type: x.string("activity_type"), minutes: x.doubleOrNil("minutes"),
-                      distance: x.doubleOrNil("distance"), steps: x.intOrNil("steps"), date: x.day("activity_date"), comment: x.str("comment"), teamName: x.str("team_name"),
-                      kudos: x.int("kudos"), kudosMine: x.int("kudos_mine") == 1 || x.bool("kudos_mine"))
+        try await request("/api/challenges/\(challengeId)/feed").arr("activities").map(feedEntry)
+    }
+    private func feedEntry(_ x: J) -> FeedEntry {
+        FeedEntry(id: x.int("id"), userId: x.int("user_id"), name: x.string("name"), avatarURL: x.str("avatar_url"), type: x.string("activity_type"), minutes: x.doubleOrNil("minutes"),
+                  distance: x.doubleOrNil("distance"), steps: x.intOrNil("steps"), date: x.day("activity_date"), comment: x.str("comment"), teamName: x.str("team_name"),
+                  kudos: x.int("kudos"), kudosMine: x.int("kudos_mine") == 1 || x.bool("kudos_mine"), teamId: x.intOrNil("team_id"))
+    }
+    func team(_ id: Int) async throws -> TeamPage {
+        let r = try await request("/api/teams/\(id)")
+        let t = r.obj("team") ?? r, c = r.obj("challenge") ?? r, next = t.obj("next")
+        let people = r.arr("members").map { x in
+            TeamPageMember(id: x.int("id"), name: x.string("name"), avatarURL: x.str("avatar_url"), teamAdmin: x.str("team_role") == "team_admin", former: x.bool("former"),
+                           total: Totals(x), week: Totals(x.obj("week")), share: x.double("share"))
         }
+        return TeamPage(id: t.int("id"), name: t.string("name"), imageURL: t.str("image_url"), members: t.int("members"), mine: t.bool("mine"), canManage: t.bool("canManage"),
+                        rank: t.int("rank"), of: t.int("of"), total: Totals(t), month: Totals(t.obj("month")), week: Totals(t.obj("week")),
+                        progress: t.has("progress") ? t.double("progress") : nil, finishedOn: t.str("finished_on"), nextName: next?.str("name"), nextRemaining: next.map { $0.double("remaining") },
+                        challengeId: c.int("id"), challengeName: c.string("name"), measure: Measure(c.str("metric")), distanceUnit: unit(c), journeyUnit: c.obj("journey")?.str("unit"),
+                        people: people, days: r.arr("days").map { TeamDay(date: $0.day("date"), total: Totals($0)) }, activities: r.arr("activities").map(feedEntry))
     }
     func kudos(_ activityId: Int, on: Bool) async throws -> Int { try await request("/api/activities/\(activityId)/kudos", on ? "POST" : "DELETE").int("kudos") }
     func copyActivity(_ activityId: Int, challengeId: Int, teamId: Int?) async throws {
@@ -586,7 +621,7 @@ final class API: @unchecked Sendable {
         let challenges: [ProfileChallenge]? = r.has("challenges") ? r.arr("challenges").map { c in
             ProfileChallenge(id: c.int("id"), name: c.string("name"), startDate: c.day("start_date"), endDate: c.day("end_date"), measure: Measure(c.str("metric")),
                              distanceUnit: unit(c), team: c.str("team"), minutes: c.double("minutes"), distance: c.double("distance"), steps: c.double("steps"),
-                             rank: c.int("rank"), of: c.int("of"))
+                             rank: c.int("rank"), of: c.int("of"), teamId: c.intOrNil("team_id"))
         } : nil
         let activities: [ProfileActivity]? = r.has("activities") ? r.arr("activities").map { x in
             ProfileActivity(type: x.string("activity_type"), minutes: x.doubleOrNil("minutes"), distance: x.doubleOrNil("distance"), steps: x.intOrNil("steps"),

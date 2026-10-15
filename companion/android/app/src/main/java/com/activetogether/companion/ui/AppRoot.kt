@@ -66,6 +66,8 @@ fun AppRoot(vm: AppViewModel) {
     LaunchedEffect(vm.pendingRoute) {
         val url = vm.pendingRoute ?: return@LaunchedEffect
         vm.pendingRoute = null
+        // A team's page: /teams/5, or /challenges/12/teams/5 as the website writes it.
+        Regex("^(?:/challenges/\\d+)?/teams/(\\d+)").find(url)?.let { nav.navigate("teams/${it.groupValues[1]}") { launchSingleTop = true }; return@LaunchedEffect }
         Regex("^/challenges/(\\d+)").find(url)?.let { nav.navigate("challenge/${it.groupValues[1]}") { launchSingleTop = true } }
         Regex("^/help/tickets/(\\d+)").find(url)?.let { nav.navigate("ticket/${it.groupValues[1]}") { launchSingleTop = true } }
         Regex("^/users/(\\d+)").find(url)?.let { nav.navigate("user/${it.groupValues[1]}") { launchSingleTop = true } }
@@ -85,6 +87,7 @@ fun AppRoot(vm: AppViewModel) {
         route == "join" -> "Join a challenge"
         route == "challenge/{id}/members" -> "Members"
         route.startsWith("team/") -> "Manage team"
+        route.startsWith("teams/") -> "Team"
         route.startsWith("challenge/") -> "Challenge"
         route.endsWith("/edit") -> "Edit activity"
         route.startsWith("activity/") -> "Activity"
@@ -173,6 +176,9 @@ fun AppRoot(vm: AppViewModel) {
             }
             composable("activity/{id}/edit", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
                 EditActivityScreen(vm, it.arguments!!.getInt("id")) { nav.popBackStack() }
+            }
+            composable("teams/{id}", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
+                TeamScreen(vm, it.arguments!!.getInt("id"), manageTeam = { cid, tid -> nav.navigate("team/$cid/$tid") }) { uid -> nav.navigate("user/$uid") }
             }
             composable("user/{id}", arguments = listOf(navArgument("id") { type = NavType.IntType })) {
                 UserProfileScreen(vm, it.arguments!!.getInt("id")) { uid -> nav.navigate("user/$uid") }

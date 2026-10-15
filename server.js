@@ -855,6 +855,12 @@ async function dailyPushes(force=false){
 // Errors the server didn't expect: logged, and the global admins hear about it by email and on their phones - at
 // most once every 30 minutes, so a run of them doesn't flood anyone.
 let lastErrorAlert=0;
+// Global admins whose admin powers are on (two-step sign-in, where that's required) get admin news on their phones.
+// An admin account without it signs in as an ordinary member, so whoever holds its password - an app store reviewer,
+// say - doesn't get new people's names, tickets or errors on their phone either. Emails still go to the address.
+function adminPushIds(exceptId=0){
+  return db.prepare(`SELECT id FROM users WHERE role='global_admin' AND deactivated_at IS NULL AND notify_admin=1 AND id!=?${ADMIN_TWO_FACTOR_REQUIRED?' AND totp_secret IS NOT NULL':''}`).all(exceptId).map(x=>x.id);
+}
 function reportError(e,where){
   console.error(e);
   if(Date.now()-lastErrorAlert<30*60_000)return;
@@ -863,7 +869,7 @@ function reportError(e,where){
     const admins=db.prepare("SELECT id,email FROM users WHERE role='global_admin' AND deactivated_at IS NULL AND notify_admin=1 AND email_verified_at IS NOT NULL").all();
     const text=`Hello,\n\nThe server hit an error${where?` (${where})`:''}:\n\n${String(e&&e.stack||e).slice(0,1500)}\n\nAny more in the next 30 minutes are only in the server's log.\n\nActive Together\n${ORIGIN}`;
     for(const a of admins)sendMail({to:a.email,subject:'Active Together: server error',text});
-    pushTo(admins.map(a=>a.id),{kind:'admin',title:'Server error',body:String(e&&e.message||e).slice(0,150),url:'/'});
+    pushTo(adminPushIds(),{kind:'admin',title:'Server error',body:String(e&&e.message||e).slice(0,150),url:'/'});
   }catch(x){console.error('Error alert failed',x)}
 }
 process.on('unhandledRejection',e=>reportError(e,'background task'));
@@ -990,12 +996,13 @@ function addMember(cid,uid,{role='member',teamId=null,by}){
 function ticketMail(ticketId,toReporter,what){
   const t=db.prepare('SELECT t.id,t.title,t.user_id,u.email,u.notify_email,u.email_verified_at FROM tickets t JOIN users u ON u.id=t.user_id WHERE t.id=?').get(ticketId);
   if(!t)return;
-  pushTo(toReporter?[t.user_id]:db.prepare("SELECT id FROM users WHERE role='global_admin' AND notify_admin=1 AND id!=?").all(t.user_id).map(x=>x.id),
+  const pushed=toReporter?[t.user_id]:adminPushIds(t.user_id);
+  pushTo(pushed,
     {kind:toReporter?'replies':'admin',title:toReporter?'Your support ticket':`Support ticket #${t.id}`,body:`${what}: ${t.title}`,url:`/help/tickets/${t.id}`});
   if(!emailEnabled())return;
   const people=toReporter?(t.notify_email&&t.email_verified_at?[{id:t.user_id,email:t.email}]:[]):db.prepare("SELECT id,email FROM users WHERE role='global_admin' AND deactivated_at IS NULL AND notify_admin=1 AND email_verified_at IS NOT NULL AND id!=?").all(t.user_id);
   for(const p of people){
-    if(pushReachable(p.id,toReporter?'replies':'admin'))continue;
+    if(pushed.includes(p.id)&&pushReachable(p.id,toReporter?'replies':'admin'))continue;
     if(hitRateLimit(`mail:ticket:${t.id}:${p.id}`,1,10*60_000))continue;
     sendMail({to:p.email,subject:`${toReporter?'Your support ticket':'Support ticket'} #${t.id}: ${what}`,
       text:`Hello,\n\n${toReporter?`There's news on your ticket "${t.title}": ${what}.`:`Ticket #${t.id} "${t.title}": ${what}.`}\n\nOpen it here: ${ORIGIN}/help/tickets/${t.id}\n\nYou can turn these emails off in My account.\n\nActive Together\n${ORIGIN}`});
@@ -1503,8 +1510,7 @@ const TICKET_SELECT=`SELECT t.*,u.name reporter_name,u.email reporter_email,u.av
 function noteSignup(user,how,app,req,ip,joined){
   const device=deviceLabel(req,app?'app':'web');
   audit(user.id,'signed up',{detail:`${how} · ${device} · network ${ip}${joined?` · joined ${joined.name}`:''}`});
-  const admins=db.prepare("SELECT id FROM users WHERE role='global_admin' AND deactivated_at IS NULL AND id!=?").all(user.id).map(a=>a.id);
-  pushTo(admins,{kind:'admin',title:'New account',body:`${user.name} (${user.email}) · ${how} · ${device}${joined?` · joined ${joined.name}`:''}`.slice(0,200),url:'/admin'}).catch(()=>{});
+  pushTo(adminPushIds(user.id),{kind:'admin',title:'New account',body:`${user.name} (${user.email}) · ${how} · ${device}${joined?` · joined ${joined.name}`:''}`.slice(0,200),url:'/admin'}).catch(()=>{});
 }
 // Deleting an account, by its owner or an admin: a challenge they own alone passes to its longest-standing
 // member (or is deleted if nobody else is in it), their activity goes, and what they created is credited to heirId.

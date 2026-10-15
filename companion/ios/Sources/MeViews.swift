@@ -270,7 +270,7 @@ struct EditProfileView: View {
                 Toggle("Phone notifications", isOn: Binding(get: { model.me?.notifyPush ?? true }, set: { v in Task { await model.setNotifyPush(v) } }))
                 if model.me?.notifyPush != false {
                     ForEach([("replies", "Replies to my tickets"), ("added", "Someone adds me to a challenge"), ("challenge", "Challenges starting and ending"), ("weekly", "My weekly summary"), ("kudos", "👏 on my activity")]
-                            + (model.me?.isAdmin == true || model.me?.adminNeedsTwoFactor == true ? [("admin", "New support tickets and server errors")] : []), id: \.0) { k, label in
+                            + (model.me?.isAdmin == true || model.me?.adminNeedsTwoFactor == true ? [("admin", "New accounts, support tickets and server errors")] : []), id: \.0) { k, label in
                         Toggle(label, isOn: Binding(get: { model.me?.pushPrefs[k] ?? true }, set: { v in Task { if let m = await model.call({ try await $0.setPushPrefs([k: v]) }) { model.me = m } } })).font(.subheadline)
                     }
                 }

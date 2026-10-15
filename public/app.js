@@ -1362,7 +1362,7 @@ async function renderAuditLog(more=false){
   try{
     const r=await api(`/api/admin/audit?limit=100&offset=${more?auditEntries.length:0}${q?`&q=${encodeURIComponent(q)}`:''}`);
     auditEntries=more?auditEntries.concat(r.entries):r.entries;
-    $('#auditList').innerHTML=auditEntries.map(e=>`<div class="listrow audit-row"><div><b>${e.actor_name?personLink(e.actor_id,e.actor_name):'Someone'}</b> ${esc(e.action)}${e.target_name?` · <b>${personLink(e.target_id,e.target_name)}</b>`:''}${e.challenge_name?` · ${chLink(e.challenge_id,e.challenge_name)}`:''}${e.detail?`<div class="muted">${esc(e.detail)}</div>`:''}</div><span class="muted">${esc(fmtWhen(e.at))}</span></div>`).join('')||'<p class="muted">Nothing recorded yet.</p>';
+    $('#auditList').innerHTML=auditEntries.map(e=>`<div class="listrow audit-row"><div><b>${e.actor_name?personLink(e.actor_id,e.actor_name):e.actor_id?'A deleted account':'Someone'}</b> ${esc(e.action)}${e.target_name?` · <b>${personLink(e.target_id,e.target_name)}</b>`:e.target_id?' · <i>a deleted account</i>':''}${e.challenge_name?` · ${chLink(e.challenge_id,e.challenge_name)}`:''}${e.detail?`<div class="muted">${esc(e.detail)}</div>`:''}</div><span class="muted">${esc(fmtWhen(e.at))}</span></div>`).join('')||'<p class="muted">Nothing recorded yet.</p>';
     $('#auditMore').classList.toggle('hidden',!r.more);
   }catch(e){$('#auditList').innerHTML=`<p class="error" role="alert">${esc(e.message)}</p>`}
 }
@@ -1450,7 +1450,7 @@ function openMyAccount(){
       <p class="muted">Only people in a challenge with you can see your profile, and only for challenges you share. Leaderboard totals are always visible to them; GPS routes never are.</p>
       <label class="check-row"><input type="checkbox" id="acctNotify"${me.notify_email?' checked':''}> <span>Email me when support replies to my tickets, or someone adds me to a challenge (if you get phone notifications, these come there instead)</span></label>
       <label class="check-row"><input type="checkbox" id="acctNotifyPush"${me.notify_push?' checked':''}> <span>Phone notifications in the Active Together app</span></label>
-      <div class="push-kinds">${[['replies','Replies to my tickets'],['added','Someone adds me to a challenge'],['challenge','Challenges starting and ending'],['weekly','My weekly summary'],['kudos','👏 on my activity'],...(me.role==='global_admin'||me.admin_needs_two_factor?[['admin','New support tickets and server errors (admins)']]:[])]
+      <div class="push-kinds">${[['replies','Replies to my tickets'],['added','Someone adds me to a challenge'],['challenge','Challenges starting and ending'],['weekly','My weekly summary'],['kudos','👏 on my activity'],...(me.role==='global_admin'||me.admin_needs_two_factor?[['admin','New accounts, support tickets and server errors (admins)']]:[])]
         .map(([k,l])=>`<label class="check-row"><input type="checkbox" data-pushkind="${k}"${me.push_prefs?.[k]!==false?' checked':''}> <span>${l}</span></label>`).join('')}</div>
       ${me.role==='global_admin'||me.admin_needs_two_factor?`<label class="check-row"><input type="checkbox" id="acctNotifyAdmin"${me.notify_admin?' checked':''}> <span>Email me about new support tickets and replies (global admins)</span></label>`:''}
       ${me.has_password?`<label>New password (leave blank to keep current)<input id="acctNewPassword" type="password" minlength="8" autocomplete="new-password"></label>

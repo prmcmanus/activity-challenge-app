@@ -2834,6 +2834,57 @@ test('email: password resets (two an hour, nameless), people added to a challeng
   }
 });
 
+test('new accounts are logged with how and where they were made, and a deleted account\'s number is never reused', async () => {
+  const admin = await adminCookie();
+  const gone = await register('Newest Gone');
+  const app = await fetch(`${origin}/api/mobile/register`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 'okhttp/4.12.0 Dalvik/2.1.0 (Linux; U; Android 15)' },
+    body: JSON.stringify({ name: 'Appy Signup', email: `appy.${Date.now()}@example.com`, password: 'SuperSecret123!' }) }).then(r => r.json());
+  const log = async () => (await jsonFetch(`${origin}/api/admin/audit?q=signed%20up&limit=500`, admin)).body.entries;
+  const mine = (await log()).filter(e => e.actor_id === gone.user.id || e.actor_id === app.user.id).sort((a, b) => a.id - b.id);
+  assert.deepEqual(mine.map(e => [e.action, e.actor_name]), [['signed up', 'Newest Gone'], ['signed up', 'Appy Signup']]);
+  assert.match(mine[0].detail, /^with a password · .+ · network \S+$/);
+  assert.match(mine[1].detail, /^with a password · Android app · network /);
+  // Delete the newest account: the next one gets a new number, and the log says the old one is a deleted account.
+  const newest = await register('Newest Now Gone');
+  assert.equal((await jsonFetch(`${origin}/api/admin/users/${newest.user.id}`, admin, 'DELETE')).status, 200);
+  const next = await register('After Deletion');
+  assert.ok(next.user.id > newest.user.id, `account ${next.user.id} reused number ${newest.user.id}`);
+  const entry = (await log()).find(e => e.actor_id === newest.user.id);
+  assert.deepEqual([entry.action, entry.actor_name], ['signed up', null]);
+});
+
+test('an older database: account numbers stop being reused, and log lines from a number\'s earlier holder are unhooked', async () => {
+  const { DatabaseSync } = require('node:sqlite');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-challenge-old-'));
+  const old = new DatabaseSync(path.join(dir, 'activity.sqlite'));
+  old.exec(`CREATE TABLE users(id INTEGER PRIMARY KEY,email TEXT UNIQUE NOT NULL,name TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'member',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+    INSERT INTO users VALUES(1,'old.one@example.com','Old One','x','member','2026-01-01 10:00:00'),(2,'reuser@example.com','Reuser','x','member','2026-03-01 10:00:00');
+    CREATE TABLE audit_log(id INTEGER PRIMARY KEY,at TEXT DEFAULT CURRENT_TIMESTAMP,actor_id INTEGER,action TEXT NOT NULL,target_user_id INTEGER,challenge_id INTEGER,detail TEXT);
+    INSERT INTO audit_log(at,actor_id,action,target_user_id,detail) VALUES('2026-02-01 09:00:00',1,'created account',2,NULL),('2026-02-02 09:00:00',NULL,'deleted own account',NULL,'user 7'),
+      ('2026-03-02 09:00:00',1,'changed account',2,'name changed'),('2026-02-03 09:00:00',2,'added to challenge',1,'as owner');`);
+  old.close();
+  const srv = await spawnServer({ DATA_DIR: dir });
+  try {
+    const r = await fetch(`${srv.origin}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Brand New', email: 'brand.new@example.com', password: 'SuperSecret123!' }) });
+    const j = await r.json();
+    assert.equal(r.status, 201);
+    assert.ok(j.user.id > 7, `the new account took number ${j.user.id}, at or below the deleted account 7`);
+  } finally { await srv.stop() }
+  const db = new DatabaseSync(path.join(dir, 'activity.sqlite'));
+  try {
+    assert.match(db.prepare("SELECT sql FROM sqlite_master WHERE name='users'").get().sql, /AUTOINCREMENT/);
+    assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='users' ORDER BY name").all().map(x => x.name), ['sv_user_del', 'sv_user_upd']);
+    const rows = db.prepare('SELECT action,actor_id,target_user_id,detail FROM audit_log ORDER BY id LIMIT 4').all().map(x => ({ ...x }));
+    assert.deepEqual(rows, [
+      { action: 'created account', actor_id: 1, target_user_id: null, detail: 'an account since deleted' },
+      { action: 'deleted own account', actor_id: null, target_user_id: null, detail: 'user 7' },
+      { action: 'changed account', actor_id: 1, target_user_id: 2, detail: 'name changed' },
+      { action: 'added to challenge', actor_id: null, target_user_id: 1, detail: 'as owner · by an account since deleted' },
+    ]);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM users").get().n, 4, 'everyone kept, plus the seeded admin and the new account');
+  } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }) }
+});
+
 test('owners add people by email; the audit log records it; global admins read the log', async () => {
   const login = await fetch(`${origin}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.com', password: 'ChangeMe123!' }) });
   const admin = login.headers.get('set-cookie').split(';')[0];

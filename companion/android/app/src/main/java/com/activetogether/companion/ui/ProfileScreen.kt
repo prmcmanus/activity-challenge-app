@@ -394,7 +394,7 @@ fun EditProfileScreen(vm: AppViewModel, done: () -> Unit) {
                 checked = me?.notifyPush != false) { on -> scope.launch { vm.setNotifyPush(on) } }
             if (me?.notifyPush != false) {
                 val kinds = listOf("replies" to "Replies to my tickets", "added" to "Someone adds me to a challenge", "challenge" to "Challenges starting and ending",
-                    "weekly" to "My weekly summary", "kudos" to "👏 on my activity") + if (me?.isAdmin == true || me?.adminNeedsTwoFactor == true) listOf("admin" to "New support tickets and server errors") else emptyList()
+                    "weekly" to "My weekly summary", "kudos" to "👏 on my activity") + if (me?.isAdmin == true || me?.adminNeedsTwoFactor == true) listOf("admin" to "New accounts, support tickets and server errors") else emptyList()
                 kinds.forEach { (k, label) ->
                     SettingRow(label, "", checked = me?.pushPrefs?.get(k) != false) { on -> scope.launch { vm.call { it.setPushPrefs(mapOf(k to on)) }?.let { vm.updateMe(it) } } }
                 }

@@ -5,7 +5,7 @@ const PORT=Number(process.env.PORT||3000), DATA=process.env.DATA_DIR||'.', ORIGI
 fs.mkdirSync(DATA,{recursive:true}); const db=new DatabaseSync(path.join(DATA,'activity.sqlite'));
 // WAL with synchronous=NORMAL: safe against the app crashing, and much quicker to write (Litestream copies the WAL).
 db.exec(`PRAGMA foreign_keys=ON;PRAGMA journal_mode=WAL;PRAGMA synchronous=NORMAL;PRAGMA busy_timeout=5000;
-CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,email TEXT UNIQUE NOT NULL,name TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'member',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,name TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'member',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,expires_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS challenges(id INTEGER PRIMARY KEY,name TEXT NOT NULL,start_date TEXT NOT NULL,end_date TEXT NOT NULL,created_by INTEGER NOT NULL,invite_code TEXT UNIQUE NOT NULL,active INTEGER NOT NULL DEFAULT 1,created_at TEXT DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(created_by) REFERENCES users(id));
 CREATE TABLE IF NOT EXISTS challenge_members(challenge_id INTEGER,user_id INTEGER,challenge_role TEXT NOT NULL DEFAULT 'member',joined_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(challenge_id,user_id),FOREIGN KEY(challenge_id) REFERENCES challenges(id) ON DELETE CASCADE,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
@@ -232,6 +232,39 @@ CREATE INDEX IF NOT EXISTS activities_team ON activities(team_id);
 CREATE INDEX IF NOT EXISTS activities_user_date ON activities(user_id,activity_date);
 CREATE INDEX IF NOT EXISTS activities_route ON activities(route_id);
 CREATE INDEX IF NOT EXISTS activities_challenge_user ON activities(challenge_id,user_id);`);
+// Account numbers are never reused. They used to be: a new account could take the number of the newest one just
+// deleted, and the admin activity log then showed the deleted account's history under the new person's name.
+// Rebuilt once with AUTOINCREMENT, counting on from the highest number ever used (the log remembers deleted ones);
+// log lines from before an account existed are about whoever had its number before, so they're unhooked from it.
+function neverReuseUserIds(){
+  const sql=db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get()?.sql||'';
+  if(/AUTOINCREMENT/i.test(sql))return;
+  const re=/^CREATE TABLE "?users"?\s*\(\s*id INTEGER PRIMARY KEY\s*,/i;
+  if(!re.test(sql)){console.error('Users table not in the expected shape; account numbers may still be reused');return}
+  const hasLog=!!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_log'").get();
+  db.exec('PRAGMA foreign_keys=OFF');
+  try{
+    db.exec('BEGIN');
+    if(hasLog){
+      db.exec(`UPDATE audit_log SET target_user_id=NULL,detail=COALESCE(detail||' · ','')||'an account since deleted'
+        WHERE target_user_id IS NOT NULL AND at<(SELECT created_at FROM users WHERE id=audit_log.target_user_id)`);
+      db.exec(`UPDATE audit_log SET actor_id=NULL,detail=COALESCE(detail||' · ','')||'by an account since deleted'
+        WHERE actor_id IS NOT NULL AND at<(SELECT created_at FROM users WHERE id=audit_log.actor_id)`);
+    }
+    db.exec(sql.replace(re,'CREATE TABLE users_new(id INTEGER PRIMARY KEY AUTOINCREMENT,'));
+    db.exec('INSERT INTO users_new SELECT * FROM users');
+    db.exec('DROP TABLE users');
+    db.exec('ALTER TABLE users_new RENAME TO users');
+    const highest=Math.max(db.prepare('SELECT COALESCE(MAX(id),0) n FROM users').get().n,hasLog?db.prepare(`SELECT MAX(COALESCE(MAX(actor_id),0),COALESCE(MAX(target_user_id),0),
+      COALESCE(MAX(CASE WHEN action='deleted own account' THEN CAST(substr(detail,6) AS INTEGER) END),0)) n FROM audit_log`).get().n:0);
+    db.prepare("DELETE FROM sqlite_sequence WHERE name='users'").run();
+    db.prepare("INSERT INTO sqlite_sequence(name,seq) VALUES('users',?)").run(highest);
+    db.exec('COMMIT');
+    console.log(`Account numbers are no longer reused (the next one is after ${highest})`);
+  }catch(e){db.exec('ROLLBACK');throw e}
+  finally{db.exec('PRAGMA foreign_keys=ON')}
+}
+neverReuseUserIds();
 // Each challenge's standings version: moved on by the database itself whenever anything its leaderboards and
 // journey map show changes (entries, teams, members, the challenge, a member's name or photo), so cached
 // standings are reused until then, challenge by challenge, however the change was made.
@@ -1465,6 +1498,14 @@ function ticketView(t,viewer){
 const TICKET_SELECT=`SELECT t.*,u.name reporter_name,u.email reporter_email,u.avatar_url reporter_avatar,
   (SELECT COUNT(*) FROM ticket_comments c WHERE c.ticket_id=t.id AND c.internal=0) comment_count FROM tickets t JOIN users u ON u.id=t.user_id`;
 // Milliseconds, so a reply in the same second as a view still counts as new.
+// A new account made by its owner (not by an admin, which is logged as that): in the admin activity log with how
+// and where from, and a phone notification to the global admins, so an account nobody recognises can be traced.
+function noteSignup(user,how,app,req,ip,joined){
+  const device=deviceLabel(req,app?'app':'web');
+  audit(user.id,'signed up',{detail:`${how} · ${device} · network ${ip}${joined?` · joined ${joined.name}`:''}`});
+  const admins=db.prepare("SELECT id FROM users WHERE role='global_admin' AND deactivated_at IS NULL AND id!=?").all(user.id).map(a=>a.id);
+  pushTo(admins,{kind:'admin',title:'New account',body:`${user.name} (${user.email}) · ${how} · ${device}${joined?` · joined ${joined.name}`:''}`.slice(0,200),url:'/admin'}).catch(()=>{});
+}
 // Deleting an account, by its owner or an admin: a challenge they own alone passes to its longest-standing
 // member (or is deleted if nobody else is in it), their activity goes, and what they created is credited to heirId.
 function deleteAccount(id,heirId){
@@ -1569,6 +1610,7 @@ async function api(req,res,url){
      // An invite code given when signing up (typed, or from the invite link) joins that challenge straight away.
      const joined=joinWithCode(uid,b.invite_code);
      if(b.invite_code&&!joined)noteBadCode(ip,uid);
+     noteSignup({id:uid,name,email},'with a password',app,req,ip,joined);
      return app?send(res,201,{ok:true,sessionToken:t,user,joined}):send(res,201,{ok:true,user,joined},setSessionCookie(t))}catch(e){if(isUniqueViolation(e))return send(res,409,{error:'An account with that email already exists'});throw e}
  }
  if(m==='POST'&&url.pathname==='/api/login'){
@@ -1629,6 +1671,7 @@ async function api(req,res,url){
    // An invite code that came with it (typed, or from the invite link) joins that challenge.
    const joined=b.invite_code?joinWithCode(user.id,b.invite_code):null;
    if(b.invite_code&&!joined)noteBadCode(ip,user.id);
+   if(created)noteSignup(user,`with ${label}`,app,req,ip,joined);
    const t=startSession(user.id,app?'app':'web',req),out={ok:true,created,linked,takenOver,joined,user:{id:user.id,email:user.email,name:user.name,role:user.role,avatarUrl:user.avatar_url}};
    return app?send(res,created?201:200,{...out,sessionToken:t}):send(res,created?201:200,out,setSessionCookie(t));
  }
@@ -2479,7 +2522,7 @@ async function api(req,res,url){
    if(!need(res,u,['global_admin']))return;
    const q=String(url.searchParams.get('q')||'').trim().toLowerCase(),limit=Math.min(Number(url.searchParams.get('limit'))||100,500),offset=Math.max(0,Number(url.searchParams.get('offset'))||0);
    const like='%'+q.replace(/[\\%_]/g,c=>'\\'+c)+'%';
-   const rows=db.prepare(`SELECT l.id,l.at,l.action,l.detail,l.challenge_id,a.name actor_name,a.id actor_id,t.name target_name,t.id target_id,c.name challenge_name FROM audit_log l
+   const rows=db.prepare(`SELECT l.id,l.at,l.action,l.detail,l.challenge_id,a.name actor_name,l.actor_id,t.name target_name,l.target_user_id target_id,c.name challenge_name FROM audit_log l
      LEFT JOIN users a ON a.id=l.actor_id LEFT JOIN users t ON t.id=l.target_user_id LEFT JOIN challenges c ON c.id=l.challenge_id
      ${q?"WHERE lower(l.action) LIKE ? ESCAPE '\\' OR lower(coalesce(a.name,'')) LIKE ? ESCAPE '\\' OR lower(coalesce(t.name,'')) LIKE ? ESCAPE '\\' OR lower(coalesce(c.name,'')) LIKE ? ESCAPE '\\'":''}
      ORDER BY l.id DESC LIMIT ? OFFSET ?`).all(...(q?[like,like,like,like]:[]),limit+1,offset);

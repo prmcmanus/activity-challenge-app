@@ -129,3 +129,4 @@ dialog#modal .close{position:sticky;top:0;z-index:3;background:var(--surface);bo
 .team-bar,.team-share{background:var(--surface-2);border-radius:99px;overflow:hidden}.team-bar{height:12px;margin:4px 0 6px}.team-share{height:5px;width:110px;margin:4px 0 2px auto}.team-bar span,.team-share span{display:block;height:100%;background:var(--red)}
 .listrow.me{background:var(--tint-yellow);border-radius:8px;padding-left:8px;padding-right:8px;margin:0 -8px;border-bottom-color:transparent}
 .listrow .rank{display:inline-block;min-width:1.4em}
+#newTeamBtn,#dlgNewTeam{margin-top:16px}

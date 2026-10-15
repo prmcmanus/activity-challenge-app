@@ -17,6 +17,14 @@ function ask({title='',message='',ok='OK',cancel='Cancel',danger=false,input=nul
     else $('#askBody [data-ask="yes"]').focus();
   });
 }
+// Clicking outside any dialog (on the dimmed backdrop) closes it, as Escape does. Only when the press started outside
+// too, so dragging a text selection out past the edge doesn't.
+{
+  const outside=(d,e)=>{if(e.target!==d)return false;const r=d.getBoundingClientRect();return e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom};
+  let pressedOutside=null;
+  document.addEventListener('pointerdown',e=>{pressedOutside=e.target.tagName==='DIALOG'&&outside(e.target,e)?e.target:null});
+  document.addEventListener('click',e=>{const d=e.target;if(d.tagName==='DIALOG'&&d.open&&pressedOutside===d&&outside(d,e))d.close();pressedOutside=null});
+}
 const uiAlert=(message,title)=>ask({message,title,cancel:null});
 const uiConfirm=(message,opt={})=>ask({message,ok:'OK',...opt});
 const uiPrompt=(message,opt={})=>ask({message,ok:opt.ok||'OK',title:opt.title,input:{value:opt.value,placeholder:opt.placeholder}});
@@ -1798,7 +1806,7 @@ async function loadMyActivity(append=false){
   myActivity=append?myActivity.concat(r.activities):r.activities;myActivityMore=r.more;
   $('#myActivity').innerHTML=myActivity.map(x=>{
     const c={metric:x.metric,distance_unit:x.distance_unit};
-    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${chLink(x.challenge_id,x.challenge_name)}${x.team_name?` · ${esc(x.team_name)}`:''} · ${esc(fmtDay(x.activity_date))}${x.start_time?` · ${esc(x.start_time)}`:''}</div></div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b>${x.has_route?`<button class="ghost" data-mymap="${x.id}">Map</button>`:''}</div></div>`;
+    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${chLink(x.challenge_id,x.challenge_name)}${x.team_name?` · ${teamLink(x.team_id,x.team_name)}`:''} · ${esc(fmtDay(x.activity_date))}${x.start_time?` · ${esc(x.start_time)}`:''}</div></div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b>${x.has_route?`<button class="ghost" data-mymap="${x.id}">Map</button>`:''}</div></div>`;
   }).join('')||'<p class="muted">Nothing logged yet.</p>';
   $('#moreActivity').classList.toggle('hidden',!myActivityMore);
   $all('[data-mymap]').forEach(b=>{const x=myActivity.find(a=>a.id===Number(b.dataset.mymap));b.onclick=()=>openRouteMap(x,{metric:x.metric,distance_unit:x.distance_unit})});

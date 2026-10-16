@@ -1,5 +1,6 @@
 package com.activetogether.companion.ui
 
+import androidx.compose.ui.text.fromHtml
 import android.Manifest
 import android.content.Context
 import android.graphics.Bitmap
@@ -112,7 +113,10 @@ fun LazyListScope.profileItems(p: Profile, openProfile: (Int) -> Unit = {}, foll
     item {
         Hero(if (p.memberSince.isNotBlank()) "Member since ${runCatching { LocalDate.parse(p.memberSince).let { "${it.month.name.lowercase().replaceFirstChar(Char::uppercase)} ${it.year}" } }.getOrDefault(p.memberSince)}" else "Profile",
             p.name, trailing = { Avatar(p.avatarUrl, p.name, size = 72.dp) },
-            below = { p.bio?.let { Text(it, color = Color.White.copy(alpha = 0.92f), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 6.dp)) } })
+            below = {
+                val about = p.bioHtml?.let { bioAnnotated(it) } ?: p.bio?.let { androidx.compose.ui.text.AnnotatedString(it) }
+                about?.let { Text(it, color = Color.White.copy(alpha = 0.92f), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 6.dp)) }
+            })
     }
     item { header() }
     // Streaks and personal bests.
@@ -328,7 +332,9 @@ fun EditProfileScreen(vm: AppViewModel, done: () -> Unit) {
     val scope = rememberCoroutineScope()
     val me = vm.me
     var name by remember(me) { mutableStateOf(me?.name.orEmpty()) }
-    var bio by remember(me) { mutableStateOf(me?.bio.orEmpty()) }
+    val originalBio = remember(me) { me?.bio.orEmpty() }
+    var bio by remember(me) { mutableStateOf(originalBio) }
+    val bioFormatted = me?.bioHtml?.contains("<(b|strong|i|em|u|ul|ol|a)\\b".toRegex()) == true
     var sharing by remember(me) { mutableStateOf(me?.sharing ?: "summary") }
     var email by remember(me) { mutableStateOf(me?.email.orEmpty()) }
     var newPassword by remember { mutableStateOf("") }
@@ -364,8 +370,8 @@ fun EditProfileScreen(vm: AppViewModel, done: () -> Unit) {
         }
         SectionCard("About you") {
             OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(bio, { bio = it.take(280) }, label = { Text("About me (optional)") }, modifier = Modifier.fillMaxWidth(),
-                supportingText = { Text("${bio.length}/280") })
+            OutlinedTextField(bio, { bio = it.take(1000) }, label = { Text("About me (optional)") }, minLines = 3, modifier = Modifier.fillMaxWidth(),
+                supportingText = { Text((if (bioFormatted) "Bold, lists and links from the website stay unless you change this here. " else "") + "${bio.length}/1000") })
         }
         SectionCard("Who sees what") {
             Text("Only people in a challenge with you can open your profile, and only for challenges you share. Leaderboard totals are always visible to them; GPS routes never are.",
@@ -414,7 +420,9 @@ fun EditProfileScreen(vm: AppViewModel, done: () -> Unit) {
             busy = true; note = null
             scope.launch {
                 val updated = vm.call {
-                    it.updateProfile(name.trim(), email.trim().takeIf { e -> e.lowercase() != me?.email }, currentPassword, newPassword, null, bio.trim(), sharing)
+                    it.updateProfile(name.trim(), email.trim().takeIf { e -> e.lowercase() != me?.email }, currentPassword, newPassword, null,
+                        // Only when edited here: the website's formatting stays otherwise.
+                        bio.trim().takeIf { b -> b != originalBio.trim() }, sharing)
                 }
                 busy = false
                 if (updated != null) {
@@ -619,4 +627,18 @@ fun SyncSettingsCard(vm: AppViewModel) {
         }
         Dropdown("Distance unit I type in", listOf("mi", "km"), unit, { if (it == "km") "Kilometres" else "Miles" }, { u -> unit = u; vm.prefs.preferredUnit = u })
     }
+}
+
+/** About me as written on the website: paragraphs, bold, italic, underline, links, and lists (each item on its own
+ *  line, starting • or 1., since the HTML text doesn't draw list markers). */
+internal fun bioAnnotated(html: String): androidx.compose.ui.text.AnnotatedString {
+    val all = RegexOption.DOT_MATCHES_ALL
+    val listed = html
+        .replace(Regex("<ol>(.*?)</ol>", all)) { m -> var n = 0; Regex("<li>").replace(m.groupValues[1]) { "<br>${++n}. " }.replace("</li>", "") + "<br>" }
+        .replace(Regex("<ul>(.*?)</ul>", all)) { m -> m.groupValues[1].replace("<li>", "<br>• ").replace("</li>", "") + "<br>" }
+    val text = androidx.compose.ui.text.AnnotatedString.fromHtml(listed,
+        linkStyles = androidx.compose.ui.text.TextLinkStyles(androidx.compose.ui.text.SpanStyle(textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)))
+    val start = text.text.indexOfFirst { !it.isWhitespace() }.coerceAtLeast(0)
+    val end = text.text.indexOfLast { !it.isWhitespace() } + 1
+    return if (end > start) text.subSequence(start, end) else text
 }

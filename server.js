@@ -311,7 +311,7 @@ function detectImageType(buf){
 // only client-side - the API is a public HTTP interface and a direct POST would skip it.
 const RTE_ALLOWED_TAGS=new Set(['p','br','b','strong','i','em','u','ul','ol','li','a','img','h1','h2','h3','blockquote']);
 const RTE_ALLOWED_ATTRS={a:['href'],img:['src','alt']};
-function sanitizeHtml(html){
+function sanitizeHtml(html,allowed=RTE_ALLOWED_TAGS){
   if(!html)return html;
   const escapeText=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   let out='',i=0;
@@ -329,8 +329,9 @@ function sanitizeHtml(html){
     const rest=(closing?tagContent.slice(1):tagContent).trim();
     const tm=rest.match(/^([a-zA-Z][a-zA-Z0-9]*)/);
     if(!tm)continue;
-    const tagName=tm[1].toLowerCase();
-    if(!RTE_ALLOWED_TAGS.has(tagName))continue;
+    // A browser's editor makes each new line a <div> (Chrome, Firefox): kept as a paragraph, so lines stay apart.
+    const tagName=tm[1].toLowerCase()==='div'?'p':tm[1].toLowerCase();
+    if(!allowed.has(tagName))continue;
     if(closing){out+=`</${tagName}>`;continue}
     let attrs='';
     const allowedForTag=RTE_ALLOWED_ATTRS[tagName]||[];
@@ -349,6 +350,33 @@ function sanitizeHtml(html){
     out+=`<${tagName}${attrs}>`;
   }
   return out;
+}
+
+// About me: up to 1,000 characters, with bold, italic, underline, lists, links and separate lines (no headings or
+// pictures). Stored as cleaned HTML; the API gives it as bio_html, and as plain text in bio for the apps from before
+// it could be formatted (which also send plain text back, made into paragraphs here).
+const BIO_TAGS=new Set(['p','br','b','strong','i','em','u','ul','ol','li','a']),BIO_MAX=1000;
+const escHtml=t=>String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const textToHtml=t=>String(t||'').replace(/\r/g,'').split('\n').map(l=>l.trim()).filter(Boolean).map(l=>`<p>${escHtml(l)}</p>`).join('');
+function htmlToText(html){
+  return String(html||'').replace(/<br\s*\/?>/gi,'\n').replace(/<li[^>]*>/gi,'\n• ').replace(/<\/(p|li|ul|ol|h[1-3]|blockquote)>/gi,'\n').replace(/<[^>]*>/g,'')
+    .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&nbsp;/g,' ').replace(/&amp;/g,'&')
+    .split('\n').map(l=>l.trim()).filter(Boolean).join('\n');
+}
+// What a profile update asks for: undefined (unchanged), null (removed), cleaned HTML, or an error message.
+function bioFromInput(b){
+  if(b.bio_html===undefined&&b.bio===undefined)return {};
+  const html=b.bio_html!==undefined?sanitizeHtml(String(b.bio_html??'').trim(),BIO_TAGS):textToHtml(b.bio??'');
+  const text=htmlToText(html);
+  if(text.length>BIO_MAX)return {error:`About me can be up to ${BIO_MAX} characters (this is ${text.length})`};
+  return {bio:text?html:null};
+}
+// A user row's about me, as both forms.
+function withBio(o){if(o){o.bio_html=o.bio||null;o.bio=o.bio?htmlToText(o.bio):null}return o}
+// About me texts from before formatting were plain: made into paragraphs once.
+if(getSetting('bio_html')!=='1'){
+  for(const r of db.prepare('SELECT id,bio FROM users WHERE bio IS NOT NULL').all())db.prepare('UPDATE users SET bio=? WHERE id=?').run(textToHtml(r.bio)||null,r.id);
+  setSetting('bio_html','1');
 }
 
 // Passwords: scrypt, run off the main thread so a sign-in never stalls everyone else's requests.
@@ -681,9 +709,13 @@ function pushPrefs(stored){let p={};try{p=JSON.parse(stored||'{}')||{}}catch(e){
 function wantsPush(prefs,kind){if(!kind||!PUSH_KINDS.includes(kind))return true;try{return (JSON.parse(prefs||'{}')||{})[kind]!==false}catch(e){return true}}
 // The shared Apple Shortcut (an iCloud link made on an iPhone); the website offers it once set.
 // Where to get the apps: the Play listing (PLAY_STORE_LIVE=1 once anyone can install from it, rather than testers), the
-// App Store listing once it's live (APP_STORE_URL), and TestFlight until then.
+// App Store listing once it's live (APP_STORE_URL), and TestFlight until then. While Play is still in testing, its
+// testers join a Google Group (which grants access) and opt in to the beta before the listing will install.
 const STORES={play:process.env.PLAY_STORE_URL||'https://play.google.com/store/apps/details?id=com.activetogether.companion',playLive:process.env.PLAY_STORE_LIVE==='1',
-  appStore:process.env.APP_STORE_URL||null,testFlight:process.env.TESTFLIGHT_URL||'https://testflight.apple.com/join/cFAwqWKT'};
+  playGroup:process.env.PLAY_TEST_GROUP_URL||'https://groups.google.com/g/activetogethertesting',
+  playOptIn:process.env.PLAY_TESTING_URL||'https://play.google.com/apps/testing/com.activetogether.companion',
+  appStore:process.env.APP_STORE_URL||null,testFlight:process.env.TESTFLIGHT_URL||'https://testflight.apple.com/join/cFAwqWKT',
+  testFlightApp:'https://apps.apple.com/us/app/testflight/id899247664'};
 const SHORTCUT_URL=/^https:\/\/www\.icloud\.com\/shortcuts\/[A-Za-z0-9]+$/.test(process.env.SHORTCUT_URL||'')?process.env.SHORTCUT_URL:'';
 // Cloudflare Turnstile (usually invisible, no Google) takes over from reCAPTCHA once its keys are set.
 const TURNSTILE_SITE_KEY=process.env.TURNSTILE_SITE_KEY||'',TURNSTILE_SECRET_KEY=process.env.TURNSTILE_SECRET_KEY||'';
@@ -946,14 +978,14 @@ function auth(req){
   }
   delete u.expires_at;delete u.kind;delete u.session_created;delete u.last_used_at;
   u.push_prefs=pushPrefs(u.push_prefs);
-  return u;
+  return withBio(u);
 }
 // My account as the apps and website show it (as auth() reports it, without the session's details).
 function meRow(uid){
   const x=db.prepare("SELECT id,email,name,role,avatar_url,bio,profile_sharing,(totp_secret IS NOT NULL) two_factor,(instr(password_hash,':')>0) has_password,notify_email,notify_admin,notify_push,(email_verified_at IS NOT NULL) email_verified,pending_email,push_prefs FROM users WHERE id=?").get(uid);
   if(x&&x.role==='global_admin'&&!x.two_factor&&ADMIN_TWO_FACTOR_REQUIRED){x.role='member';x.admin_needs_two_factor=true}
   if(x)x.push_prefs=pushPrefs(x.push_prefs);
-  return x;
+  return withBio(x);
 }
 const need=(res,u,roles)=>{if(!u){send(res,401,{error:'Sign in required'});return false}if(roles&&!roles.includes(u.role)){send(res,403,{error:'Not authorised'});return false}return true};
 const SECURE=ORIGIN.startsWith('https:')?'; Secure':'';
@@ -1858,7 +1890,8 @@ async function api(req,res,url){
    if(email!==undefined&&emailEnabled()){pendingEmail=email;email=undefined}
    let avatarUrl;
    try{avatarUrl=validateImageUrl(b.avatarUrl)}catch(e){return send(res,400,{error:e.message})}
-   const bio=b.bio!==undefined?(String(b.bio).trim().slice(0,280)||null):undefined;
+   const {bio,error:bioError}=bioFromInput(b);
+   if(bioError)return send(res,400,{error:bioError});
    const sharing=b.profileSharing;
    if(sharing!==undefined&&!PROFILE_SHARING.includes(sharing))return send(res,400,{error:'profileSharing must be private, summary or full'});
    if(b.notifyEmail!==undefined)db.prepare('UPDATE users SET notify_email=? WHERE id=?').run(b.notifyEmail?1:0,u.id);
@@ -2235,7 +2268,7 @@ async function api(req,res,url){
      :db.prepare('SELECT c.* FROM challenges c JOIN challenge_members a ON a.challenge_id=c.id AND a.user_id=? JOIN challenge_members b ON b.challenge_id=c.id AND b.user_id=? ORDER BY c.start_date DESC').all(id,u.id);
    if(!self&&u.role!=='global_admin'&&!shared.length)return send(res,404,{error:'Not found'});
    const sharing=PROFILE_SHARING.includes(target.profile_sharing)?target.profile_sharing:'summary';
-   const out={id:target.id,name:target.name,avatar_url:target.avatar_url,bio:target.bio||null,member_since:String(target.created_at||'').slice(0,10),sharing,self};
+   const out={id:target.id,name:target.name,avatar_url:target.avatar_url,bio:target.bio?htmlToText(target.bio):null,bio_html:target.bio||null,member_since:String(target.created_at||'').slice(0,10),sharing,self};
    if(sharing!=='private'){
      out.challenges=shared.map(c=>{
        const lb=leaderboard(c),i=lb.users.findIndex(x=>x.id===id),me=lb.users[i]||{minutes:0,distance:0,steps:0};
@@ -2521,7 +2554,7 @@ async function api(req,res,url){
      (SELECT MAX(a.activity_date) FROM activities a WHERE a.user_id=us.id) last_activity,
      (SELECT COUNT(*) FROM tickets t WHERE t.user_id=us.id) tickets
      FROM users us${where} ORDER BY us.name${limit?' LIMIT ? OFFSET ?':''}`).all(...args,...(limit?[Math.min(limit,200),offset]:[]));
-   return send(res,200,{users,total:db.prepare(`SELECT COUNT(*) n FROM users us${where}`).get(...args).n});
+   return send(res,200,{users:users.map(withBio),total:db.prepare(`SELECT COUNT(*) n FROM users us${where}`).get(...args).n});
  }
  // Global admins: the audit log, newest first, searchable by what was done or who.
  if(m==='GET'&&url.pathname==='/api/admin/audit'){
@@ -2608,7 +2641,8 @@ async function api(req,res,url){
    if(email!==undefined&&email!==target.email&&!validEmail(email))return send(res,400,{error:'Enter a valid email address'});
    let avatarUrl;
    try{avatarUrl=b.avatarUrl===undefined?undefined:(validateImageUrl(b.avatarUrl)??null)}catch(e){return send(res,400,{error:e.message})}
-   const bio=b.bio!==undefined?(String(b.bio??'').trim().slice(0,280)||null):undefined;
+   const {bio,error:bioError}=bioFromInput(b);
+   if(bioError)return send(res,400,{error:bioError});
    let passwordHash;
    if(b.password){const pwErr=passwordProblem(b.password,{email:email||target.email,name:name||target.name});if(pwErr)return send(res,400,{error:pwErr});passwordHash=await hash(b.password)}
    try{

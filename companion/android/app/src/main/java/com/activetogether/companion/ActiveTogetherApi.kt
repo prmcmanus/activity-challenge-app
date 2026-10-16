@@ -17,7 +17,9 @@ data class Me(val id: Int, val name: String, val email: String, val avatarUrl: S
               val emailVerified: Boolean = true, val pendingEmail: String? = null,
               /** A global admin whose powers wait for two-step sign-in to be turned on (on the website). */
               val adminNeedsTwoFactor: Boolean = false, val notifyPush: Boolean = true,
-              val twoFactor: Boolean = false, val pushPrefs: Map<String, Boolean> = emptyMap()) {
+              val twoFactor: Boolean = false, val pushPrefs: Map<String, Boolean> = emptyMap(),
+              /** About me with its formatting (bold, lists, links) from the website; bio is the same as plain text. */
+              val bioHtml: String? = null) {
     val isAdmin: Boolean get() = role == "global_admin"
 }
 
@@ -65,7 +67,7 @@ data class Person(val id: Int, val name: String, val avatarUrl: String?)
 data class Profile(val id: Int, val name: String, val avatarUrl: String?, val bio: String?, val memberSince: String, val sharing: String, val self: Boolean,
     val challenges: List<ProfileChallenge>?, val activities: List<ProfileActivity>?,
     val followersCount: Int = 0, val followingCount: Int = 0, val isFollowing: Boolean = false, val followsYou: Boolean = false,
-    val followers: List<Person>? = null, val following: List<Person>? = null, val stats: UserStats? = null)
+    val followers: List<Person>? = null, val following: List<Person>? = null, val stats: UserStats? = null, val bioHtml: String? = null)
 
 data class MyTeam(val id: Int, val name: String)
 
@@ -640,7 +642,7 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         return Profile(r.getInt("id"), r.getString("name"), str(r, "avatar_url"), str(r, "bio"), r.optString("member_since"),
             r.optString("sharing", "summary"), r.optBoolean("self"), challenges, activities,
             r.optInt("followers_count"), r.optInt("following_count"), r.optBoolean("is_following"), r.optBoolean("follows_you"), people("followers"), people("following"),
-            parseStats(r.optJSONObject("stats")))
+            parseStats(r.optJSONObject("stats")), str(r, "bio_html"))
     }
 
     /** Edit one activity entry; the server checks it still fits its challenge (dates, measure). */
@@ -828,7 +830,8 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         emailVerified = u.optInt("email_verified", 1) == 1, pendingEmail = if (u.isNull("pending_email")) null else u.optString("pending_email").takeIf { it.isNotBlank() },
         adminNeedsTwoFactor = u.optBoolean("admin_needs_two_factor"), notifyPush = u.optInt("notify_push", 1) == 1,
         twoFactor = u.optInt("two_factor") == 1 || u.optBoolean("two_factor"),
-        pushPrefs = u.optJSONObject("push_prefs")?.let { o -> o.keys().asSequence().associateWith { o.optBoolean(it, true) } } ?: emptyMap())
+        pushPrefs = u.optJSONObject("push_prefs")?.let { o -> o.keys().asSequence().associateWith { o.optBoolean(it, true) } } ?: emptyMap(),
+        bioHtml = if (u.isNull("bio_html")) null else u.optString("bio_html").takeIf { it.isNotBlank() })
 
     private fun request(path: String, method: String = "GET", body: JSONObject? = null): JSONObject {
         // Signed-in reads are kept, so without a connection the app shows what it last saw instead of nothing.

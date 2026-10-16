@@ -3,7 +3,7 @@
 fetch('/api/config').then(r=>r.json()).then(cfg=>{
   const st=cfg.stores||{};
   const show=(name,on)=>document.querySelectorAll(`[data-store="${name}"]`).forEach(el=>{el.hidden=!on});
-  show('appstore',!!st.appStore);show('testflight',!st.appStore);
+  show('appstore',!!st.appStore);show('testflight',!st.appStore);show('playlive',!!st.playLive);show('playtest',!st.playLive);
   document.querySelectorAll('[data-href]').forEach(a=>{const u=st[a.dataset.href];if(u)a.href=u});
 }).catch(()=>{});
 fetch('/api/me').then(r=>r.json()).then(m=>{

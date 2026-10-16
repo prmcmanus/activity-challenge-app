@@ -2834,6 +2834,29 @@ test('email: password resets (two an hour, nameless), people added to a challeng
   }
 });
 
+test('about me: formatting and separate lines from the website, plain text from older apps, cleaned, and up to 1,000 characters', async () => {
+  const ann = await register('Ann About');
+  const viewer = await register('Vic Viewer');
+  const c = await jsonFetch(`${origin}/api/challenges`, ann.cookie, 'POST', { name: 'About shared', start_date: '2026-01-01', end_date: '2026-12-31' });
+  await jsonFetch(`${origin}/api/join`, viewer.cookie, 'POST', { code: c.body.invite_code });
+  // The website's editor: Chrome makes each line a <div>; bold, a list and a link stay; anything else goes.
+  const html = '<div>Training for <b>Manchester</b> <span style="color:red">marathon</span></div><div><ul><li>Runs</li><li>Swims</li></ul></div><div><a href="https://example.com" onclick="x()">My blog</a><script>alert(1)</script><img src="/uploads/a.png"><h1>Big</h1></div>';
+  assert.equal((await jsonFetch(`${origin}/api/me`, ann.cookie, 'PATCH', { bio_html: html })).status, 200);
+  const p = (await jsonFetch(`${origin}/api/users/${ann.user.id}/profile`, viewer.cookie)).body;
+  assert.equal(p.bio_html, '<p>Training for <b>Manchester</b> marathon</p><p><ul><li>Runs</li><li>Swims</li></ul></p><p><a href="https://example.com">My blog</a>alert(1)Big</p>');
+  assert.equal(p.bio, 'Training for Manchester marathon\n• Runs\n• Swims\nMy blogalert(1)Big', 'plain text for the apps that came before formatting');
+  // An older app sends plain text: each line becomes a paragraph, and it's escaped.
+  await jsonFetch(`${origin}/api/me`, ann.cookie, 'PATCH', { bio: 'Line one <3\n\nLine two & more' });
+  const me = (await jsonFetch(`${origin}/api/me`, ann.cookie)).body.user;
+  assert.deepEqual([me.bio_html, me.bio], ['<p>Line one &lt;3</p><p>Line two &amp; more</p>', 'Line one <3\nLine two & more']);
+  // Too long: refused, with the count. Empty: removed.
+  const long = await jsonFetch(`${origin}/api/me`, ann.cookie, 'PATCH', { bio_html: `<p>${'a'.repeat(1001)}</p>` });
+  assert.equal(long.status, 400);
+  assert.match(long.body.error, /up to 1000 characters \(this is 1001\)/);
+  assert.equal((await jsonFetch(`${origin}/api/me`, ann.cookie, 'PATCH', { bio_html: '<p><br></p>' })).status, 200);
+  assert.deepEqual([(await jsonFetch(`${origin}/api/me`, ann.cookie)).body.user.bio, (await jsonFetch(`${origin}/api/me`, ann.cookie)).body.user.bio_html], [null, null]);
+});
+
 test('new accounts are logged with how and where they were made, and a deleted account\'s number is never reused', async () => {
   const admin = await adminCookie();
   const gone = await register('Newest Gone');

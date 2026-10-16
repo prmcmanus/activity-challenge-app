@@ -96,6 +96,8 @@ async function uploadImageFile(file,maxDim=900,quality=0.85){
 // they can produce through it needs sanitizing in the first place.
 function initRichTextEditor(root){
   const editor=root.querySelector('.rte-editor');
+  // Enter starts a new paragraph (browsers otherwise make a <div>, or nothing at all).
+  editor.addEventListener('focus',()=>document.execCommand('defaultParagraphSeparator',false,'p'));
   root.querySelectorAll('[data-cmd]').forEach(btn=>{
     btn.onclick=async()=>{
       const cmd=btn.dataset.cmd;
@@ -121,6 +123,9 @@ function initRichTextEditor(root){
     };
   });
 }
+
+// About me: the same editor, without headings or pictures. The server cleans what's saved.
+const bioEditor=(id,html)=>`<div class="rte" data-rte><div class="rte-toolbar"><button type="button" data-cmd="bold" title="Bold"><b>B</b></button><button type="button" data-cmd="italic" title="Italic"><i>I</i></button><button type="button" data-cmd="underline" title="Underline"><u>U</u></button><button type="button" data-cmd="insertUnorderedList" title="Bullet list">&bull; List</button><button type="button" data-cmd="insertOrderedList" title="Numbered list">1. List</button><button type="button" data-cmd="createLink" title="Link">Link</button></div><div id="${id}" class="rte-editor bio-editor" contenteditable="true" data-placeholder="A little about you: what you're training for, your sports, anything you like">${html||''}</div></div>`;
 
 let me=null, dash=null, curChallenge=null, curLeaderboard=null, authTab='login';
 
@@ -467,13 +472,17 @@ const STORE_BADGE={play:'<img src="/badges/google-play.png" alt="Get it on Googl
 // Everyone gets Google Play and TestFlight (or the App Store); the website download, Apple Shortcuts and Sideloadly
 // are only offered to global admins.
 const isSiteAdmin=()=>me&&(me.role==='global_admin'||me.admin_needs_two_factor);
+const ext=(url,text)=>`<a href="${esc(url)}" target="_blank" rel="noopener">${text}</a>`;
+// While the apps are in testing: Google Play needs its testers' group and the beta opt-in first; TestFlight needs its app.
+const androidSteps=st=>`<ol class="app-steps"><li>${ext(st.playGroup,'Join the testers’ group')} (sign in with the Google account your phone uses)</li><li>${ext(st.playOptIn,'Join the beta')}</li><li>${ext(st.play,'Install it from Google Play')}</li></ol>`;
+const iphoneSteps=st=>`<ol class="app-steps"><li>${ext(st.testFlightApp,'Install TestFlight')} from the App Store</li><li>${ext(st.testFlight,'Join the beta')}, then tap <b>Install</b></li></ol>`;
 async function loadIosCard(){
   const st=siteConfig.stores||{};
   $('#iphoneAppRow').classList.toggle('hidden',isAndroid);
   $('#iphoneShortcutRow').classList.toggle('hidden',isAndroid||!isSiteAdmin());
   $('#iphoneGet').innerHTML=st.appStore?`<a href="${esc(st.appStore)}" target="_blank" rel="noopener">${STORE_BADGE.apple}</a>`
     :`<a class="button" href="${esc(st.testFlight||'https://testflight.apple.com/join/cFAwqWKT')}" target="_blank" rel="noopener">Join the beta</a>`;
-  $('#iphoneAppMeta').textContent=st.appStore?'Syncs each workout and your daily steps from Apple Health.':"Now in beta through Apple's TestFlight: syncs each workout and your daily steps from Apple Health.";
+  $('#iphoneAppMeta').innerHTML=st.appStore?'Syncs each workout and your daily steps from Apple Health.':`In beta through Apple’s TestFlight: syncs each workout and your daily steps from Apple Health.${iphoneSteps(st)}`;
   if(!isSiteAdmin()){$('#iosAppLine').classList.add('hidden');return}
   try{const a=await api('/api/app/ios');$('#iosAppLine').classList.toggle('hidden',!a.available||!!st.appStore||isAndroid)}catch(e){$('#iosAppLine').classList.add('hidden')}
 }
@@ -482,7 +491,7 @@ async function loadAndroidCard(){
   $('#androidRow').classList.toggle('hidden',isIOS);
   if(!isSiteAdmin()){
     $('#androidGet').innerHTML=`<a href="${esc(st.play||'https://play.google.com/store/apps/details?id=com.activetogether.companion')}" target="_blank" rel="noopener">${STORE_BADGE.play}</a>`;
-    $('#androidMeta').textContent='Get it from Google Play.';
+    $('#androidMeta').innerHTML=st.playLive?'Get it from Google Play.':`In testing on Google Play, three steps:${androidSteps(st)}`;
     return;
   }
   let apk=null;try{const a=await api('/api/app/android');if(a.available)apk=a}catch(e){}
@@ -491,7 +500,7 @@ async function loadAndroidCard(){
     $('#androidMeta').innerHTML=apk?`No Google Play? <a href="/api/app/android/download">Download the app directly</a> (version ${esc(apk.version)}).`:'';
   }else{
     $('#androidGet').innerHTML=apk?'<a class="button" href="/api/app/android/download">Get the app</a>':'';
-    $('#androidMeta').innerHTML=(apk?`Version ${esc(apk.version)}. `:'Coming soon. ')+(st.play?`Testing the Google Play version? <a href="${esc(st.play)}" target="_blank" rel="noopener">Get it on Google Play</a>.`:'');
+    $('#androidMeta').innerHTML=(apk?`Version ${esc(apk.version)}. `:'Coming soon. ')+(st.play?`Testing the Google Play version?${androidSteps(st)}`:'');
   }
 }
 
@@ -921,7 +930,7 @@ async function openProfile(id){
     body+=`<div class="profile-section"><h3>${p.self?'My challenges':'Challenges you share'}</h3>${p.challenges.map(c=>`<div class="listrow"><div><b>${chLink(c.id,c.name)}</b><div class="muted">${c.team?`${teamLink(c.team_id,c.team)} · `:''}${esc(fmtRange(c.start_date,c.end_date))}</div></div><div class="right"><b>${esc(fmtTotal(c,c.minutes,c.distance,c.steps))}</b>${c.rank?`<div class="muted">${ordinal(c.rank)} of ${c.of}</div>`:''}</div></div>`).join('')||'<p class="muted">No challenges yet.</p>'}</div>`;
     if(p.activities)body+=`<div class="profile-section"><h3>Recent activity</h3>${p.activities.map(a=>`<div class="listrow"><div><b>${esc(a.activity_type)}</b><div class="muted">${esc(fmtDay(a.activity_date))}${a.start_time?` · ${esc(a.start_time)}`:''} · ${chLink(a.challenge_id,a.challenge_name)}</div>${a.comment?`<div class="muted">“${esc(a.comment)}”</div>`:''}</div><div class="entry-side"><b>${esc(fmtEntry(a,a))}</b>${p.self?(a.kudos?`<span class="muted">👏 ${a.kudos}</span>`:''):kudosButton(a)}</div></div>`).join('')||'<p class="muted">Nothing logged yet.</p>'}</div>`;
   }else body+=`<p class="muted">${p.self?'Your profile is private: people only see your name and photo.':`${first} keeps their profile private.`}</p>`;
-  $('#modalBody').innerHTML=`<div class="profile-head">${avatarHtml(p.avatar_url,p.name,'avatar-lg')}<div><h2>${esc(p.name)}</h2>${p.bio?`<div>${esc(p.bio)}</div>`:''}<div class="muted">${since}</div></div></div>
+  $('#modalBody').innerHTML=`<div class="profile-head">${avatarHtml(p.avatar_url,p.name,'avatar-lg')}<div><h2>${esc(p.name)}</h2>${p.bio_html?`<div class="rte-display bio">${p.bio_html}</div>`:''}<div class="muted">${since}</div></div></div>
     <div class="row"><div>${counts}</div><div class="btnrow">${p.self?'<button class="ghost" id="profileEdit">Edit my account</button>':`<button id="followBtn" class="${p.is_following?'ghost':''}">${p.is_following?'Following ✓':'Follow'}</button>`}</div></div>
     ${lists}${body}<p id="profileMsg" class="error" role="alert"></p>`;
   if(!$('#modal').open)$('#modal').showModal();
@@ -1385,7 +1394,7 @@ function openEditUser(x){
       <label for="euPhoto">Profile photo</label>
       <div class="inline-row"><span id="euPhotoPreview">${avatarHtml(x.avatar_url,x.name,'imgpreview')}</span>${x.avatar_url?'<button type="button" class="ghost" id="euPhotoRemove">Remove photo</button>':''}</div>
       <input type="file" id="euPhoto" accept="image/*">
-      <label>About me<textarea id="euBio" rows="2" maxlength="280">${esc(x.bio||'')}</textarea></label>
+      <label>About me</label>${bioEditor('euBio',x.bio_html)}${x.bio_html?'<button type="button" class="ghost" id="euBioClear">Remove about me</button>':''}
       <label>Role<select id="euRole"><option value="member"${x.role==='member'?' selected':''}>Member</option><option value="global_admin"${x.role==='global_admin'?' selected':''}>Global admin</option></select></label>
       <label>Reset password (leave blank to keep current)<input id="euPassword" type="password" minlength="8" autocomplete="new-password"></label>
       <button>Save changes</button>
@@ -1398,6 +1407,8 @@ function openEditUser(x){
       <div class="btnrow"><button type="button" class="${x.deactivated_at?'secondary':'danger'}" id="euActive">${x.deactivated_at?'Reactivate account':'Deactivate account'}</button><button type="button" class="danger" id="euDelete">Delete account</button></div>
       <p class="muted">Deleting removes the account with all their activity, routes, team memberships and tickets, for good. Challenges and teams they created stay, credited to you.</p></div>`}`;
   $('#modal').showModal();
+  initRichTextEditor($('#euBio').closest('[data-rte]'));
+  if($('#euBioClear'))$('#euBioClear').onclick=()=>{$('#euBio').innerHTML='';$('#euBioClear').remove()};
   if($('#euTwoStepOff'))$('#euTwoStepOff').onclick=async()=>{
     if(!await uiConfirm(`Turn off two-step sign-in for ${x.name}? They'll sign in with just their password until they set it up again.`,{ok:'Turn off',danger:true}))return;
     try{await api(`/api/admin/users/${x.id}`,{method:'PATCH',body:JSON.stringify({twoFactor:false})});$('#modal').close();renderAdmin()}catch(err){$('#euMsg').textContent=err.message}
@@ -1424,7 +1435,7 @@ function openEditUser(x){
     const payload={name:$('#euName').value.trim(),email:$('#euEmail').value.trim(),role:$('#euRole').value};
     const pw=$('#euPassword').value;
     if(pw)payload.password=pw;
-    if($('#euBio').value.trim()!==(x.bio||''))payload.bio=$('#euBio').value;
+    if($('#euBio').innerHTML!==(x.bio_html||''))payload.bio_html=$('#euBio').innerHTML;
     if(photoRemoved)payload.avatarUrl=null;
     try{
       const f=$('#euPhoto').files[0];if(f)payload.avatarUrl=await uploadImageFile(f,320,0.85);
@@ -1441,7 +1452,7 @@ function openMyAccount(){
       <label>Name<input id="acctName" value="${esc(me.name)}" required maxlength="80"></label>
       <label>Email<input id="acctEmail" type="email" value="${esc(me.email)}" required autocomplete="email" maxlength="254"></label>
       ${me.pending_email?`<p class="muted">Changing to <b>${esc(me.pending_email)}</b>: open the link we sent there to finish.</p>`:''}
-      <label>About me (optional)<input id="acctBio" maxlength="280" value="${esc(me.bio||'')}" placeholder="A line for your profile"></label>
+      <label>About me (optional)</label>${bioEditor('acctBio',me.bio_html)}
       <label>Profile sharing<select id="acctSharing">
         <option value="private"${me.profile_sharing==='private'?' selected':''}>Private - name and photo only</option>
         <option value="summary"${!me.profile_sharing||me.profile_sharing==='summary'?' selected':''}>Totals - plus my total and rank in each shared challenge</option>
@@ -1468,6 +1479,7 @@ function openMyAccount(){
       <form id="deleteAccountForm">${me.has_password?'<label>Your password<input id="deletePassword" type="password" required autocomplete="current-password"></label>':'<label>Type DELETE to confirm<input id="deletePassword" required autocomplete="off"></label>'}<button class="danger">Delete my account</button></form>
       <p id="deleteMsg" class="error" role="alert"></p></div>`;
   $('#modal').showModal();
+  initRichTextEditor($('#acctBio').closest('[data-rte]'));
   renderTwoStep();
   renderDevices();
   renderPasskeys();
@@ -1489,7 +1501,7 @@ function openMyAccount(){
   });
   $('#accountForm').onsubmit=guarded(async e=>{
     e.preventDefault();
-    const payload={name:$('#acctName').value.trim(),email:$('#acctEmail').value.trim(),bio:$('#acctBio').value,profileSharing:$('#acctSharing').value,notifyEmail:$('#acctNotify').checked,notifyPush:$('#acctNotifyPush').checked,pushPrefs:Object.fromEntries($all('[data-pushkind]').map(b=>[b.dataset.pushkind,b.checked])),...($('#acctNotifyAdmin')?{notifyAdmin:$('#acctNotifyAdmin').checked}:{})};
+    const payload={name:$('#acctName').value.trim(),email:$('#acctEmail').value.trim(),bio_html:$('#acctBio').innerHTML,profileSharing:$('#acctSharing').value,notifyEmail:$('#acctNotify').checked,notifyPush:$('#acctNotifyPush').checked,pushPrefs:Object.fromEntries($all('[data-pushkind]').map(b=>[b.dataset.pushkind,b.checked])),...($('#acctNotifyAdmin')?{notifyAdmin:$('#acctNotifyAdmin').checked}:{})};
     // Only send email when it changed - sending it at all asks for the current password.
     if(payload.email.toLowerCase()===String(me.email).toLowerCase())delete payload.email;
     const newPassword=$('#acctNewPassword').value;

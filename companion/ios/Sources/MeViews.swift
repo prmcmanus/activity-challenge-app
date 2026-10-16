@@ -60,7 +60,8 @@ struct ProfileSections<Header: View>: View {
     var body: some View {
         let since: String = Day(p.memberSince).map { "Member since \($0.date.formatted(.dateTime.month(.wide).year()))" } ?? "Profile"
         Hero(eyebrow: since, title: p.name, trailing: { Avatar(url: p.avatarURL, name: p.name, size: 72) }, below: {
-            if let bio = p.bio { Text(bio).foregroundStyle(.white.opacity(0.92)) }
+            if let html = p.bioHTML { Text(bioAttributed(html)).foregroundStyle(.white.opacity(0.92)).tint(.white) }
+            else if let bio = p.bio { Text(bio).foregroundStyle(.white.opacity(0.92)) }
         })
         header
         if let st = p.stats, !st.line.isEmpty { SectionCard { Text(st.line).font(.subheadline.weight(.semibold)) } }
@@ -233,6 +234,7 @@ struct EditProfileView: View {
     @Environment(Router.self) private var router
     @State private var name = ""
     @State private var bio = ""
+    @State private var originalBio = ""
     @State private var sharing = "summary"
     @State private var email = ""
     @State private var newPassword = ""
@@ -257,9 +259,9 @@ struct EditProfileView: View {
             }
             Section("About you") {
                 TextField("Name", text: $name)
-                TextField("About me (optional)", text: $bio, axis: .vertical).lineLimit(2...5)
-                    .onChange(of: bio) { _, v in if v.count > 280 { bio = String(v.prefix(280)) } }
-                Text("\(bio.count)/280").font(.caption).foregroundStyle(.secondary)
+                TextField("About me (optional)", text: $bio, axis: .vertical).lineLimit(3...12)
+                    .onChange(of: bio) { _, v in if v.count > 1000 { bio = String(v.prefix(1000)) } }
+                Text((bioFormatted ? "Bold, lists and links from the website stay unless you change this here. " : "") + "\(bio.count)/1000").font(.caption).foregroundStyle(.secondary)
             }
             Section(header: Text("Who sees what"), footer: Text("Only people in a challenge with you can open your profile, and only for challenges you share. Leaderboard totals are always visible to them; GPS routes never are.")) {
                 Picker("Sharing", selection: $sharing) {
@@ -300,7 +302,7 @@ struct EditProfileView: View {
         } message: { Text(model.me?.hasPassword == false ? "Everything in it is deleted for good. You sign in with Google or Apple, so type DELETE to confirm." : "Everything in it is deleted for good. Enter your password to confirm.") }
         .onAppear {
             guard !loaded, let me = model.me else { return }
-            loaded = true; name = me.name; bio = me.bio ?? ""; sharing = me.sharing; email = me.email
+            loaded = true; name = me.name; bio = me.bio ?? ""; originalBio = bio; sharing = me.sharing; email = me.email
         }
         .onChange(of: photo) { _, item in
             guard let item else { return }
@@ -314,6 +316,12 @@ struct EditProfileView: View {
         }
     }
 
+    private var bioFormatted: Bool { model.me?.bioHTML?.range(of: "<(b|strong|i|em|u|ul|ol|a)\\b", options: .regularExpression) != nil }
+    private var changedBio: String? {
+        let b = bio.trimmingCharacters(in: .whitespacesAndNewlines)
+        return b == originalBio.trimmingCharacters(in: .whitespacesAndNewlines) ? nil : b
+    }
+
     private func save() {
         busy = true; note = nil
         let me = model.me
@@ -321,7 +329,9 @@ struct EditProfileView: View {
         Task {
             let updated = await model.call {
                 try await $0.updateProfile(name: name.trimmingCharacters(in: .whitespaces), email: changedEmail.lowercased() == me?.email.lowercased() ? nil : changedEmail,
-                                           currentPassword: currentPassword, newPassword: newPassword, bio: bio.trimmingCharacters(in: .whitespaces), sharing: sharing)
+                                           currentPassword: currentPassword, newPassword: newPassword,
+                                           // Only when edited here: the website's formatting stays otherwise.
+                                           bio: changedBio, sharing: sharing)
             }
             busy = false
             if let updated { model.me = updated; Prefs.email = updated.email; model.message = updated.pendingEmail != nil && changedEmail.lowercased() != me?.email.lowercased() ? "Saved. Open the link we sent to \(updated.pendingEmail ?? "") to change your email" : "Profile saved"; router.pop() }
@@ -421,4 +431,63 @@ private struct TwoStepSection: View {
             }
         }
     }
+}
+
+/// About me as written on the website: paragraphs and line breaks, bold, italic, underline, links, and lists (each
+/// item on its own line, starting • or 1.). Only the tags the server allows in it are understood; others are skipped.
+func bioAttributed(_ html: String) -> AttributedString {
+    var out = AttributedString()
+    var bold = 0, italic = 0, underline = 0
+    var link: URL?
+    var lists: [Int?] = []          // nil: a bullet list; a number: how far a numbered list has got
+    var lineStart = true
+    func newline() { if !lineStart { out.append(AttributedString("\n")); lineStart = true } }
+    func add(_ raw: String) {
+        let s = raw.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"").replacingOccurrences(of: "&#39;", with: "'").replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+        guard !s.isEmpty, !(lineStart && s.trimmingCharacters(in: .whitespaces).isEmpty) else { return }
+        var a = AttributedString(lineStart ? String(s.drop(while: { $0 == " " })) : s)
+        var intent: InlinePresentationIntent = []
+        if bold > 0 { intent.insert(.stronglyEmphasized) }
+        if italic > 0 { intent.insert(.emphasized) }
+        if !intent.isEmpty { a.inlinePresentationIntent = intent }
+        if underline > 0 || link != nil { a.underlineStyle = .single }
+        if let link { a.link = link }
+        out.append(a); lineStart = false
+    }
+    var rest = Substring(html)
+    while let lt = rest.firstIndex(of: "<") {
+        add(String(rest[..<lt]))
+        guard let gt = rest[lt...].firstIndex(of: ">") else { rest = rest[lt...]; break }
+        let tag = String(rest[rest.index(after: lt)..<gt])
+        rest = rest[rest.index(after: gt)...]
+        let closing = tag.hasPrefix("/"), name = String((closing ? tag.dropFirst() : Substring(tag)).prefix { $0.isLetter || $0.isNumber }).lowercased()
+        switch (name, closing) {
+        case ("p", _): newline()
+        case ("br", _): out.append(AttributedString("\n")); lineStart = true
+        case ("b", false), ("strong", false): bold += 1
+        case ("b", true), ("strong", true): bold = max(0, bold - 1)
+        case ("i", false), ("em", false): italic += 1
+        case ("i", true), ("em", true): italic = max(0, italic - 1)
+        case ("u", false): underline += 1
+        case ("u", true): underline = max(0, underline - 1)
+        case ("a", false):
+            let href = tag.range(of: #"href\s*=\s*"([^"]*)""#, options: .regularExpression).map { String(tag[$0]).components(separatedBy: "\"")[1] }
+            link = href.flatMap { URL(string: $0.replacingOccurrences(of: "&amp;", with: "&")) }
+        case ("a", true): link = nil
+        case ("ul", false): newline(); lists.append(nil)
+        case ("ol", false): newline(); lists.append(0)
+        case ("ul", true), ("ol", true): if !lists.isEmpty { lists.removeLast() }; newline()
+        case ("li", false):
+            newline()
+            var marker = "• "
+            if let last = lists.last, let n = last { lists[lists.count - 1] = n + 1; marker = "\(n + 1). " }
+            out.append(AttributedString(marker)); lineStart = false
+        default: break
+        }
+    }
+    add(String(rest))
+    while out.characters.last == "\n" { out.characters.removeLast() }
+    return out
 }

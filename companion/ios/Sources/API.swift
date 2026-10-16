@@ -55,6 +55,8 @@ struct Day: Comparable, Hashable, CustomStringConvertible {
 /// Who can see what on my profile: "private" (name, photo), "summary" (+ totals, rank), "full" (+ recent activity).
 struct Me: Equatable {
     var id: Int, name: String, email: String, avatarURL: String?, bio: String?, sharing: String, role: String
+    /// About me with its formatting (bold, lists, links) from the website; bio is the same as plain text.
+    var bioHTML: String? = nil
     /// False for an account made with Google or Apple that hasn't set a password.
     var hasPassword = true
     /// The email address has been confirmed (by the link we emailed); pendingEmail is a new one waiting to be.
@@ -226,6 +228,7 @@ struct Profile {
     let id: Int, name: String, avatarURL: String?, bio: String?, memberSince: String, sharing: String, isSelf: Bool, challenges: [ProfileChallenge]?, activities: [ProfileActivity]?
     let followersCount: Int, followingCount: Int, isFollowing: Bool, followsYou: Bool, followers: [Person]?, following: [Person]?
     var stats: UserStats? = nil
+    var bioHTML: String? = nil
 }
 
 /// Help & support. type: bug | feature | question; status: new | in_progress | planned | done | declined.
@@ -342,7 +345,8 @@ final class API: @unchecked Sendable {
         Me(id: u.int("id"), name: u.string("name"), email: u.string("email"), avatarURL: u.str("avatar_url") ?? u.str("avatarUrl"),
            bio: u.str("bio"), sharing: u.str("profile_sharing") ?? "summary", role: u.str("role") ?? "member", hasPassword: u.int("has_password", 1) == 1,
            emailVerified: u.int("email_verified", 1) == 1, pendingEmail: u.str("pending_email"), adminNeedsTwoFactor: u.bool("admin_needs_two_factor"), notifyPush: u.int("notify_push", 1) == 1,
-           twoFactor: u.int("two_factor") == 1 || u.bool("two_factor"), pushPrefs: (u.o["push_prefs"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.boolValue })
+           twoFactor: u.int("two_factor") == 1 || u.bool("two_factor"), pushPrefs: (u.o["push_prefs"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.boolValue },
+           bioHTML: u.str("bio_html"))
     }
 
     // Challenges
@@ -633,7 +637,8 @@ final class API: @unchecked Sendable {
         return Profile(id: r.int("id"), name: r.string("name"), avatarURL: r.str("avatar_url"), bio: r.str("bio"), memberSince: r.string("member_since"),
                        sharing: r.str("sharing") ?? "summary", isSelf: r.bool("self"), challenges: challenges, activities: activities,
                        followersCount: r.int("followers_count"), followingCount: r.int("following_count"), isFollowing: r.bool("is_following"),
-                       followsYou: r.bool("follows_you"), followers: people("followers"), following: people("following"), stats: UserStats(r.obj("stats")))
+                       followsYou: r.bool("follows_you"), followers: people("followers"), following: people("following"), stats: UserStats(r.obj("stats")),
+                       bioHTML: r.str("bio_html"))
     }
     func updateProfile(name: String? = nil, email: String? = nil, currentPassword: String? = nil, newPassword: String? = nil,
                        avatarURL: String? = nil, bio: String? = nil, sharing: String? = nil) async throws -> Me {

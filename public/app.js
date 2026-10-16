@@ -1813,12 +1813,31 @@ function loadLeaflet(){
 }
 // Everything I've logged, across every challenge, newest first - with a map where a route exists.
 let myActivity=[],myActivityMore=false;
+// One workout logged in several challenges has an entry in each: shown once, with the challenges it counts in. The
+// same workout means the same phone sync record, or (typed in) everything about it the same; never two from one challenge.
+function groupWorkouts(list){
+  const groups=[],byKey=new Map();
+  for(const x of list){
+    const key=x.source!=='manual'&&x.source_ref?`${x.source}|${x.source_ref}`
+      :JSON.stringify([x.activity_date,x.activity_type,x.start_time,x.end_time,x.minutes,x.distance_m,x.steps,x.comment,x.source]);
+    let g=byKey.get(key);
+    if(!g||g.some(e=>e.challenge_id===x.challenge_id)){g=[];groups.push(g);byKey.set(key,g)}
+    g.push(x);
+  }
+  return groups;
+}
+// The workout itself, not any one challenge's measure: minutes and distance, or steps when that's all it is.
+function workoutAmount(x){
+  const c={metric:x.minutes==null&&x.distance==null?'steps':x.metric,distance_unit:x.distance_unit};
+  return x.minutes!=null&&x.distance!=null?`${fmtNum(x.minutes)} min · ${fmtNum(x.distance)} ${unitShort(c)}`:fmtEntry(c,x);
+}
 async function loadMyActivity(append=false){
-  const r=await api(`/api/me/activities?limit=20&offset=${append?myActivity.length:0}`);
+  const r=await api(`/api/me/activities?limit=60&offset=${append?myActivity.length:0}`);
   myActivity=append?myActivity.concat(r.activities):r.activities;myActivityMore=r.more;
-  $('#myActivity').innerHTML=myActivity.map(x=>{
-    const c={metric:x.metric,distance_unit:x.distance_unit};
-    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b><div class="muted">${chLink(x.challenge_id,x.challenge_name)}${x.team_name?` · ${teamLink(x.team_id,x.team_name)}`:''} · ${esc(fmtDay(x.activity_date))}${x.start_time?` · ${esc(x.start_time)}`:''}</div></div><div class="btnrow"><b>${esc(fmtEntry(c,x))}</b>${x.has_route?`<button class="ghost" data-mymap="${x.id}">Map</button>`:''}</div></div>`;
+  $('#myActivity').innerHTML=groupWorkouts(myActivity).map(g=>{
+    const x=g[0],mapped=g.find(e=>e.has_route);
+    const where=g.map(e=>chLink(e.challenge_id,e.challenge_name)+(e.team_name?` (${teamLink(e.team_id,e.team_name)})`:'')).join(' · ');
+    return `<div class="listrow"><div><b>${esc(x.activity_type)}</b> <span class="muted">${esc(fmtDay(x.activity_date))}${x.start_time?` · ${esc(x.start_time)}`:''}</span><div class="muted">${g.length>1?`In ${g.length} challenges: `:''}${where}</div>${x.comment?`<div class="muted">“${esc(x.comment)}”</div>`:''}</div><div class="btnrow"><b>${esc(workoutAmount(x))}</b>${mapped?`<button class="ghost" data-mymap="${mapped.id}">Map</button>`:''}</div></div>`;
   }).join('')||'<p class="muted">Nothing logged yet.</p>';
   $('#moreActivity').classList.toggle('hidden',!myActivityMore);
   $all('[data-mymap]').forEach(b=>{const x=myActivity.find(a=>a.id===Number(b.dataset.mymap));b.onclick=()=>openRouteMap(x,{metric:x.metric,distance_unit:x.distance_unit})});

@@ -55,8 +55,6 @@ struct Day: Comparable, Hashable, CustomStringConvertible {
 /// Who can see what on my profile: "private" (name, photo), "summary" (+ totals, rank), "full" (+ recent activity).
 struct Me: Equatable {
     var id: Int, name: String, email: String, avatarURL: String?, bio: String?, sharing: String, role: String
-    /// About me with its formatting (bold, lists, links) from the website; bio is the same as plain text.
-    var bioHTML: String? = nil
     /// False for an account made with Google or Apple that hasn't set a password.
     var hasPassword = true
     /// The email address has been confirmed (by the link we emailed); pendingEmail is a new one waiting to be.
@@ -64,6 +62,8 @@ struct Me: Equatable {
     /// A global admin whose powers wait for two-step sign-in to be turned on (on the website).
     var adminNeedsTwoFactor = false, notifyPush = true
     var twoFactor = false, pushPrefs: [String: Bool] = [:]
+    /// About me with its formatting (bold, lists, links) from the website; bio is the same as plain text.
+    var bioHTML: String? = nil
     var isAdmin: Bool { role == "global_admin" }
 }
 /// A signed-in browser or app, for the signed-in devices list.

@@ -86,6 +86,8 @@ struct ChallengesView: View {
     @Environment(Router.self) private var router
     @State private var leaving: Challenge?
     @State private var sentTo: String?
+    /// Current (running or yet to start), finished, or all; finished ones are hidden until asked for.
+    @State private var filter = "current"
     @AppStorage("setupHidden") private var setupHidden = false
 
     var body: some View {
@@ -135,7 +137,17 @@ struct ChallengesView: View {
                     }
                 }
             }
-            ForEach(model.challenges.sorted { ($0.isActive ? 0 : 1, $1.startDate) < ($1.isActive ? 0 : 1, $0.startDate) }) { c in
+            let finished = model.challenges.filter { !$0.isActive }.count
+            if finished > 0 {
+                Picker("Show", selection: $filter) {
+                    Text("Current (\(model.challenges.count - finished))").tag("current"); Text("Finished (\(finished))").tag("finished"); Text("All (\(model.challenges.count))").tag("all")
+                }.pickerStyle(.segmented)
+            }
+            let shown = finished == 0 || filter == "all" ? model.challenges : model.challenges.filter { $0.isActive == (filter != "finished") }
+            if shown.isEmpty && !model.challenges.isEmpty {
+                SectionCard { EmptyNote(filter == "finished" ? "No finished challenges." : "No current challenges. Finished ones are under Finished.") }
+            }
+            ForEach(shown.sorted { ($0.isActive ? 0 : 1, $1.startDate) < ($1.isActive ? 0 : 1, $0.startDate) }) { c in
                 Button { router.push(.challenge(c.id)) } label: { ChallengeCard(c: c) }.buttonStyle(.plain)
             }
         }

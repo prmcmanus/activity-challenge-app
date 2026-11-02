@@ -118,6 +118,8 @@ private fun stateLabel(c: Challenge): String {
 fun ChallengesScreen(vm: AppViewModel, newChallenge: () -> Unit, join: () -> Unit, open: (Challenge) -> Unit) {
     val scope = rememberCoroutineScope()
     var leaving by remember { mutableStateOf<Challenge?>(null) }
+    // Current (running or yet to start), finished, or all; finished ones are hidden until asked for.
+    var filter by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("current") }
     // Box and list both fill the screen: with only a card or two, a pull on the empty space below
     // them otherwise lands outside the list and nothing happens.
     PullToRefreshBox(isRefreshing = vm.topRefreshing, onRefresh = { vm.refreshTop() }, modifier = Modifier.fillMaxSize()) {
@@ -175,7 +177,23 @@ fun ChallengesScreen(vm: AppViewModel, newChallenge: () -> Unit, join: () -> Uni
             if (vm.challenges.isEmpty() && !vm.loadingChallenges) {
                 item { SectionCard { EmptyNote("You're not in a challenge yet. Start one, or join with an invite code someone shared with you.") } }
             }
-            items(vm.challenges.sortedWith(compareBy<Challenge> { !it.isActive }.thenByDescending { it.startDate }), key = { it.id }) { c ->
+            val finished = vm.challenges.count { !it.isActive }
+            if (finished > 0) item {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("current" to "Current (${vm.challenges.size - finished})", "finished" to "Finished ($finished)", "all" to "All (${vm.challenges.size})").forEach { (k, l) ->
+                        androidx.compose.material3.FilterChip(selected = filter == k, onClick = { filter = k }, label = { Text(l) })
+                    }
+                }
+            }
+            val shown = if (finished == 0) vm.challenges else when (filter) {
+                "finished" -> vm.challenges.filter { !it.isActive }
+                "all" -> vm.challenges
+                else -> vm.challenges.filter { it.isActive }
+            }
+            if (shown.isEmpty() && vm.challenges.isNotEmpty()) {
+                item { SectionCard { EmptyNote(if (filter == "finished") "No finished challenges." else "No current challenges. Finished ones are under Finished.") } }
+            }
+            items(shown.sortedWith(compareBy<Challenge> { !it.isActive }.thenByDescending { it.startDate }), key = { it.id }) { c ->
                 SectionCard(modifier = Modifier.clickable { open(c) }) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {

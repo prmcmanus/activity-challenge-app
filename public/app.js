@@ -378,6 +378,7 @@ function showView(id){document.body.classList.remove('map-full');['#homeView','#
 function showHome(){challengeBack='home';setUrl('/');showView('#homeView');renderHome()}
 // Challenges that are on today (where something can be logged now).
 const activeToday=()=>{const d=localToday();return dash.challenges.filter(c=>c.role!=='admin'&&c.start_date<=d&&d<=c.end_date)};
+let challengeFilter='current';try{challengeFilter=localStorage.getItem('challengeFilter')||'current'}catch(e){}
 function renderHome(){
   $('#hello').textContent=`Welcome, ${me.name}`;
   renderAccountNotices();renderSetup();
@@ -392,8 +393,15 @@ function renderHome(){
   $('#homeLogBtn').classList.toggle('hidden',activeToday().length<2);
   // Syncing already: the sync help folds to one line.
   $('#syncCard').classList.toggle('folded',!!dash.syncing&&!syncOpen);
+  // Current (running or yet to start), finished, or all, with how many in each; finished ones are hidden by default.
+  const today=localToday(),groups={current:dash.challenges.filter(c=>c.end_date>=today),finished:dash.challenges.filter(c=>c.end_date<today),all:dash.challenges};
+  if(!groups[challengeFilter])challengeFilter='current';
+  $('#challengeFilter').classList.toggle('hidden',!groups.finished.length);
+  $('#challengeFilter').innerHTML=[['current','Current'],['finished','Finished'],['all','All']].map(([k,l])=>`<button type="button" role="tab" aria-selected="${challengeFilter===k}" class="${challengeFilter===k?'on':''}" data-chfilter="${k}">${l} (${groups[k].length})</button>`).join('');
+  $all('[data-chfilter]').forEach(b=>b.onclick=()=>{challengeFilter=b.dataset.chfilter;try{localStorage.setItem('challengeFilter',challengeFilter)}catch(e){}renderHome()});
+  const shown=groups.finished.length?groups[challengeFilter]:dash.challenges;
   // Each challenge is one big button: name, dates, where it is in its run, and my total.
-  $('#challengeList').innerHTML=dash.challenges.map(c=>{const run=runLabel(c);return `<div class="listrow challenge-row" role="button" tabindex="0" data-open="${c.id}"><div><b>${esc(c.name)}</b><div class="muted">${esc(fmtRange(c.start_date,c.end_date))} · ${c.kind==='journey'?'journey · ':''}${isIndividual(c)?'individuals':esc(c.teams.map(t=>t.name).join(', ')||'no team yet')}${c.role==='owner'?' · owner':''}</div>${run?`<span class="status ${run==='Finished'?'finished':run.startsWith('Starts')?'upcoming':'running'}">${esc(run)}</span>`:''}</div><div class="row-total"><b>${esc(fmtTotal(c,c.myMinutes,c.myDistance,c.mySteps))}</b><span class="muted">logged by me</span></div></div>`}).join('')||'<p class="muted">You have not joined a challenge yet. Use <b>+ New challenge</b> or <b>Join with a code</b> above.</p>';
+  $('#challengeList').innerHTML=shown.map(c=>{const run=runLabel(c);return `<div class="listrow challenge-row" role="button" tabindex="0" data-open="${c.id}"><div><b>${esc(c.name)}</b><div class="muted">${esc(fmtRange(c.start_date,c.end_date))} · ${c.kind==='journey'?'journey · ':''}${isIndividual(c)?'individuals':esc(c.teams.map(t=>t.name).join(', ')||'no team yet')}${c.role==='owner'?' · owner':''}</div>${run?`<span class="status ${run==='Finished'?'finished':run.startsWith('Starts')?'upcoming':'running'}">${esc(run)}</span>`:''}</div><div class="row-total"><b>${esc(fmtTotal(c,c.myMinutes,c.myDistance,c.mySteps))}</b><span class="muted">logged by me</span></div></div>`}).join('')||(dash.challenges.length?`<p class="muted">No ${challengeFilter==='finished'?'finished':'current'} challenges.</p>`:'')||'<p class="muted">You have not joined a challenge yet. Use <b>+ New challenge</b> or <b>Join with a code</b> above.</p>';
   $all('[data-open]').forEach(b=>b.onclick=()=>openChallenge(Number(b.dataset.open)).catch(e=>uiAlert(e.message)));
   loadMyActivity().catch(()=>{});
   loadAndroidCard();

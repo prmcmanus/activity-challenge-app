@@ -839,7 +839,7 @@ async function openTeamManage(tid,tname){
     <form id="renameTeamForm">
       <label>Team name<input id="renameTeamName" value="${esc(tname)}" required></label>
       <label>Team image/logo (optional)<input type="file" id="renameTeamImage" accept="image/*"></label>
-      <img id="renameTeamImagePreview" class="imgpreview${team&&team.image_url?'':' hidden'}" src="${team&&team.image_url?esc(team.image_url):''}" alt="Preview">
+      <div class="inline-row logo-row"><img id="renameTeamImagePreview" class="imgpreview${team&&team.image_url?'':' hidden'}" src="${team&&team.image_url?esc(team.image_url):''}" alt="Preview"><button type="button" class="ghost${team&&team.image_url?'':' hidden'}" id="renameTeamImageRemove">Remove logo</button></div>
       <button>Save changes</button>
     </form>
     <h2 class="gap-top">Members</h2>
@@ -850,12 +850,19 @@ async function openTeamManage(tid,tname){
     <hr><div class="btnrow"><button type="button" id="newTeamCode" class="ghost">Make a new invite link</button><button id="deleteTeamBtn" class="ghost red-text" >Delete this team</button></div>`;
   $('#newTeamCode').onclick=async()=>{if(await newInviteCode('teams',tid,`the team "${tname}"`))openTeamManage(tid,tname)};
   $('#modal').showModal();
+  let logoRemoved=false;
   $('#renameTeamImage').addEventListener('change',()=>{
     const f=$('#renameTeamImage').files[0];
     if(!f)return;
+    logoRemoved=false;
     $('#renameTeamImagePreview').src=URL.createObjectURL(f);
     $('#renameTeamImagePreview').classList.remove('hidden');
+    $('#renameTeamImageRemove').classList.remove('hidden');
   });
+  $('#renameTeamImageRemove').onclick=()=>{
+    logoRemoved=true;$('#renameTeamImage').value='';
+    $('#renameTeamImagePreview').classList.add('hidden');$('#renameTeamImageRemove').classList.add('hidden');
+  };
   $('#renameTeamForm').onsubmit=guarded(async e=>{
     e.preventDefault();
     const name=$('#renameTeamName').value.trim();
@@ -863,7 +870,7 @@ async function openTeamManage(tid,tname){
     const payload={name};
     const file=$('#renameTeamImage').files[0];
     try{
-      if(file)payload.image_url=await uploadImageFile(file,400,0.85);
+      if(file)payload.image_url=await uploadImageFile(file,400,0.85);else if(logoRemoved)payload.image_url=null;
       await api(`/api/teams/${tid}`,{method:'PATCH',body:JSON.stringify(payload)});
       $('#modal').close();
       await refreshChallenge();

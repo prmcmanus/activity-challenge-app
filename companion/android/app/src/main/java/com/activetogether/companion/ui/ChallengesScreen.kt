@@ -327,8 +327,8 @@ fun ChallengeDetailScreen(vm: AppViewModel, challengeId: Int, edit: () -> Unit, 
                 run {
                     val period = vm.periods[challengeId] ?: "all"
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                        listOf("all" to "All time", "month" to "This month", "week" to "This week").forEachIndexed { i, (k, l) ->
-                            SegmentedButton(period == k, { vm.setPeriod(challengeId, k) }, SegmentedButtonDefaults.itemShape(i, 3)) { Text(l, maxLines = 1) }
+                        listOf("all" to "All time", "month" to "Month", "week" to "Week", "day" to "Today").forEachIndexed { i, (k, l) ->
+                            SegmentedButton(period == k, { vm.setPeriod(challengeId, k) }, SegmentedButtonDefaults.itemShape(i, 4)) { Text(l, maxLines = 1) }
                         }
                     }
                 }

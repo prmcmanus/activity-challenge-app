@@ -3333,6 +3333,11 @@ test('kudos, the challenge feed, streaks and bests, period leaderboards, copying
   assert.equal(all, 113);
   assert.equal(month.period, 'month');
   assert.ok(month.users.find(x => x.id === b.user.id).minutes < 113);
+  // Today counts just one day: the asker's own date when it's close to ours, otherwise the server's.
+  const today = async q => (await jsonFetch(`${origin}/api/challenges/${c.body.id}/leaderboard?period=day${q}`, a.cookie)).body.users.find(x => x.id === b.user.id).minutes;
+  assert.equal(await today(''), 30);
+  assert.equal(await today(`&today=${day(1)}`), 31);
+  assert.equal(await today('&today=2020-01-01'), 30, 'a far-off date is ignored');
   // Count a run in the distance challenge too, once.
   const mine = (await jsonFetch(`${origin}/api/me/activities?limit=10`, b.cookie)).body.activities.find(x => x.activity_date === day(1));
   assert.equal((await jsonFetch(`${origin}/api/activities/${mine.id}/copy`, b.cookie, 'POST', { challenge_id: c2.body.id })).status, 201);

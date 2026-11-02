@@ -392,7 +392,7 @@ enum BackgroundSync {
     // Challenges
     func loadLeaderboard(_ id: Int) async { let p = periods[id] ?? "all"; if let b = await call({ try await $0.leaderboard(id, period: p) }) { leaderboards[id] = b } }
     func refreshMe() async { if let m = await call({ try await $0.me() }) { me = m } }
-    /// Each challenge's leaderboard period: "all", "month" or "week".
+    /// Each challenge's leaderboard period: "all", "month", "week" or "day".
     var periods: [Int: String] = [:]
     func setPeriod(_ id: Int, _ p: String) async { periods[id] = p; await loadLeaderboard(id) }
     /// Streaks and bests, and the getting-started checklist, from the last dashboard.

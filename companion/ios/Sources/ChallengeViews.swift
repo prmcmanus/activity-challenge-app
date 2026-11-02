@@ -234,7 +234,7 @@ struct ChallengeDetailView: View {
             SectionCard("Leaderboard") {
                 do {
                     Picker("Period", selection: Binding(get: { model.periods[c.id] ?? "all" }, set: { p in Task { await model.setPeriod(c.id, p) } })) {
-                        Text("All time").tag("all"); Text("This month").tag("month"); Text("This week").tag("week")
+                        Text("All time").tag("all"); Text("Month").tag("month"); Text("Week").tag("week"); Text("Today").tag("day")
                     }.pickerStyle(.segmented)
                 }
                 if !c.individual {

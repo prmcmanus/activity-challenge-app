@@ -508,9 +508,9 @@ async function loadAndroidCard(){
 let curMine=[];
 // Leaderboards show the top 10 and your own place; "Show all" asks for everyone (remembered for this visit).
 const fullBoards=new Set();
-// Leaderboards for all time, this month or this week. For a journey, the map and the share of the route stay all-time.
+// Leaderboards for all time, this month, this week or today. For a journey, the map and the share of the route stay all-time.
 let boardPeriod='all',curFeed=[],feedShown=6;
-const boardQuery=id=>{const q=[];if(!fullBoards.has(id))q.push('top=10');if(boardPeriod!=='all')q.push('period='+boardPeriod);return q.length?'?'+q.join('&'):''};
+const boardQuery=id=>{const q=[];if(!fullBoards.has(id))q.push('top=10');if(boardPeriod!=='all')q.push('period='+boardPeriod);if(boardPeriod==='day')q.push('today='+localToday());return q.length?'?'+q.join('&'):''};
 async function loadChallenge(id){
   if(curChallenge&&curChallenge.id!==id){boardPeriod='all';feedShown=6}
   const [c,lb,mine,feed]=await Promise.all([api(`/api/challenges/${id}`),api(`/api/challenges/${id}/leaderboard${boardQuery(id)}`),api(`/api/me/activities?challenge_id=${id}&limit=50`).catch(()=>({activities:[]})),
@@ -608,7 +608,7 @@ function renderChallenge(){
   }
   // The period tabs (a journey's map and route progress stay all-time), and the latest entries with their 👏.
   $('#periodTabs').classList.remove('hidden');
-  $('#periodTabs').innerHTML=[['all','All time'],['month','This month'],['week','This week']].map(([k,l])=>`<button type="button" role="tab" aria-selected="${boardPeriod===k}" class="${boardPeriod===k?'on':''}" data-period="${k}">${l}</button>`).join('');
+  $('#periodTabs').innerHTML=[['all','All time'],['month','This month'],['week','This week'],['day','Today']].map(([k,l])=>`<button type="button" role="tab" aria-selected="${boardPeriod===k}" class="${boardPeriod===k?'on':''}" data-period="${k}">${l}</button>`).join('');
   $all('[data-period]').forEach(b=>b.onclick=async()=>{boardPeriod=b.dataset.period;curLeaderboard=await api(`/api/challenges/${c.id}/leaderboard${boardQuery(c.id)}`);renderChallenge()});
   $('#feedCard').classList.toggle('hidden',!curFeed.length);
   $('#feed').innerHTML=curFeed.slice(0,feedShown).map(a=>`<div class="listrow entry-row"><div><div class="leader-name">${avatarHtml(a.avatar_url,a.name,'avatar-sm')}<b>${personLink(a.user_id,a.name)}</b> <span class="muted">${esc(a.activity_type)}</span></div><div class="muted">${esc(fmtDay(a.activity_date))}${a.team_name?` · ${teamLink(a.team_id,a.team_name)}`:''}${a.comment?` · “${esc(a.comment)}”`:''}</div></div>

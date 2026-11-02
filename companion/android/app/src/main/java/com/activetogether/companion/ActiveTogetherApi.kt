@@ -602,9 +602,13 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         request("/api/admin/users", "POST", JSONObject().put("name", name).put("email", email).put("role", role).put("password", password))
     }
 
-    /** period: "all", "month" or "week". */
+    /** period: "all", "month", "week" or "day" (today, by this phone's date). */
     fun leaderboard(challengeId: Int, period: String = "all"): Leaderboard {
-        val r = request("/api/challenges/$challengeId/leaderboard" + if (period == "all") "" else "?period=$period")
+        val r = request("/api/challenges/$challengeId/leaderboard" + when (period) {
+            "all" -> ""
+            "day" -> "?period=day&today=${java.time.LocalDate.now()}"
+            else -> "?period=$period"
+        })
         fun list(a: JSONArray, people: Boolean) = (0 until a.length()).map { i ->
             val x = a.getJSONObject(i)
             Standing(x.getString("name"), x.optDouble("minutes", 0.0), x.optDouble("distance", 0.0),

@@ -478,9 +478,10 @@ final class API: @unchecked Sendable {
                              individual: c.str("participation") == "individual", members: c.int("members"), teamName: t?.str("name"),
                              member: r.has("member") ? r.bool("member") : nil, inTeam: r.has("inTeam") ? r.bool("inTeam") : nil)
     }
-    /// period: "all", "month" or "week".
+    /// period: "all", "month", "week" or "day" (today, by this phone's date).
     func leaderboard(_ id: Int, period: String = "all") async throws -> Leaderboard {
-        let r = try await request("/api/challenges/\(id)/leaderboard" + (period == "all" ? "" : "?period=\(period)"))
+        let q = period == "all" ? "" : period == "day" ? "?period=day&today=\(Day.today)" : "?period=\(period)"
+        let r = try await request("/api/challenges/\(id)/leaderboard" + q)
         func rows(_ a: [J], people: Bool) -> [Standing] {
             a.map { x in Standing(name: x.string("name"), minutes: x.double("minutes"), distance: x.double("distance"), steps: x.double("steps"),
                                   imageURL: x.str("image_url") ?? x.str("avatar_url"), userId: people ? x.int("id") : nil,

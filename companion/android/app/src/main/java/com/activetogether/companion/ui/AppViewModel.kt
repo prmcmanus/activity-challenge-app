@@ -214,7 +214,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var stats by mutableStateOf<com.activetogether.companion.UserStats?>(null); private set
     var setup by mutableStateOf<com.activetogether.companion.SetupState?>(null); private set
     fun takeDash() { stats = com.activetogether.companion.Dash.stats; setup = com.activetogether.companion.Dash.setup }
-    /** Each challenge's leaderboard period: "all", "month" or "week". */
+    /** Each challenge's leaderboard period: "all", "month", "week" or "day". */
     var periods by mutableStateOf<Map<Int, String>>(emptyMap()); private set
     fun setPeriod(challengeId: Int, period: String) { periods = periods + (challengeId to period); loadLeaderboard(challengeId) }
     /** Count an entry in another challenge too. */

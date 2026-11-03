@@ -1299,7 +1299,7 @@ function userStats(uid){
 }
 // 13: a leaderboard for part of the challenge (today, this week or this month), worked out when asked rather than cached.
 // "Today" is the asker's own date when they send one (?today=YYYY-MM-DD, within a day of ours), since entries carry local dates.
-function periodStart(period,today){if(period==='day'){const utc=new Date().toISOString().slice(0,10);return /^\d{4}-\d{2}-\d{2}$/.test(today||'')&&Math.abs(Date.parse(today)-Date.parse(utc))<=864e5?today:utc}return period==='week'?db.prepare("SELECT date('now','weekday 1','-7 days') d").get().d:period==='month'?db.prepare("SELECT date('now','start of month') d").get().d:null}
+function periodStart(period,today){if(period==='day'){const utc=new Date().toISOString().slice(0,10);return /^\d{4}-\d{2}-\d{2}$/.test(today||'')&&Math.abs(Date.parse(today)-Date.parse(utc))<=864e5?today:utc}return period==='week'?db.prepare("SELECT date('now','-6 days','weekday 1') d").get().d:period==='month'?db.prepare("SELECT date('now','start of month') d").get().d:null}
 function computeLeaderboard(challenge,since=null,until=null){
   const cid=challenge.id,unit=challengeUnit(challenge),order={distance:'distance_m',steps:'steps'}[challengeMetric(challenge)]||'minutes';
   const when=(since?' AND a.activity_date>=?':'')+(until?' AND a.activity_date<=?':''),arg=[since,until].filter(Boolean);

@@ -38,6 +38,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -75,8 +78,20 @@ fun ActivityListScreen(vm: AppViewModel, open: (MyActivity) -> Unit) {
     PullToRefreshBox(modifier = Modifier.fillMaxSize(), isRefreshing = vm.topRefreshing, onRefresh = { vm.refreshTop() }) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item { Text("My activity", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(vertical = 4.dp)) }
+            item {
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    listOf("all" to "All time", "month" to "Month", "week" to "Week", "day" to "Today").forEachIndexed { i, (k, l) ->
+                        SegmentedButton(vm.activityPeriod == k, { vm.chooseActivityPeriod(k) }, SegmentedButtonDefaults.itemShape(i, 4)) { Text(l, maxLines = 1) }
+                    }
+                }
+            }
             if (vm.activities.isEmpty() && !vm.loadingActivities) {
-                item { SectionCard { EmptyNote("Nothing logged yet. Tap + to log an activity, or sync your workouts from the Sync tab.") } }
+                item { SectionCard { EmptyNote(when (vm.activityPeriod) {
+                    "month" -> "Nothing logged this month."
+                    "week" -> "Nothing logged this week."
+                    "day" -> "Nothing logged today."
+                    else -> "Nothing logged yet. Tap + to log an activity, or sync your workouts from the Sync tab."
+                }) } }
             }
             // One card per workout: entries for the same workout in several challenges are listed under it.
             val groups = vm.activities.groupBy { listOf(it.date, it.type, it.startTime, it.minutes, it.source, it.comment) }

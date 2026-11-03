@@ -668,8 +668,16 @@ class ActiveTogetherApi(private val token: String? = null, private val baseUrl: 
         request("/api/activities/$id", "PATCH", body)
     }
 
-    fun myActivities(offset: Int, limit: Int = 30): Pair<List<MyActivity>, Boolean> {
-        val r = request("/api/me/activities?limit=$limit&offset=$offset")
+    /** period: "all", "month", "week" (from Monday) or "day", by this phone's date. */
+    fun myActivities(offset: Int, limit: Int = 30, period: String = "all"): Pair<List<MyActivity>, Boolean> {
+        val today = LocalDate.now()
+        val range = when (period) {
+            "day" -> "&since=$today&until=$today"
+            "week" -> "&since=${today.with(java.time.DayOfWeek.MONDAY)}"
+            "month" -> "&since=${today.withDayOfMonth(1)}"
+            else -> ""
+        }
+        val r = request("/api/me/activities?limit=$limit&offset=$offset$range")
         val arr = r.getJSONArray("activities")
         val list = (0 until arr.length()).map { i ->
             val a = arr.getJSONObject(i)

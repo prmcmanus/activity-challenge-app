@@ -2391,7 +2391,9 @@ async function api(req,res,url){
    if(!need(res,u))return;
    const limit=Math.min(Math.max(Number(url.searchParams.get('limit'))||50,1),200),offset=Math.max(Number(url.searchParams.get('offset'))||0,0);
    const cid=Number(url.searchParams.get('challenge_id'))||null;
-   const rows=db.prepare(`SELECT a.id,a.challenge_id,a.team_id,a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.end_time,a.comment,a.source,a.source_ref,a.route_id,t.name team_name,c.name challenge_name,c.metric,c.distance_unit FROM activities a LEFT JOIN teams t ON t.id=a.team_id JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=?${cid?' AND a.challenge_id=?':''} ORDER BY a.activity_date DESC,a.start_time DESC,a.id DESC LIMIT ? OFFSET ?`).all(...(cid?[u.id,cid]:[u.id]),limit+1,offset);
+   // ?since=/&until= (YYYY-MM-DD, the asker's own dates): just this month, week or day.
+   const day=k=>{const v=url.searchParams.get(k);return /^\d{4}-\d{2}-\d{2}$/.test(v||'')?v:null},since=day('since'),until=day('until');
+   const rows=db.prepare(`SELECT a.id,a.challenge_id,a.team_id,a.activity_type,a.minutes,a.distance_m,a.steps,a.activity_date,a.start_time,a.end_time,a.comment,a.source,a.source_ref,a.route_id,t.name team_name,c.name challenge_name,c.metric,c.distance_unit FROM activities a LEFT JOIN teams t ON t.id=a.team_id JOIN challenges c ON c.id=a.challenge_id WHERE a.user_id=?${cid?' AND a.challenge_id=?':''}${since?' AND a.activity_date>=?':''}${until?' AND a.activity_date<=?':''} ORDER BY a.activity_date DESC,a.start_time DESC,a.id DESC LIMIT ? OFFSET ?`).all(u.id,...[cid,since,until].filter(Boolean),limit+1,offset);
    const more=rows.length>limit;
    const activities=rows.slice(0,limit).map(({route_id,...a})=>({...a,distance:a.distance_m==null?null:metersToUnit(a.distance_m,a.distance_unit),has_route:route_id!=null}));
    return send(res,200,{activities,more});

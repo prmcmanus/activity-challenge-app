@@ -1827,7 +1827,15 @@ function loadLeaflet(){
   return leafletReady;
 }
 // Everything I've logged, across every challenge, newest first - with a map where a route exists.
-let myActivity=[],myActivityMore=false;
+let myActivity=[],myActivityMore=false,activityPeriod='all';
+// The first day (and for today, the last) of a period, by this device's own date. Weeks start on Monday.
+function periodRange(p){
+  const d=new Date(),ymd=x=>`${x.getFullYear()}-${pad2(x.getMonth()+1)}-${pad2(x.getDate())}`,today=ymd(d);
+  if(p==='day')return {since:today,until:today};
+  if(p==='week'){const m=new Date(d);m.setDate(d.getDate()-(d.getDay()+6)%7);return {since:ymd(m)}}
+  if(p==='month')return {since:ymd(new Date(d.getFullYear(),d.getMonth(),1))};
+  return {};
+}
 // One workout logged in several challenges has an entry in each: shown once, with the challenges it counts in. The
 // same workout means the same phone sync record, or (typed in) everything about it the same; never two from one challenge.
 function groupWorkouts(list){
@@ -1847,13 +1855,16 @@ function workoutAmount(x){
   return x.minutes!=null&&x.distance!=null?`${fmtNum(x.minutes)} min · ${fmtNum(x.distance)} ${unitShort(c)}`:fmtEntry(c,x);
 }
 async function loadMyActivity(append=false){
-  const r=await api(`/api/me/activities?limit=60&offset=${append?myActivity.length:0}`);
+  $('#activityPeriod').innerHTML=[['all','All time'],['month','This month'],['week','This week'],['day','Today']].map(([k,l])=>`<button type="button" role="tab" aria-selected="${activityPeriod===k}" class="${activityPeriod===k?'on':''}" data-actperiod="${k}">${l}</button>`).join('');
+  $all('[data-actperiod]').forEach(b=>b.onclick=()=>{activityPeriod=b.dataset.actperiod;loadMyActivity().catch(e=>uiAlert(e.message))});
+  const range=new URLSearchParams(periodRange(activityPeriod));
+  const r=await api(`/api/me/activities?limit=60&offset=${append?myActivity.length:0}${range.size?'&'+range:''}`);
   myActivity=append?myActivity.concat(r.activities):r.activities;myActivityMore=r.more;
   $('#myActivity').innerHTML=groupWorkouts(myActivity).map(g=>{
     const x=g[0],mapped=g.find(e=>e.has_route);
     const where=g.map(e=>chLink(e.challenge_id,e.challenge_name)+(e.team_name?` (${teamLink(e.team_id,e.team_name)})`:'')).join(' · ');
     return `<div class="listrow"><div><b>${esc(x.activity_type)}</b> <span class="muted">${esc(fmtDay(x.activity_date))}${x.start_time?` · ${esc(x.start_time)}`:''}</span><div class="muted">${g.length>1?`In ${g.length} challenges: `:''}${where}</div>${x.comment?`<div class="muted">“${esc(x.comment)}”</div>`:''}</div><div class="btnrow"><b>${esc(workoutAmount(x))}</b>${mapped?`<button class="ghost" data-mymap="${mapped.id}">Map</button>`:''}</div></div>`;
-  }).join('')||'<p class="muted">Nothing logged yet.</p>';
+  }).join('')||`<p class="muted">${activityPeriod==='all'?'Nothing logged yet.':`Nothing logged ${{month:'this month',week:'this week',day:'today'}[activityPeriod]}.`}</p>`;
   $('#moreActivity').classList.toggle('hidden',!myActivityMore);
   $all('[data-mymap]').forEach(b=>{const x=myActivity.find(a=>a.id===Number(b.dataset.mymap));b.onclick=()=>openRouteMap(x,{metric:x.metric,distance_unit:x.distance_unit})});
 }

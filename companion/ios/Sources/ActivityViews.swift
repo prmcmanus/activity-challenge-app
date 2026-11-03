@@ -8,8 +8,12 @@ struct ActivityListView: View {
     var body: some View {
         Page(refresh: { await model.refreshTop() }) {
             Text("My activity").font(.title2.bold())
+            Picker("Period", selection: Binding(get: { model.activityPeriod }, set: { p in Task { await model.setActivityPeriod(p) } })) {
+                Text("All time").tag("all"); Text("Month").tag("month"); Text("Week").tag("week"); Text("Today").tag("day")
+            }.pickerStyle(.segmented)
             if model.activities.isEmpty && !model.loadingActivities {
-                SectionCard { EmptyNote("Nothing logged yet. Tap + to log an activity, or sync your workouts from the Sync tab.") }
+                SectionCard { EmptyNote(["month": "Nothing logged this month.", "week": "Nothing logged this week.", "day": "Nothing logged today."][model.activityPeriod]
+                    ?? "Nothing logged yet. Tap + to log an activity, or sync your workouts from the Sync tab.") }
             }
             // One card per workout: entries for the same workout in several challenges are listed under it.
             ForEach(groups, id: \.first!.id) { entries in

@@ -493,8 +493,17 @@ final class API: @unchecked Sendable {
     }
 
     // Activity
-    func myActivities(offset: Int, limit: Int = 30) async throws -> ([MyActivity], Bool) {
-        let r = try await request("/api/me/activities?limit=\(limit)&offset=\(offset)")
+    /// period: "all", "month", "week" (from Monday) or "day", by this phone's date.
+    func myActivities(offset: Int, limit: Int = 30, period: String = "all") async throws -> ([MyActivity], Bool) {
+        let today = Day.today
+        let range: String
+        switch period {
+        case "day": range = "&since=\(today)&until=\(today)"
+        case "week": range = "&since=\(today.adding(days: -((Calendar.current.component(.weekday, from: today.date) + 5) % 7)))"
+        case "month": range = "&since=\(Day(y: today.y, m: today.m, d: 1))"
+        default: range = ""
+        }
+        let r = try await request("/api/me/activities?limit=\(limit)&offset=\(offset)\(range)")
         let list = r.arr("activities").map { a in
             MyActivity(id: a.int("id"), challengeId: a.int("challenge_id"), challengeName: a.string("challenge_name"), teamName: a.str("team_name"),
                        type: a.string("activity_type"), minutes: a.doubleOrNil("minutes"), distance: a.doubleOrNil("distance"), steps: a.intOrNil("steps"),

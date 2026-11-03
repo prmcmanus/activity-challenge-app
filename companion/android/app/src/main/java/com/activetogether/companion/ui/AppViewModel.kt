@@ -79,6 +79,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var activities by mutableStateOf<List<MyActivity>>(emptyList()); private set
     var moreActivities by mutableStateOf(false); private set
     var loadingActivities by mutableStateOf(false); private set
+    /** My activity's period: "all", "month", "week" or "day". */
+    var activityPeriod by mutableStateOf("all"); private set
+    private var activitiesJob: kotlinx.coroutines.Job? = null
+    fun chooseActivityPeriod(period: String) {
+        activitiesJob?.cancel(); loadingActivities = false
+        activityPeriod = period; activities = emptyList(); moreActivities = false; loadActivities(reset = true)
+    }
 
     val leaderboards = mutableStateOf<Map<Int, Leaderboard>>(emptyMap())
     /** Full challenge records (invite code, teams, whether I can edit), loaded when a challenge is opened. */
@@ -343,8 +350,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun loadActivities(reset: Boolean) = viewModelScope.launch {
         if (loadingActivities) return@launch
+        activitiesJob = coroutineContext[kotlinx.coroutines.Job]
         loadingActivities = true
-        call { it.myActivities(if (reset) 0 else activities.size) }?.let { (list, more) ->
+        call { it.myActivities(if (reset) 0 else activities.size, period = activityPeriod) }?.let { (list, more) ->
             activities = if (reset) list else activities + list
             moreActivities = more
         }
@@ -498,7 +506,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun refreshActivities() {
-        call { it.myActivities(0, maxOf(30, activities.size)) }?.let { (list, more) -> activities = list; moreActivities = more }
+        call { it.myActivities(0, maxOf(30, activities.size), activityPeriod) }?.let { (list, more) -> activities = list; moreActivities = more }
     }
 
     /**

@@ -3338,6 +3338,11 @@ test('kudos, the challenge feed, streaks and bests, period leaderboards, copying
   assert.equal(await today(''), 30);
   assert.equal(await today(`&today=${day(1)}`), 31);
   assert.equal(await today('&today=2020-01-01'), 30, 'a far-off date is ignored');
+  // My activity from a date, or on one day; a malformed date is ignored.
+  const mineFrom = async q => (await jsonFetch(`${origin}/api/me/activities?limit=50${q}`, b.cookie)).body.activities.map(x => x.activity_date);
+  assert.deepEqual(await mineFrom(`&since=${day(1)}`), [day(0), day(1)]);
+  assert.deepEqual(await mineFrom(`&since=${day(1)}&until=${day(1)}`), [day(1)]);
+  assert.equal((await mineFrom('&since=yesterday')).length, 4);
   // Count a run in the distance challenge too, once.
   const mine = (await jsonFetch(`${origin}/api/me/activities?limit=10`, b.cookie)).body.activities.find(x => x.activity_date === day(1));
   assert.equal((await jsonFetch(`${origin}/api/activities/${mine.id}/copy`, b.cookie, 'POST', { challenge_id: c2.body.id })).status, 201);

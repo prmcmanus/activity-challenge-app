@@ -348,16 +348,23 @@ enum BackgroundSync {
     }
 
     // Lists
+    /// My activity's period: "all", "month", "week" or "day".
+    var activityPeriod = "all"
+    func setActivityPeriod(_ p: String) async { activityPeriod = p; activities = []; moreActivities = false; await loadActivities(reset: true) }
     func loadActivities(reset: Bool) async {
         guard !loadingActivities else { return }
         loadingActivities = true
-        if let r = await call({ try await $0.myActivities(offset: reset ? 0 : self.activities.count) }) {
+        let p = activityPeriod
+        if let r = await call({ try await $0.myActivities(offset: reset ? 0 : self.activities.count, period: p) }), p == activityPeriod {
             activities = reset ? r.0 : activities + r.0; moreActivities = r.1
         }
         loadingActivities = false
+        // The period changed while that was loading: load the new one.
+        if p != activityPeriod { await loadActivities(reset: true) }
     }
     func refreshActivities() async {
-        if let r = await call({ try await $0.myActivities(offset: 0, limit: max(30, self.activities.count)) }) { activities = r.0; moreActivities = r.1 }
+        let p = activityPeriod
+        if let r = await call({ try await $0.myActivities(offset: 0, limit: max(30, self.activities.count), period: p) }), p == activityPeriod { activities = r.0; moreActivities = r.1 }
     }
     func refreshTopLevel() async {
         if let m = await call({ try await $0.me() }) { me = m }

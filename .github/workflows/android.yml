@@ -1,0 +1,86 @@
+# Builds the Android app on every change to it: the sideload .apk (release build), the Google Play
+# bundle (play build) and the emulator build, so a broken compile or library upgrade shows up here.
+#
+# Signing, from optional repository secrets (Settings > Secrets and variables > Actions):
+#   ANDROID_DEBUG_KEYSTORE   base64 of the ~/.android/debug.keystore every released .apk has been signed
+#                            with. Without it the runner makes its own debug key, and an .apk signed with
+#                            that can't update an installed copy, so it is kept as an artifact only and
+#                            never published.
+#   ANDROID_UPLOAD_KEYSTORE  base64 of the Play upload keystore, with ANDROID_UPLOAD_STORE_PASSWORD,
+#   + 3 more                 ANDROID_UPLOAD_KEY_ALIAS and ANDROID_UPLOAD_KEY_PASSWORD. Without them the
+#                            Play bundle is built unsigned (fine as a check, not for uploading to Play).
+# Making the base64 on Windows: [Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\.android\debug.keystore"))
+name: Android app
+on:
+  push:
+    paths: ["companion/android/**", ".github/workflows/android.yml"]
+  pull_request:
+    paths: ["companion/android/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: companion/android
+    env:
+      DEBUG_KEYSTORE: ${{ secrets.ANDROID_DEBUG_KEYSTORE }}
+      UPLOAD_KEYSTORE: ${{ secrets.ANDROID_UPLOAD_KEYSTORE }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Install the signing keys
+        env:
+          STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: |
+          mkdir -p ~/.android
+          if [ -n "$DEBUG_KEYSTORE" ]; then
+            printf '%s' "$DEBUG_KEYSTORE" | base64 --decode > ~/.android/debug.keystore
+            echo "Signing the .apk with the saved debug key"
+          else
+            echo "::warning::No ANDROID_DEBUG_KEYSTORE secret: this .apk can't update an installed copy, so it won't be published"
+          fi
+          if [ -n "$UPLOAD_KEYSTORE" ]; then
+            printf '%s' "$UPLOAD_KEYSTORE" | base64 --decode > ~/.android/activetogether-upload.jks
+            printf 'storeFile=activetogether-upload.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+              "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > ~/.android/activetogether-upload.properties
+            echo "Signing the Play bundle with the upload key"
+          else
+            echo "No ANDROID_UPLOAD_KEYSTORE secret: the Play bundle is built unsigned"
+          fi
+      - name: Build
+        run: ./gradlew --no-daemon --stacktrace assembleRelease bundlePlay assembleEmulator
+      - name: Collect the builds
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/release/*.apk out/ActiveTogether.apk
+          cp app/build/outputs/bundle/play/*.aab out/ActiveTogether-play.aab
+          sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts > out/version.txt
+          sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts > out/build.txt
+          echo "Built version $(cat out/version.txt) ($(cat out/build.txt))"
+      - name: Upload the builds
+        uses: actions/upload-artifact@v7
+        with:
+          name: ActiveTogether-android
+          path: companion/android/out/
+          retention-days: 30
+      # A public download for any PC: the newest .apk on the "Latest app builds" release, beside the iPhone .ipa.
+      # Only when signed with the saved debug key, so it installs over the copy people already have.
+      - name: Publish to the release
+        if: github.ref == 'refs/heads/main' && env.DEBUG_KEYSTORE != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view latest-apps >/dev/null 2>&1 || gh release create latest-apps --title "Latest app builds" \
+            --notes "Newest builds of the Active Together apps. iPhone: install ActiveTogether.ipa with Sideloadly (see companion/ios/README.md). Android: install ActiveTogether.apk." --latest
+          gh release upload latest-apps out/ActiveTogether.apk --clobber

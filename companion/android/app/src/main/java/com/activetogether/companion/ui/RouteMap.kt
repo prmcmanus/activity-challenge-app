@@ -13,6 +13,8 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import com.activetogether.companion.RoutePoint
+import coil3.request.allowHardware
+import coil3.toBitmap
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
@@ -159,12 +161,12 @@ fun JourneyMapView(journey: com.activetogether.companion.JourneyMap, describe: (
     // Photos are fetched once (through Coil's cache) and drawn into the markers when they arrive.
     var photos by androidx.compose.runtime.remember(journey) { androidx.compose.runtime.mutableStateOf<Map<Int, android.graphics.Bitmap>>(emptyMap()) }
     androidx.compose.runtime.LaunchedEffect(journey) {
-        val loader = coil.ImageLoader(context)
+        val loader = coil3.SingletonImageLoader.get(context)
         val got = mutableMapOf<Int, android.graphics.Bitmap>()
         for (m in journey.markers) {
             val url = com.activetogether.companion.serverUrl(m.imageUrl) ?: continue
-            val result = runCatching { loader.execute(coil.request.ImageRequest.Builder(context).data(url).size(160).allowHardware(false).build()) }.getOrNull()
-            ((result as? coil.request.SuccessResult)?.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap?.let { got[m.id] = it }
+            val result = runCatching { loader.execute(coil3.request.ImageRequest.Builder(context).data(url).size(160).allowHardware(false).build()) }.getOrNull()
+            (result as? coil3.request.SuccessResult)?.image?.toBitmap()?.let { got[m.id] = it }
         }
         photos = got
     }

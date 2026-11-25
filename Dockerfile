@@ -1,11 +1,11 @@
 # The website's script, minified for the browser (about a fifth smaller). If the minifier can't be fetched (no
 # network during a deploy or a standby takeover), the readable file is used as it is.
-FROM node:24-alpine AS assets
+FROM node:26-alpine AS assets
 WORKDIR /build
 COPY public/app.js .
-RUN (npx --yes esbuild@0.24.0 app.js --minify --target=es2020 --outfile=app.min.js --log-level=warning && node --check app.min.js) || cp app.js app.min.js
+RUN (npx --yes esbuild@0.28.2 app.js --minify --target=es2020 --outfile=app.min.js --log-level=warning && node --check app.min.js) || cp app.js app.min.js
 
-FROM node:24-alpine
+FROM node:26-alpine
 WORKDIR /app
 COPY . .
 COPY --from=assets /build/app.min.js /app/public/app.js

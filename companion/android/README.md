@@ -37,7 +37,7 @@ when needed. Nothing else is read.
 The APK to install is the shrunk release build, signed with the debug key so it updates in place:
 
 ```powershell
-./build-local.ps1 -Task assembleRelease -JavaHome <jdk-17> -GradleHome <gradle-8.9>
+./build-local.ps1 -Task assembleRelease -JavaHome <jdk-17> -GradleHome <gradle-9.9.2>
 # -> app/build/outputs/apk/release/app-release.apk
 ```
 
@@ -65,11 +65,11 @@ emulator build trusts it, the release build never does.
 
 - Android Studio with Android SDK installed
 - Gradle **wrapper** (included in this folder)
-- Java 17+ for Gradle/AGP 8.7
+- Java 17+ for Gradle 9 / AGP 9
 
 If you saw:
 
-`Plugin [id: 'org.jetbrains.kotlin.android', version: '2.0.21'] was not found`
+`Plugin [id: 'org.jetbrains.kotlin.android', version: '2.4.21'] was not found`
 
 that is normally caused by opening without the wrapper / with an old Gradle runtime.
 
@@ -91,7 +91,7 @@ that is normally caused by opening without the wrapper / with an old Gradle runt
 
 ### Corporate networks with a TLS-inspecting proxy (e.g. Zscaler)
 
-If the plugin-not-found error persists even with Java 17+/Gradle 8.9+ correctly
+If the plugin-not-found error persists even with Java 17+/Gradle 9.9+ correctly
 configured, and/or you see:
 
 ```
@@ -119,7 +119,7 @@ doesn't automatically use the OS/PAC proxy configuration the way `curl`/browsers
 2. Build with `java.net.useSystemProxies=true` so Java consults the same PAC-based
    proxy configuration Windows/curl already use:
    ```powershell
-   .\build-local.ps1 -JavaHome "C:\path\to\jdk-17" -GradleHome "C:\path\to\gradle-8.9"
+   .\build-local.ps1 -JavaHome "C:\path\to\jdk-17" -GradleHome "C:\path\to\gradle-9.9.2"
    ```
    or manually:
    ```powershell
@@ -134,7 +134,7 @@ doesn't automatically use the OS/PAC proxy configuration the way `curl`/browsers
    > per-host routing instead of forcing one fixed proxy.
 
 3. If the Gradle **wrapper** itself can't download the Gradle distribution due to
-   the same SSL issue, download `gradle-8.9-bin.zip` manually with `curl.exe`
+   the same SSL issue, download `gradle-9.9.2-bin.zip` manually with `curl.exe`
    (which uses the Windows cert store and succeeds where Java doesn't), extract it,
    and use that extracted `gradle.bat` directly until the cacerts fix above is
    applied — then the wrapper will work too.
@@ -192,7 +192,7 @@ Unable to locate adb in project/module settings. Locations searched:
 ```
 
 this almost always means **Android Studio itself is too old** for this
-project's toolchain (AGP 8.7.3 / Gradle 8.9 / Kotlin 2.0.21). Old Studio
+project's toolchain (AGP 9.5.3 / Gradle 9.9.2 / Kotlin 2.4.21). Old Studio
 versions (e.g. 2020.3 "Arctic Fox") can successfully invoke Gradle and get a
 "successful" sync, but their own IDE-side project-model code doesn't know how
 to parse the resulting module structure from newer AGP versions, so no

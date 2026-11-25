@@ -1,19 +1,19 @@
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
     namespace = "com.activetogether.companion"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.activetogether.companion"
         minSdk = 28
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 33
         versionName = "1.23.0"
         buildConfigField("String", "SERVER_URL", "\"https://activetogether.team\"")
@@ -80,13 +80,16 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_17
     }
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
+    val composeBom = platform("androidx.compose:compose-bom:2026.11.01")
     implementation(composeBom)
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
@@ -94,23 +97,25 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
-    implementation("androidx.activity:activity-compose:1.9.3")
-    implementation("androidx.activity:activity-ktx:1.9.3")
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    implementation("androidx.navigation:navigation-compose:2.8.3")
-    implementation("androidx.work:work-runtime-ktx:2.9.1")
-    implementation("androidx.health.connect:connect-client:1.1.0-alpha10")
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.activity:activity-ktx:1.13.0")
+    implementation("androidx.core:core-ktx:1.19.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.1")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.1")
+    implementation("androidx.navigation:navigation-compose:2.10.2")
+    implementation("androidx.work:work-runtime-ktx:2.12.0")
+    implementation("androidx.health.connect:connect-client:1.1.0")
     // Maps: OpenStreetMap tiles, no API key needed (the web app uses the same tiles).
     implementation("org.osmdroid:osmdroid-android:6.1.20")
     // Avatars and team logos.
-    implementation("io.coil-kt:coil-compose:2.7.0")
+    // Coil 3 loads nothing over the network without a network module; OkHttp is the standard one.
+    implementation("io.coil-kt.coil3:coil-compose:3.6.3")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.6.3")
     // Sign in with Google: Credential Manager and Google's ID token option.
-    implementation("androidx.credentials:credentials:1.5.0")
-    implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
-    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
+    implementation("androidx.credentials:credentials:1.6.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.6.0")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.2.1")
     // Phone notifications: Firebase Cloud Messaging, started with the server's settings (no google-services.json).
-    implementation("com.google.firebase:firebase-messaging:24.1.0")
+    implementation("com.google.firebase:firebase-messaging:26.0.2")
 }

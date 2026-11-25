@@ -6,8 +6,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$nodeVersion = '24.20.0'
-$nodeUrl = 'https://github.com/actions/node-versions/releases/download/24.20.0-33034074684/node-24.20.0-win32-x64.7z'
+$nodeVersion = '26.13.1'
+$nodeUrl = 'https://github.com/actions/node-versions/releases/download/26.13.1-43134154182/node-26.13.1-win32-x64.7z'
 
 function Get-UsableNode {
   $node = Get-Command node -ErrorAction SilentlyContinue

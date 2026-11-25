@@ -7,22 +7,22 @@ on:
 
 jobs:
   smoke:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
 
       - name: Run smoke tests
         run: npm test
 
       - name: Check Docker availability
         id: docker
-        run: node -e "const fs=require('node:fs');const {spawnSync}=require('node:child_process');const available=spawnSync('docker',['--version'],{stdio:'ignore'}).status===0;fs.appendFileSync(process.env.GITHUB_OUTPUT,'available='+available+'\n');if(!available)console.log('Docker is not installed on this self-hosted runner; skipping image build.');"
+        run: node -e "const fs=require('node:fs');const {spawnSync}=require('node:child_process');const available=spawnSync('docker',['--version'],{stdio:'ignore'}).status===0;fs.appendFileSync(process.env.GITHUB_OUTPUT,'available='+available+'\n');if(!available)console.log('Docker is not installed on this runner; skipping image build.');"
 
       - name: Build Docker image
         if: steps.docker.outputs.available == 'true'

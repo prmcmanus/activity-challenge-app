@@ -96,7 +96,7 @@ Requires Node.js 22 or newer:
 SEED_ADMIN_EMAIL=admin@example.com SEED_ADMIN_PASSWORD='ChangeMe123!' node server.js
 ```
 
-On Windows, you can also run the local helper. It uses Node.js from `PATH` when available; otherwise it downloads a portable Node.js 24 runtime into `.tools/`.
+On Windows, you can also run the local helper. It uses Node.js from `PATH` when available; otherwise it downloads a portable Node.js 26 runtime into `.tools/`.
 
 ```powershell
 .\start-local.ps1
@@ -108,12 +108,12 @@ fallback admin:
 - Email: `admin@example.com`
 - Password: `ChangeMe123!`
 
-## Test in GitHub Enterprise
-GitHub-hosted runners are disabled for this repository, so the included GitHub Actions workflow targets a self-hosted runner.
+## Continuous integration
+GitHub Actions runs on GitHub-hosted runners:
 
-1. Add a repository, organization or enterprise self-hosted runner with the `self-hosted` label.
-2. Re-run the `Test` workflow from the Actions tab.
-3. The workflow installs Node.js 24, runs `npm test`, and builds the Docker image when Docker is available on the runner.
+- `Test`: every push and pull request. Installs Node.js 26, runs `npm test`, and builds the Docker image.
+- `Android app`: changes under `companion/android`. Builds the sideload .apk, the Play bundle and the emulator build; see the top of `.github/workflows/android.yml` for the signing secrets.
+- `iOS app`: changes under `companion/ios`. Builds the sideload .ipa. `iOS App Store` is run by hand.
 
 ## Health integration boundary
 Health Connect and HealthKit are device-local native APIs. A normal website cannot read them directly. Build a small Android/iOS companion app that:

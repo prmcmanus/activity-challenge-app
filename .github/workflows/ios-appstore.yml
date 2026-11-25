@@ -26,7 +26,7 @@ jobs:
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check the secrets are set
         run: |
           for s in ASC_KEY_ID ASC_ISSUER_ID APPLE_TEAM_ID; do [ -n "${!s}" ] || { echo "Missing secret $s"; exit 1; }; done
@@ -110,7 +110,7 @@ jobs:
           cp -R "${TMPDIR:-/tmp}"/*.xcdistributionlogs companion/ios/distribution-logs/ 2>/dev/null || true
       - name: Keep the logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: appstore-logs
           path: |

@@ -18,7 +18,7 @@
 param(
     [string]$Task = "assembleDebug",
     [string]$JavaHome = $env:JAVA_HOME,
-    [string]$GradleHome = "C:\Gradle\gradle-8.9"
+    [string]$GradleHome = "C:\Gradle\gradle-9.9.2"
 )
 
 if (-not $JavaHome -or -not (Test-Path $JavaHome)) {
@@ -28,7 +28,7 @@ if (-not $JavaHome -or -not (Test-Path $JavaHome)) {
 
 $gradleBat = Join-Path $GradleHome "bin\gradle.bat"
 if (-not (Test-Path $gradleBat)) {
-    Write-Error "Gradle not found at $gradleBat. Install Gradle 8.9+ (see README) or pass -GradleHome."
+    Write-Error "Gradle not found at $gradleBat. Install Gradle 9.9+ (see README) or pass -GradleHome."
     exit 1
 }
 

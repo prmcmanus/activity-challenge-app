@@ -58,6 +58,12 @@ jobs:
           else
             echo "No ANDROID_UPLOAD_KEYSTORE secret: the Play bundle is built unsigned"
           fi
+      # The emulator build trusts a corporate proxy's root certificate that is kept out of git
+      # (src/emulator/res/raw/ is ignored). Here it is only compiled as a check, so a stand-in will do.
+      - name: Stand in for the emulator's local certificate
+        run: |
+          mkdir -p app/src/emulator/res/raw
+          ls app/src/emulator/res/raw/corp_root_ca.* >/dev/null 2>&1 || echo "placeholder" > app/src/emulator/res/raw/corp_root_ca.pem
       - name: Build
         run: ./gradlew --no-daemon --stacktrace assembleRelease bundlePlay assembleEmulator
       - name: Collect the builds

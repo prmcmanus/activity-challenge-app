@@ -8,7 +8,10 @@ plugins {
 
 android {
     namespace = "com.activetogether.companion"
-    compileSdk = 37
+    // Compose 1.13 needs the 37.1+ platform (a minor SDK release), so the minor level is set too.
+    compileSdk {
+        version = release(37) { minorApiLevel = 2 }
+    }
 
     defaultConfig {
         applicationId = "com.activetogether.companion"

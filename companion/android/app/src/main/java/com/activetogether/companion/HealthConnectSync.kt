@@ -3,7 +3,6 @@ package com.activetogether.companion
 import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.HealthConnectFeatures
-import androidx.health.connect.client.feature.ExperimentalFeatureAvailabilityApi
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseRoute
@@ -78,11 +77,9 @@ class HealthConnectSync(private val context: Context) {
 
     suspend fun grantedPermissions(): Set<String> = client().permissionController.getGrantedPermissions()
 
-    @OptIn(ExperimentalFeatureAvailabilityApi::class)
     fun backgroundReadSupported(): Boolean = isAvailable() &&
         client().features.getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_IN_BACKGROUND) == HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
 
-    @OptIn(ExperimentalFeatureAvailabilityApi::class)
     fun historyReadSupported(): Boolean = isAvailable() &&
         client().features.getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_HISTORY) == HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
 

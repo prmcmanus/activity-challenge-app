@@ -20,7 +20,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -149,7 +149,7 @@ fun <T> Dropdown(label: String, options: List<T>, selected: T, display: (T) -> S
         OutlinedTextField(
             value = display(selected), onValueChange = {}, readOnly = true, enabled = enabled, label = { Text(label) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(open) },
-            modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled).fillMaxWidth(),
+            modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled).fillMaxWidth(),
             singleLine = true,
         )
         ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {

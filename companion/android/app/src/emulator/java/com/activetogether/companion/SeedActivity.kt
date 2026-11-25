@@ -9,6 +9,7 @@ import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseRoute
 import androidx.health.connect.client.records.ExerciseSessionRecord
+import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.units.Length
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
@@ -81,9 +82,9 @@ class SeedActivity : ComponentActivity() {
             val end = ZonedDateTime.now(zone).minusMinutes(10).withSecond(0).withNano(0); val start = end.minusMinutes(25)
             try {
                 client.insertRecords(listOf(
-                    ExerciseSessionRecord(startTime = start.toInstant(), startZoneOffset = off(start), endTime = end.toInstant(), endZoneOffset = off(end),
+                    ExerciseSessionRecord(startTime = start.toInstant(), startZoneOffset = off(start), endTime = end.toInstant(), endZoneOffset = off(end), metadata = Metadata.manualEntry(),
                         exerciseType = ExerciseSessionRecord.EXERCISE_TYPE_RUNNING, title = "Fresh run", exerciseRoute = loop(start, 25, 0.003, 51.5033, -0.1196)),
-                    DistanceRecord(startTime = start.toInstant(), startZoneOffset = off(start), endTime = end.toInstant(), endZoneOffset = off(end), distance = Length.kilometers(4.1)),
+                    DistanceRecord(startTime = start.toInstant(), startZoneOffset = off(start), endTime = end.toInstant(), endZoneOffset = off(end), metadata = Metadata.manualEntry(), distance = Length.kilometers(4.1)),
                 ))
                 text.text = "Seeded a fresh run at ${start.toLocalTime()}"
             } catch (e: Exception) { text.text = "Seeding failed: ${e.message}" }
@@ -91,15 +92,15 @@ class SeedActivity : ComponentActivity() {
         }
         try {
             client.insertRecords(listOf(
-                ExerciseSessionRecord(startTime = runStart.toInstant(), startZoneOffset = off(runStart), endTime = runEnd.toInstant(), endZoneOffset = off(runEnd),
+                ExerciseSessionRecord(startTime = runStart.toInstant(), startZoneOffset = off(runStart), endTime = runEnd.toInstant(), endZoneOffset = off(runEnd), metadata = Metadata.manualEntry(),
                     exerciseType = ExerciseSessionRecord.EXERCISE_TYPE_RUNNING, title = "Morning run",
                     exerciseRoute = loop(runStart, 42, 0.0045, 51.5073, -0.1657)),
-                DistanceRecord(startTime = runStart.toInstant(), startZoneOffset = off(runStart), endTime = runEnd.toInstant(), endZoneOffset = off(runEnd), distance = Length.kilometers(6.4)),
-                ExerciseSessionRecord(startTime = walkStart.toInstant(), startZoneOffset = off(walkStart), endTime = walkEnd.toInstant(), endZoneOffset = off(walkEnd),
+                DistanceRecord(startTime = runStart.toInstant(), startZoneOffset = off(runStart), endTime = runEnd.toInstant(), endZoneOffset = off(runEnd), metadata = Metadata.manualEntry(), distance = Length.kilometers(6.4)),
+                ExerciseSessionRecord(startTime = walkStart.toInstant(), startZoneOffset = off(walkStart), endTime = walkEnd.toInstant(), endZoneOffset = off(walkEnd), metadata = Metadata.manualEntry(),
                     exerciseType = ExerciseSessionRecord.EXERCISE_TYPE_WALKING, title = "Evening walk",
                     exerciseRoute = loop(walkStart, 30, 0.0025, 51.5226, -0.1546)),
-                DistanceRecord(startTime = walkStart.toInstant(), startZoneOffset = off(walkStart), endTime = walkEnd.toInstant(), endZoneOffset = off(walkEnd), distance = Length.kilometers(2.4)),
-                ExerciseSessionRecord(startTime = yogaStart.toInstant(), startZoneOffset = off(yogaStart), endTime = yogaEnd.toInstant(), endZoneOffset = off(yogaEnd),
+                DistanceRecord(startTime = walkStart.toInstant(), startZoneOffset = off(walkStart), endTime = walkEnd.toInstant(), endZoneOffset = off(walkEnd), metadata = Metadata.manualEntry(), distance = Length.kilometers(2.4)),
+                ExerciseSessionRecord(startTime = yogaStart.toInstant(), startZoneOffset = off(yogaStart), endTime = yogaEnd.toInstant(), endZoneOffset = off(yogaEnd), metadata = Metadata.manualEntry(),
                     exerciseType = ExerciseSessionRecord.EXERCISE_TYPE_YOGA, title = "Yoga"),
             ))
             text.text = "Seeded 3 workouts"

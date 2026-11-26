@@ -22,7 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.autofill.AutofillType
+import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -56,13 +56,13 @@ fun CreateAccountCard(vm: AppViewModel, signInWithGoogle: (() -> Unit)? = null, 
             Text("Create your account", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             signInWithGoogle?.let { GoogleButton(enabled = !busy, onClick = it) }
             OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true,
-                modifier = Modifier.fillMaxWidth().autofill(listOf(AutofillType.PersonFullName)) { name = it },
+                modifier = Modifier.fillMaxWidth().autofill(ContentType.PersonFullName),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next))
             OutlinedTextField(email, { email = it }, label = { Text("Email") }, singleLine = true,
-                modifier = Modifier.fillMaxWidth().autofill(listOf(AutofillType.EmailAddress)) { email = it },
+                modifier = Modifier.fillMaxWidth().autofill(ContentType.EmailAddress),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next))
             OutlinedTextField(password, { password = it }, label = { Text("Password (at least 8 characters)") }, singleLine = true,
-                modifier = Modifier.fillMaxWidth().autofill(listOf(AutofillType.NewPassword)) { password = it },
+                modifier = Modifier.fillMaxWidth().autofill(ContentType.NewPassword),
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = if (inviteOnly && vm.pendingInvite == null) ImeAction.Next else ImeAction.Done))
             if (inviteOnly && vm.pendingInvite == null) {

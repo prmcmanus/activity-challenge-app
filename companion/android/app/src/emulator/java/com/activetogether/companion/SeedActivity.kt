@@ -9,6 +9,7 @@ import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseRoute
 import androidx.health.connect.client.records.ExerciseSessionRecord
+import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.units.Length
 import androidx.lifecycle.lifecycleScope
@@ -81,7 +82,7 @@ class SeedActivity : ComponentActivity() {
         if (intent.getBooleanExtra("fresh", false)) {
             val end = ZonedDateTime.now(zone).minusMinutes(10).withSecond(0).withNano(0); val start = end.minusMinutes(25)
             try {
-                client.insertRecords(listOf(
+                client.insertRecords(listOf<Record>(
                     ExerciseSessionRecord(startTime = start.toInstant(), startZoneOffset = off(start), endTime = end.toInstant(), endZoneOffset = off(end), metadata = Metadata.manualEntry(),
                         exerciseType = ExerciseSessionRecord.EXERCISE_TYPE_RUNNING, title = "Fresh run", exerciseRoute = loop(start, 25, 0.003, 51.5033, -0.1196)),
                     DistanceRecord(startTime = start.toInstant(), startZoneOffset = off(start), endTime = end.toInstant(), endZoneOffset = off(end), metadata = Metadata.manualEntry(), distance = Length.kilometers(4.1)),
@@ -91,7 +92,7 @@ class SeedActivity : ComponentActivity() {
             return@launch
         }
         try {
-            client.insertRecords(listOf(
+            client.insertRecords(listOf<Record>(
                 ExerciseSessionRecord(startTime = runStart.toInstant(), startZoneOffset = off(runStart), endTime = runEnd.toInstant(), endZoneOffset = off(runEnd), metadata = Metadata.manualEntry(),
                     exerciseType = ExerciseSessionRecord.EXERCISE_TYPE_RUNNING, title = "Morning run",
                     exerciseRoute = loop(runStart, 42, 0.0045, 51.5073, -0.1657)),

@@ -123,7 +123,7 @@ fun JourneyEditor(vm: AppViewModel, draft: JourneyDraft, onModeChange: () -> Uni
     fun setPoint(k: String, lat: Double, lon: Double, name: String? = null) {
         val before = draft.get(k)
         val keep = before?.custom == true
-        draft.put(k, DraftPlace(if (keep) before!!.name else name ?: "Finding the place name…", lat, lon, keep))
+        draft.put(k, DraftPlace(if (keep) before.name else name ?: "Finding the place name…", lat, lon, keep))
         if (!keep && name == null) scope.launch {
             val n = nameAt(lat, lon)
             draft.get(k)?.let { p -> if (!p.custom && p.lat == lat && p.lon == lon) draft.put(k, p.copy(name = n)) }

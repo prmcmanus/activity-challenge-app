@@ -116,7 +116,7 @@ fun AppRoot(vm: AppViewModel) {
                         BadgedBox(badge = { if (vm.helpBadge > 0) Badge { Text("${vm.helpBadge}") } }) { Icon(Icons.AutoMirrored.Filled.HelpOutline, "Help") }
                     }
                 },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
         bottomBar = {

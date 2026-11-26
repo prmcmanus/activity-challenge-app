@@ -39,27 +39,15 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.ExperimentalComposeUiApi
-import androidx.compose.ui.autofill.AutofillNode
-import androidx.compose.ui.autofill.AutofillType
-import androidx.compose.ui.composed
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalAutofill
-import androidx.compose.ui.platform.LocalAutofillTree
+import androidx.compose.ui.autofill.ContentType
+import androidx.compose.ui.semantics.contentType
+import androidx.compose.ui.semantics.semantics
 import kotlinx.coroutines.launch
 import com.activetogether.companion.R
 import com.activetogether.companion.SERVER_URL
 
-/** Tells Android's autofill (password managers) what a text field is for, and fills it when one is picked. */
-@OptIn(ExperimentalComposeUiApi::class)
-internal fun Modifier.autofill(types: List<AutofillType>, onFill: (String) -> Unit): Modifier = composed {
-    val node = remember { AutofillNode(autofillTypes = types, onFill = onFill) }
-    val autofill = LocalAutofill.current
-    LocalAutofillTree.current += node
-    onGloballyPositioned { node.boundingBox = it.boundsInWindow() }
-        .onFocusChanged { if (it.isFocused) autofill?.requestAutofillForNode(node) else autofill?.cancelAutofillForNode(node) }
-}
+/** Tells Android's autofill (password managers) what a text field is for; a picked entry fills the field itself. */
+internal fun Modifier.autofill(vararg types: ContentType): Modifier = semantics { contentType = types.reduce { a, b -> a + b } }
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -129,10 +117,10 @@ fun LoginScreen(vm: AppViewModel) {
                         signInWithGoogle?.let { GoogleButton(enabled = !busy, onClick = it) }
                         // Autofill hints, so a password manager (or Google's) fills these in.
                         OutlinedTextField(email, { email = it }, label = { Text("Email") }, singleLine = true,
-                            modifier = Modifier.fillMaxWidth().autofill(listOf(AutofillType.EmailAddress, AutofillType.Username)) { email = it },
+                            modifier = Modifier.fillMaxWidth().autofill(ContentType.EmailAddress, ContentType.Username),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next))
                         OutlinedTextField(password, { password = it }, label = { Text("Password") }, singleLine = true,
-                            modifier = Modifier.fillMaxWidth().autofill(listOf(AutofillType.Password)) { password = it },
+                            modifier = Modifier.fillMaxWidth().autofill(ContentType.Password),
                             visualTransformation = PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done))
                     } else {
